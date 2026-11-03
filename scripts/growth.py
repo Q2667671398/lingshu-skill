@@ -1,0 +1,4203 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""灵枢 成长子系统：知识库 / 笔记日志 / 技能自编辑
+
+与记忆的区别：
+  记忆 = 我经历过什么（episode / emotion / preference）
+  知识 = 我整理出的可复用结论（topic / points / 版本）
+  笔记 = 我写给自己的话（journal 日记 / log 工作日志 / growth 成长复盘）
+  技能 = 我写给别人复用的能力（SKILL.md）
+
+纯标准库，零依赖。命令行统一由 brain.py 转发。
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import http.client
+import json
+import os
+import re
+import shutil
+import sys
+import threading
+import time
+import uuid
+from pathlib import Path
+
+# Windows 控制台默认 GBK，中文输出会变乱码。无条件 reconfigure 成 UTF-8；
+# errors="replace" 让无法编码的字符降级成 ?，流不支持 reconfigure 时静默跳过。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import brain  # noqa: E402
+
+HOME = brain.HOME
+KNOWLEDGE_FILE = HOME / "knowledge.jsonl"
+KNOWLEDGE_DIR = HOME / "knowledge"
+INDEX_FILE = KNOWLEDGE_DIR / "index.json"
+NOTES_FILE = HOME / "notes.jsonl"
+EVOLUTION_FILE = HOME / "evolution.jsonl"
+SKILLS_DIR = HOME / "skills"
+SKILL_REG = HOME / "skills.json"
+# 扩展模块：AI 自己写的可执行钩子（inject / run），放在数据目录，更新技能永不覆盖
+EXT_DIR = HOME / "extensions"
+
+
+def _panel_root() -> Path:
+    """面板/当前进程实际运行所在的技能根目录（growth.py 所在目录的上一级）。
+
+    更新/检测灵枢本体时以它为最优先目标——面板跑在哪个目录，更新就落到哪个目录，
+    不依赖 _global_roots 的固定探测顺序（多根/环境变量覆盖场景下那套会找错）。
+    """
+    return Path(__file__).resolve().parent.parent
+
+
+# 各宿主（AI 编程工具）约定的全局技能目录，按安装目标优先级排列。
+# 灵枢只读扫描这些目录，发现现成技能就能直接 skill use / skill borrow；
+# 换机器、换宿主都不用改代码。项目级目录（.trae/skills 等）随项目走，不在这里扫。
+SKILL_ROOT_CANDIDATES = [
+    (".dsh/skills", "DSH"),
+    (".trae-cn/skills", "Trae CN"),          # Trae 国内版
+    (".trae/skills", "Trae"),                # Trae 国际版 / SOLO
+    (".agents/skills", "Agents"),            # 通用 Agent 生态约定
+    (".claude/skills", "Claude Code"),
+    (".codex/skills", "Codex"),
+    (".cursor/skills", "Cursor"),
+    (".gemini/skills", "Gemini"),
+    (".gemini/antigravity/skills", "Antigravity"),
+    (".config/agents/skills", "Amp"),
+    (".qwen/skills", "Qwen"),
+    (".windsurf/skills", "Windsurf"),
+    (".config/opencode/skill", "OpenCode"),
+    (".cline/skills", "Cline"),
+    (".github/skills", "GitHub"),
+]
+
+
+def _config_roots() -> list:
+    """用户在配置里手动添加的技能根目录（config.json 的 skill_roots）。"""
+    try:
+        raw = brain.load_config().get("skill_roots") or []
+    except Exception:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    out, seen = [], set()
+    for item in raw:
+        try:
+            p = Path(str(item)).expanduser()
+        except (TypeError, ValueError):
+            continue
+        key = str(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def _global_roots() -> list:
+    """全局技能目录，按优先级排列（第一个是安装目标）。
+
+    来源三层：环境变量 LINGSHU_GLOBAL_SKILLS（最高优先，多个用 ; , 分隔）
+    → 本机真实存在的各宿主约定目录 → 用户手动添加的自定义目录。
+    存在者优先、候选顺序兜底，换机器不用改代码；安装目标取第一个，
+    避免装进宿主根本不扫的位置。
+    """
+    out, seen = [], set()
+
+    def _add(p: Path):
+        key = str(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+
+    env = (os.environ.get("LINGSHU_GLOBAL_SKILLS") or "").strip()
+    if env:
+        for part in re.split(r"[;；,，]", env):
+            if part.strip():
+                _add(Path(part.strip()).expanduser())
+    candidates = [Path.home() / rel for rel, _ in SKILL_ROOT_CANDIDATES]
+    for c in candidates:
+        if c.is_dir():
+            _add(c)
+    for c in _config_roots():
+        _add(c)
+    if not out:
+        out = candidates  # 都不存在时保留完整候选，安装时会自动创建第一个
+    return out
+
+
+def _root_label(path: Path) -> str:
+    """技能目录的人类可读标签（宿主名 / 自定义）。"""
+    for rel, label in SKILL_ROOT_CANDIDATES:
+        if str(path) == str(Path.home() / rel):
+            return label
+    try:
+        rel = path.resolve().relative_to(Path.home().resolve()).as_posix()
+    except (OSError, ValueError):
+        return "自定义"
+    for cand, label in SKILL_ROOT_CANDIDATES:
+        if rel == cand:
+            return label
+    return "自定义"
+
+
+GLOBAL_SKILLS = _global_roots()[0]  # 安装目标（主目录）
+
+# 安装源体积上限：超过就认为 --from 指错了目录（防止把整个用户目录/磁盘塞进技能目录）
+MAX_INSTALL_FILES = 3000
+MAX_INSTALL_BYTES = 200 * 1024 * 1024
+
+NOTE_KINDS = ("journal", "log", "growth")
+# 技能名：小写字母/数字/连字符/下划线，也允许中文（中文生态里技能就叫「质检评审」这类名字）
+SLUG_RE = re.compile(r"^[a-z0-9\u4e00-\u9fff][a-z0-9-_\u4e00-\u9fff]{0,62}$")
+# Windows 保留设备名：即使过了正则也不能当技能目录名（con/com1 建目录会失败或异常）
+_WINDOWS_RESERVED = {"con", "prn", "aux", "nul",
+                     *(f"com{i}" for i in range(1, 10)),
+                     *(f"lpt{i}" for i in range(1, 10))}
+
+# 灵枢是"会自动记忆、会自动整理、能自己改说明书"的技能——装它的后果要说清楚，让用户自己决定。
+LINGSHU_RISKS = [
+    "它会在你本机 ~/.brain-memory 下长期保存：对话记忆、你告诉它的个人偏好与情绪记录（本地明文）。换机器/共享电脑时请注意隐私。",
+    "上下文接近满时它会自动原文封存（capture）与做梦压缩，并每天写日记、更新知识库——这些是自动行为，内容会持续增长。",
+    "它会只读扫描多个宿主的全局技能目录（~/.dsh/skills、~/.trae-cn/skills、~/.claude/skills 等）与 DSH（~/.dsh/profiles）插件清单，判断有没有现成能力可用。",
+    "它有自我编辑能力（skill new/edit/install），理论上能改写它自己的说明书与全局副本，并生成 AGENTS.md。",
+    "记忆只存在本地，误删/损坏依赖手动备份：建议首次启用先跑 python scripts/brain.py backup。",
+]
+
+
+# ---------------------------------------------------------------- 通用
+
+def _uid(prefix: str, seed: str) -> str:
+    return prefix + hashlib.sha1(f"{seed}|{time.time_ns()}".encode()).hexdigest()[:10]
+
+
+def _now_text() -> str:
+    return time.strftime("%Y-%m-%d %H:%M")
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def _split(text: str | None) -> list:
+    if not text:
+        return []
+    return [x.strip() for x in re.split(r"[、,，;；\n/|]+", text) if x.strip()]
+
+
+def _dedupe(items: list) -> list:
+    out, seen = [], set()
+    for x in items:
+        x = str(x).strip()
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def _clip(text: str, n: int) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    return text if len(text) <= n else text[:n].rstrip() + "…"
+
+
+def _read_json(path: Path) -> dict:
+    # Windows 记事本/PowerShell 可能写 BOM，统一用 utf-8-sig 读
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+# ---------------------------------------------------------------- 知识库
+
+def load_knowledge() -> list:
+    raw = brain.read_jsonl(KNOWLEDGE_FILE)
+    good = [r for r in raw if isinstance(r, dict) and r.get("id")]
+    if len(good) != len(raw):
+        brain.log_event("growth",
+                        f"load_knowledge 跳过 {len(raw) - len(good)} 条畸形条目（缺 id 或类型错）",
+                        level="warning")
+    return good
+
+
+def save_knowledge(rows: list) -> None:
+    with brain._locked(KNOWLEDGE_FILE):
+        brain.write_jsonl(KNOWLEDGE_FILE, rows)
+    rebuild_index(rows)
+
+
+def _read_file_whitelisted(path_str: str) -> str:
+    """--file 只读白名单目录里的文件：技能区、扩展区、记忆库内部。
+    防止把任意路径（系统目录 / HOME 外）的文件内容当成正文读进来。"""
+    p = Path(path_str).expanduser()
+    try:
+        rp = p.resolve()
+        bases = [SKILLS_DIR.resolve(), EXT_DIR.resolve(), Path(HOME).resolve()]
+    except OSError:
+        raise ValueError(f"--file 路径无法解析：{path_str}")
+    if not any(rp.is_relative_to(b) for b in bases):
+        raise ValueError(f"--file 只能读记忆库/技能/扩展目录内的文件，已拒绝：{p}")
+    return p.read_text(encoding="utf-8")
+
+
+def _kdoc(rec: dict) -> set:
+    # 字段可能是 None（手改/LLM 产出），统一转成字符串再切词，避免 " ".join 抛 TypeError
+    def _s(x):
+        return str(x) if x is not None else ""
+    return brain.terms(" ".join([
+        _s(rec.get("title")) * 2, _s(rec.get("body")),
+        " ".join(_s(p) for p in (rec.get("points") or [])),
+        " ".join(_s(t) for t in (rec.get("tags") or [])),
+    ]))
+
+
+def add_knowledge(title: str, body: str, topic: str = "", points=None, tags=None,
+                  entities=None, source_ids=None, confidence: float = 0.8,
+                  source: str = "user", review: str | None = None) -> tuple:
+    """写入一条知识；高度相似则合并进已有条目。返回 (记录, created|merged)。
+
+    审核闸：source="ai"（AI 产出，可能含幻觉）默认 status="pending"，
+    走 knowledge review → confirm/discard 流程；本机人工写入（默认 user）直接 confirmed。
+    调用方显式传 review（"confirmed"/"pending"/"discarded"）时尊重调用方。
+    """
+    title = (title or "").strip()
+    body = (body or "").strip()
+    if not title and body:
+        title = _clip(body, 24)
+    if not title:
+        raise ValueError("知识需要一个标题或正文")
+
+    # 读-改-写整段加锁：否则两个并发 add（面板/CLI/做梦同时写）各自的快照会互相
+    # 吞掉对方的合并或新增；save_knowledge 内部用的是同一把锁（可重入），不冲突。
+    with brain._locked(KNOWLEDGE_FILE):
+        rows = load_knowledge()
+        new_title_terms = brain.terms(title)
+        for old in rows:
+            # 废弃（discarded）条目不能被合并复活：新内容写进去也永远搜不到
+            if old.get("status") == "discarded":
+                continue
+            # 只在标题几乎相同（或包含关系极强）时合并，避免把同主题的不同结论揉成一条
+            if brain.jaccard(new_title_terms, brain.terms(old.get("title", ""))) >= 0.75:
+                old_body = str(old.get("body") or "")
+                if body and body not in old_body:
+                    old["body"] = (old_body + "\n\n" + body).strip()
+                old["points"] = _dedupe((old.get("points") or []) + list(points or []))
+                old["tags"] = _dedupe((old.get("tags") or []) + list(tags or []))
+                old["entities"] = _dedupe((old.get("entities") or []) + list(entities or []))
+                old["source_ids"] = _dedupe((old.get("source_ids") or []) + list(source_ids or []))
+                old["topic"] = old.get("topic") or topic
+                old["updated"] = brain.now_ts()
+                old["version"] = int(old.get("version", 1)) + 1
+                old.setdefault("history", []).append(
+                    {"ts": old["updated"], "why": "写入时合并相似条目", "version": old["version"]})
+                save_knowledge(rows)
+                return old, "merged"
+
+        # 审核闸：AI 来源默认 pending（防幻觉直接沉淀），显式 review 优先
+        if review is not None:
+            status = review
+        elif source == "ai":
+            status = "pending"
+        else:
+            status = "confirmed"
+        rec = _new_knowledge(title, body, topic, points, tags, entities, source_ids,
+                             confidence, status=status)
+        rows.append(rec)
+        save_knowledge(rows)
+    return rec, "created"
+
+
+def _new_knowledge(title, body, topic="", points=None, tags=None, entities=None,
+                   source_ids=None, confidence=0.8, status="confirmed") -> dict:
+    now = brain.now_ts()
+    return {
+        "id": _uid("k_", title),
+        "title": title,
+        "topic": (topic or "未分类").strip(),
+        "body": body,
+        "points": _dedupe(list(points or [])),
+        "tags": _dedupe(list(tags or [])),
+        "entities": _dedupe(list(entities or [])),
+        "source_ids": _dedupe(list(source_ids or [])),
+        "confidence": max(0.0, min(1.0, float(confidence))),
+        "status": status,          # confirmed 已确认 / pending 待审核（AI 整理产出）/ discarded 废弃
+        "pinned": False,
+        "version": 1,
+        "created": now,
+        "updated": now,
+        "history": [{"ts": now, "why": "创建", "version": 1}],
+    }
+
+
+def list_knowledge(topic: str | None = None, limit: int = 50,
+                   include_discarded: bool = False) -> list:
+    rows = load_knowledge()
+    if not include_discarded:
+        rows = [r for r in rows if r.get("status") != "discarded"]
+    if topic:
+        rows = [r for r in rows if r.get("topic") == topic]
+    return sorted(rows, key=lambda r: (r.get("pinned", False), r.get("updated", 0)), reverse=True)[:limit]
+
+
+def knowledge_pending() -> list:
+    """待审核的知识（多由 knowledge tidy 的 AI 整理产出，可能含幻觉，需人工过目）。"""
+    return [r for r in load_knowledge() if r.get("status") == "pending"]
+
+
+def set_knowledge_status(kid: str, status: str) -> dict | None:
+    if status not in ("confirmed", "pending", "discarded"):
+        raise ValueError(f"未知状态：{status}")
+    with brain._locked(KNOWLEDGE_FILE):
+        rows = load_knowledge()
+        rec = next((r for r in rows if r["id"] == kid), None)
+        if not rec:
+            return None
+        rec["status"] = status
+        rec["updated"] = brain.now_ts()
+        rec.setdefault("history", []).append(
+            {"ts": rec["updated"], "why": f"状态改为 {status}", "version": int(rec.get("version", 1))})
+        save_knowledge(rows)
+    return rec
+
+
+# 知识证据分级（借鉴 MisakaNet E0–E4）：一条结论有多少"被验证过"的凭据，
+# 决定它在检索里的可信权重与可否被自动改写。等级只升不降（想降级走废弃重写）。
+#   E0 一家之言（刚写进来，没人验证过）
+#   E1 亲自验证（跑通过 / 实测确认过一次）
+#   E2 复现验证（不同场景/时间再次确认）
+#   E3 多方印证（有来源记忆/外部引用佐证，或多次复现）
+#   E4 长期铁律（E3 且历经数月未被打脸，几乎不可自动改写）
+EVIDENCE_LEVELS = ("E0", "E1", "E2", "E3", "E4")
+# 检索时按等级给的加分（E4 的结论应该先被看到）
+_EVIDENCE_BOOST = {"E0": 0.0, "E1": 0.02, "E2": 0.04, "E3": 0.06, "E4": 0.08}
+
+
+def knowledge_verify(kid: str, note: str = "", level: str | None = None) -> dict:
+    """给知识条目记一次"验证"：等级自动+1（或显式指定），E4 封顶。
+
+    note 写这次验证怎么做的（跑通了什么 / 哪个场景复现 / 什么佐证），
+    会进 history 可溯源。
+    """
+    if level is not None and level not in EVIDENCE_LEVELS:
+        raise ValueError(f"等级只能是 {'/'.join(EVIDENCE_LEVELS)}")
+    with brain._locked(KNOWLEDGE_FILE):
+        rows = load_knowledge()
+        rec = next((r for r in rows if r["id"] == kid), None)
+        if not rec:
+            raise KeyError(f"没有这条知识：{kid}")
+        cur = rec.get("evidence_level", "E0")
+        if cur not in EVIDENCE_LEVELS:
+            cur = "E0"
+        new = level if level else EVIDENCE_LEVELS[min(EVIDENCE_LEVELS.index(cur) + 1, 4)]
+        if new == cur:
+            rec.setdefault("history", []).append(
+                {"ts": brain.now_ts(), "why": f"验证但等级已封顶（{cur}）"
+                 + (f"：{note}" if note else ""), "version": int(rec.get("version", 1))})
+        else:
+            rec["evidence_level"] = new
+            rec["verified_count"] = int(rec.get("verified_count", 0)) + 1
+            rec["last_verified"] = brain.now_ts()
+            rec.setdefault("history", []).append(
+                {"ts": brain.now_ts(), "why": f"验证升级 {cur}→{new}"
+                 + (f"：{note}" if note else ""), "version": int(rec.get("version", 1))})
+        rec["updated"] = brain.now_ts()
+        save_knowledge(rows)
+    return rec
+
+
+def search_knowledge(query: str, k: int = 8) -> list:
+    rows = load_knowledge()
+    if not rows or not (query or "").strip():
+        return []
+    q = brain.terms(query)
+    docs = [_kdoc(r) for r in rows]
+    idf = brain.build_idf(docs)
+    out = []
+    for rec, doc in zip(rows, docs):
+        if rec.get("status") == "discarded":
+            continue
+        score = brain.relevance(q, doc, idf)
+        if rec.get("pinned") and score > 0:
+            score = min(1.0, score + 0.05)
+        # 证据等级加分：被验证过的结论优先被看到（E0 不加分）
+        boost = _EVIDENCE_BOOST.get(rec.get("evidence_level", "E0"), 0.0)
+        if boost and score > 0.02:
+            score = min(1.0, score + boost)
+        if score > 0.02:
+            out.append((rec, score))
+    out.sort(key=lambda x: x[1], reverse=True)
+    return out[:k]
+
+
+def update_knowledge(kid: str, **fields) -> dict:
+    with brain._locked(KNOWLEDGE_FILE):
+        rows = load_knowledge()
+        rec = next((r for r in rows if r["id"] == kid), None)
+        if not rec:
+            raise KeyError(f"没有这条知识：{kid}")
+        for key in ("title", "topic", "body"):
+            if fields.get(key) is not None:
+                rec[key] = str(fields[key]).strip()
+        for key in ("points", "tags", "entities"):
+            if fields.get(key) is not None:
+                rec[key] = _dedupe(list(fields[key]))
+        if fields.get("confidence") is not None:
+            rec["confidence"] = max(0.0, min(1.0, float(fields["confidence"])))
+        if fields.get("pinned") is not None:
+            rec["pinned"] = bool(fields["pinned"])
+        rec["updated"] = brain.now_ts()
+        rec["version"] = int(rec.get("version", 1)) + 1
+        rec.setdefault("history", []).append({"ts": rec["updated"], "why": "编辑", "version": rec["version"]})
+        save_knowledge(rows)
+    return rec
+
+
+def delete_knowledge(kid: str) -> bool:
+    with brain._locked(KNOWLEDGE_FILE):
+        rows = load_knowledge()
+        keep = [r for r in rows if r["id"] != kid]
+        if len(keep) == len(rows):
+            return False
+        save_knowledge(keep)
+    return True
+
+
+def rebuild_index(rows: list | None = None, force: bool = False) -> dict:
+    rows = load_knowledge() if rows is None else rows
+    newest = max((r.get("updated") or r.get("created") or 0 for r in rows), default=0)
+    if not force and INDEX_FILE.exists():
+        try:
+            old = json.loads(INDEX_FILE.read_text(encoding="utf-8-sig"))
+        except Exception:
+            old = None
+        if (old and old.get("ids") == [r["id"] for r in rows]
+                and old.get("total") == len(rows) and old.get("data_stamp") == newest):
+            return old
+    topics, tags, entities = {}, {}, {}
+    for r in rows:
+        topics[r.get("topic", "未分类")] = topics.get(r.get("topic", "未分类"), 0) + 1
+        for t in r.get("tags") or []:
+            tags[t] = tags.get(t, 0) + 1
+        for e in r.get("entities") or []:
+            entities[e] = entities.get(e, 0) + 1
+    idx = {
+        "updated": brain.now_ts(),
+        "data_stamp": newest,
+        "total": len(rows),
+        "topics": dict(sorted(topics.items(), key=lambda x: x[1], reverse=True)),
+        "tags": dict(sorted(tags.items(), key=lambda x: x[1], reverse=True)[:60]),
+        "entities": dict(sorted(entities.items(), key=lambda x: x[1], reverse=True)[:60]),
+        "ids": [r["id"] for r in rows],
+    }
+    if brain.READONLY:
+        return idx  # 只读=只能读不能写：统计/列表不该把索引写盘
+    try:
+        brain.atomic_json(INDEX_FILE, idx)
+    except OSError:
+        pass  # 索引只是缓存，写不了也不影响读写知识本体
+    return idx
+
+
+def knowledge_stats() -> dict:
+    rows = [r for r in load_knowledge() if r.get("status") != "discarded"]
+    idx = rebuild_index(rows)
+    return {
+        "total": len(rows),
+        "topics": idx["topics"],
+        "tags": list(idx["tags"].items())[:8],
+        "words": sum(len(str(r.get("body") or "")) for r in rows),
+        "pinned": sum(1 for r in rows if r.get("pinned")),
+        "pending": sum(1 for r in rows if r.get("status") == "pending"),
+    }
+
+
+def tidy_knowledge() -> dict:
+    """机械整理：找相似簇、无主题、无标签、过短条目，产出 pending.json 交给 LLM 压缩。
+
+    O(n²) 相似度比较在锁外完成：先持锁快照知识库，算完再拿锁把报告写盘，
+    不让耗时计算长时间占着跨进程写锁阻塞其他读写方。
+    """
+    with brain._locked(KNOWLEDGE_FILE):
+        rows = [r for r in load_knowledge()
+                if r.get("status") != "discarded" and r.get("id")]   # 缺 id 的畸形条目直接跳过
+    if not rows:
+        return {"task_id": None, "clusters": [], "untagged": [], "no_topic": [], "short": [],
+                "message": "知识库还是空的"}
+
+    docs = {r["id"]: _kdoc(r) for r in rows}
+    parent = {r["id"]: r["id"] for r in rows}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    ids = list(docs)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            if brain.jaccard(docs[a], docs[b]) >= 0.45:
+                union(a, b)
+
+    groups = {}
+    for r in rows:
+        groups.setdefault(find(r["id"]), []).append(r)
+
+    clusters = []
+    for members in groups.values():
+        if len(members) > 1:
+            clusters.append({
+                "ids": [m["id"] for m in members],
+                "titles": [m.get("title", "") for m in members],
+                "hint": "这些条目在讲同一件事，建议合并成一条更准确的知识。",
+                "texts": [{"id": m["id"], "title": m.get("title", ""),
+                           "body": _clip(m.get("body", ""), 160),
+                           "points": m.get("points", []), "tags": m.get("tags", [])}
+                          for m in members],
+            })
+
+    report = {
+        "task_id": _uid("tidy_", "knowledge"),
+        "at": brain.now_ts(),
+        "stats": knowledge_stats(),
+        "clusters": clusters,
+        "untagged": [{"id": r["id"], "title": r.get("title", "")} for r in rows
+                     if not r.get("tags")],
+        "no_topic": [{"id": r["id"], "title": r.get("title", "")} for r in rows
+                     if r.get("topic") in ("", "未分类", None)],
+        "short": [{"id": r["id"], "title": r.get("title", ""),
+                   "len": len(str(r.get("body") or ""))}
+                  for r in rows if len(str(r.get("body") or "")) < 40],
+        "apply_schema": {
+            "task_id": "tidy_...",
+            "merge": [{"ids": ["k_..."], "title": "", "topic": "", "body": "",
+                       "points": [], "tags": [], "entities": []}],
+            "update": [{"id": "k_...", "topic": "", "tags": [], "body": ""}],
+            "create": [{"title": "", "topic": "", "body": "",
+                        "points": [], "tags": [], "entities": []}],
+            "delete": ["k_..."],
+            "note": "为什么这样整理，一句话",
+        },
+    }
+    KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
+    brain.atomic_json(KNOWLEDGE_DIR / "pending.json", report)
+    return report
+
+
+def apply_tidy(result: dict) -> dict:
+    with brain._locked(KNOWLEDGE_FILE):
+        rows = load_knowledge()
+        by_id = {r["id"]: r for r in rows}
+        done = {"merged": 0, "updated": 0, "created": 0, "deleted": 0}
+
+        removed = set()
+        for op in result.get("merge") or []:
+            ids = _dedupe([i for i in (op.get("ids") or []) if i in by_id])
+            if not ids:
+                continue
+            base = by_id[ids[0]]
+            for other_id in ids[1:]:
+                if other_id == base["id"]:
+                    continue   # 重复 id 不能把 base 自己当"被合并者"删掉
+                other = by_id[other_id]
+                other_body = str(other.get("body") or "")
+                base_body = str(base.get("body") or "")
+                if other_body and other_body not in base_body:
+                    base["body"] = (base_body + "\n\n" + other_body).strip()
+                base["points"] = _dedupe((base.get("points") or []) + (other.get("points") or []))
+                base["tags"] = _dedupe((base.get("tags") or []) + (other.get("tags") or []))
+                base["entities"] = _dedupe((base.get("entities") or []) + (other.get("entities") or []))
+                base["source_ids"] = _dedupe((base.get("source_ids") or []) + (other.get("source_ids") or []))
+                base["confidence"] = max(float(base.get("confidence", 0.8)), float(other.get("confidence", 0.8)))
+                removed.add(other_id)
+            for key in ("title", "topic", "body"):
+                if op.get(key):
+                    base[key] = op[key]
+            for key in ("points", "tags", "entities"):
+                if op.get(key):
+                    base[key] = _dedupe(op[key])
+            base["updated"] = brain.now_ts()
+            base["version"] = int(base.get("version", 1)) + 1
+            base["status"] = "pending"   # AI 动过的东西一律先待审核，别让它直接沉淀
+            base.setdefault("history", []).append(
+                {"ts": base["updated"], "why": "知识整理：合并 " + str(len(ids)) + " 条", "version": base["version"]})
+            done["merged"] += 1
+
+        for op in result.get("update") or []:
+            rec = by_id.get(op.get("id"))
+            if not rec:
+                continue
+            for key in ("title", "topic", "body"):
+                if op.get(key):
+                    rec[key] = op[key]
+            for key in ("points", "tags", "entities"):
+                if op.get(key):
+                    rec[key] = _dedupe(op[key])
+            rec["updated"] = brain.now_ts()
+            rec["version"] = int(rec.get("version", 1)) + 1
+            rec["status"] = "pending"   # AI 更新过 → 待审核
+            rec.setdefault("history", []).append(
+                {"ts": rec["updated"], "why": "知识整理：更新", "version": rec["version"]})
+            done["updated"] += 1
+
+        for op in result.get("create") or []:
+            if not (op.get("title") or op.get("body")):
+                continue
+            title = (op.get("title") or "").strip() or _clip(op.get("body", ""), 24)
+            rec = _new_knowledge(title, op.get("body", ""), op.get("topic", ""),
+                                 op.get("points"), op.get("tags"), op.get("entities"),
+                                 status="pending")   # AI 新建 → 待审核，别让幻觉直接入库
+            rows.append(rec)
+            by_id[rec["id"]] = rec
+            done["created"] += 1
+
+        for kid in result.get("delete") or []:
+            if kid in by_id:
+                removed.add(kid)
+
+        rows = [r for r in rows if r["id"] not in removed]
+        save_knowledge(rows)
+        # 统计真实从库里消失的条数（含合并被吃掉的那 X-1 条），别只报 delete 清单
+        done["deleted"] = len(removed)
+
+    pending = KNOWLEDGE_DIR / "pending.json"
+    if pending.exists():
+        try:
+            data = _read_json(pending)
+            data["applied_at"] = brain.now_ts()
+            data["applied_result"] = done
+            brain.atomic_json(pending, data)
+        except Exception:
+            pass
+    return done
+
+
+def tidy_state() -> dict | None:
+    path = KNOWLEDGE_DIR / "pending.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if data.get("applied_at"):
+        return None
+    return data
+
+
+# ---------------------------------------------------------------- 笔记 / 日志
+
+def load_notes() -> list:
+    raw = brain.read_jsonl(NOTES_FILE)
+    good = [r for r in raw if isinstance(r, dict) and r.get("id")]
+    if len(good) != len(raw):
+        brain.log_event("growth",
+                        f"load_notes 跳过 {len(raw) - len(good)} 条畸形条目",
+                        level="warning")
+    return good
+
+
+def save_notes(rows: list) -> None:
+    with brain._locked(NOTES_FILE):
+        brain.write_jsonl(NOTES_FILE, rows)
+
+
+def write_note(kind: str, title: str, body: str, mood: str = "", tags=None,
+               memory_ids=None, append_same_day: bool = True) -> tuple:
+    kind = kind if kind in NOTE_KINDS else "journal"
+    body = (body or "").strip()
+    title = (title or "").strip() or _clip(body, 20) or "无题"
+    today = _today()
+    # 读-改-写整段加锁（save_notes 用同一把锁，可重入）：避免并发写笔记互相覆盖
+    with brain._locked(NOTES_FILE):
+        rows = load_notes()
+        if append_same_day and kind == "journal":
+            for old in rows:
+                if old.get("type") == kind and old.get("date") == today and old.get("title") == title:
+                    old["body"] = (old.get("body", "") + "\n\n" + body).strip()
+                    old["updated"] = brain.now_ts()
+                    old["mood"] = mood or old.get("mood", "")
+                    old["tags"] = _dedupe((old.get("tags") or []) + list(tags or []))
+                    old["memory_ids"] = _dedupe((old.get("memory_ids") or []) + list(memory_ids or []))
+                    save_notes(rows)
+                    return old, "appended"
+
+        now = brain.now_ts()
+        rec = {
+            "id": _uid("n_", title),
+            "date": today,
+            "type": kind,
+            "title": title,
+            "body": body,
+            "mood": mood or "",
+            "tags": _dedupe(list(tags or [])),
+            "memory_ids": _dedupe(list(memory_ids or [])),
+            "created": now,
+            "updated": now,
+        }
+        rows.append(rec)
+        save_notes(rows)
+    return rec, "created"
+
+
+def update_note(nid: str, **fields) -> dict:
+    with brain._locked(NOTES_FILE):
+        rows = load_notes()
+        rec = next((r for r in rows if r["id"] == nid), None)
+        if not rec:
+            raise KeyError(f"没有这条笔记：{nid}")
+        for key in ("title", "body", "mood"):
+            if fields.get(key) is not None:
+                rec[key] = str(fields[key]).strip()
+        for key in ("tags", "memory_ids"):
+            if fields.get(key) is not None:
+                rec[key] = _dedupe(list(fields[key]))
+        rec["updated"] = brain.now_ts()
+        save_notes(rows)
+    return rec
+
+
+def delete_note(nid: str) -> bool:
+    with brain._locked(NOTES_FILE):
+        rows = load_notes()
+        keep = [r for r in rows if r["id"] != nid]
+        if len(keep) == len(rows):
+            return False
+        save_notes(keep)
+        return True
+
+
+def list_notes(kind: str | None = None, days: int | None = None, limit: int = 60) -> list:
+    rows = load_notes()
+    if kind:
+        rows = [r for r in rows if r.get("type") == kind]
+    if days is not None:
+        ts = brain.now_ts()
+        if days == 0:
+            # 只看今天：从本地时区当天零点算起，而不是"此刻往前 0 天"（那恒为空）
+            lt = time.localtime(ts)
+            floor = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
+        else:
+            floor = ts - days * brain.DAY
+        rows = [r for r in rows if r.get("created", 0) >= floor]
+    return sorted(rows, key=lambda r: r.get("created", 0), reverse=True)[:limit]
+
+
+def search_notes(query: str, k: int = 10) -> list:
+    rows = load_notes()
+    if not rows or not (query or "").strip():
+        return []
+    q = brain.terms(query)
+    docs = [brain.terms(" ".join([str(r.get("title") or "") * 2, str(r.get("body") or ""),
+                                  " ".join(str(t) for t in (r.get("tags") or []))])) for r in rows]
+    idf = brain.build_idf(docs)
+    out = [(r, brain.relevance(q, d, idf)) for r, d in zip(rows, docs)]
+    out = [x for x in out if x[1] > 0.02]
+    out.sort(key=lambda x: x[1], reverse=True)
+    return out[:k]
+
+
+def note_stats() -> dict:
+    rows = load_notes()
+    by_type = {}
+    for r in rows:
+        by_type[r.get("type", "journal")] = by_type.get(r.get("type", "journal"), 0) + 1
+    days = {}
+    for r in rows:
+        days[r.get("date", "")] = days.get(r.get("date", ""), 0) + 1
+    return {
+        "total": len(rows),
+        "by_type": by_type,
+        "days": len(days),
+        "last": max((r.get("created", 0) for r in rows), default=0),
+        "words": sum(len(str(r.get("body") or "")) for r in rows),
+    }
+
+
+def digest(days: int = 7) -> str:
+    """给 AI 的成长素材包：最近发生了什么、学到什么、写了什么。"""
+    now = brain.now_ts()
+    floor = now - days * brain.DAY
+    mems = [m for m in brain.load_all() if brain._num(m.get("created"), 0) >= floor]
+    kds = [k for k in load_knowledge() if brain._num(k.get("updated"), 0) >= floor]
+    nts = [n for n in load_notes() if brain._num(n.get("created"), 0) >= floor]
+    sks = list_skills()
+    evo = [r for r in load_evolution() if brain._num(r.get("ts"), 0) >= floor]
+
+    lines = [f"# 成长素材 · 最近 {days} 天", "",
+             f"- 新记忆 {len(mems)} 条，知识变动 {len(kds)} 条，笔记 {len(nts)} 条，技能 {len(sks)} 个，"
+             f"自我进化 {len(evo)} 次"]
+    if mems:
+        lines += ["", "## 值得回看的记忆"]
+        for m in sorted(mems, key=lambda x: x.get("importance", 0), reverse=True)[:12]:
+            lines.append(f"- ({m.get('kind')}/{m.get('importance')}) {brain.display_text(m)}")
+    if kds:
+        lines += ["", "## 知识变动"]
+        for k in sorted(kds, key=lambda x: x.get("updated", 0), reverse=True)[:8]:
+            lines.append(f"- [{k.get('topic')}] {k.get('title')}（v{k.get('version')}）")
+    if nts:
+        lines += ["", "## 最近写下的笔记"]
+        for n in sorted(nts, key=lambda x: x.get("created", 0), reverse=True)[:8]:
+            lines.append(f"- {n.get('date')} [{n.get('type')}] {n.get('title')}：{_clip(n.get('body', ''), 80)}")
+    if sks:
+        lines += ["", "## 我写过的技能"]
+        for s in sks:
+            lines.append(f"- {s['name']}（v{s.get('version', 1)}）{s.get('description', '')[:60]}")
+    if evo:
+        lines += ["", "## 最近的自我进化"]
+        for e in sorted(evo, key=lambda x: x.get("ts", 0), reverse=True)[:8]:
+            lines.append(f"- {e.get('date')} [{e.get('kind')}] {e.get('title')}：{_clip(e.get('detail', ''), 80)}")
+    lines += ["", "## 写复盘时回答这三个问题",
+              "1. 这段时间我对待用户的方式，哪里更好了？哪里还急？",
+              "2. 哪条旧判断被新事实推翻了？",
+              "3. 下一个想练的能力是什么？",
+              "", "把答案写进成长笔记：",
+              f'python scripts/brain.py note write "第 N 次复盘" --type growth --body "..." --tags 成长,复盘',
+              "", "把这次真正改掉的东西记进进化日志：",
+              'python scripts/brain.py evolve log "标题" --kind thinking --detail "改了什么、为什么、怎么验证"']
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- 技能自编辑
+
+def load_registry() -> dict:
+    if SKILL_REG.exists():
+        try:
+            data = _read_json(SKILL_REG)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+def save_registry(reg: dict) -> None:
+    # 内部持锁 + 条目级合并写法：调用方传过来的是旧快照，但 update() 里已经改了要改的键。
+    # 这里先 load 当前盘上的最新值，再按【每个技能条目内部】合并——只覆盖 reg 里明确
+    # 提供的字段，其余字段（如并发 install 刚写入的 installed_at）保留盘上最新值，
+    # 防止旧快照里的整条 entry 把新字段抹掉。
+    with brain._locked(SKILL_REG):
+        cur = load_registry()
+        for name, entry in reg.items():
+            if entry is None:
+                # 删除语义：调用方 pop 掉的条目要真正从盘上清掉，
+                # 否则"合并式"写法会让 remove_skill 的清档永远不生效
+                cur.pop(name, None)
+            elif isinstance(entry, dict) and isinstance(cur.get(name), dict):
+                cur[name].update(entry)
+            else:
+                cur[name] = entry
+        brain.atomic_json(SKILL_REG, cur)
+
+
+# 中文显示名 → kebab-case 目录名。DSH 的文件系统技能发现只认 kebab-case 的 name，
+# 中文名会被静默跳过（装完像"改名"或干脆不出现），所以装/查/删都统一折算成英文 slug。
+_SKILL_NAME_ALIASES = {
+    "灵枢": "lingshu",
+    "灵枢-lite": "lingshu-lite",
+    "灵枢-tiny": "lingshu-tiny",
+}
+# 反查：kebab slug → 它对应的旧中文目录名（旧版安装会把中文名当目录名）
+_SLUG_TO_LEGACY_NAME = {v: k for k, v in _SKILL_NAME_ALIASES.items()}
+# 灵枢本体的所有可识别名字（旧中文名 + 新 kebab 名），用于风险确认与"这是我自己"判定
+_SELF_NAMES = ("灵枢", "lingshu")
+
+
+def _require_slug(name: str) -> str:
+    # 统一归一化：大小写、空格、下划线都折算成连字符，保证 new / show / rm 用同一个名字都能找到
+    name = (name or "").strip().lower().replace(" ", "-").replace("_", "-")
+    name = _SKILL_NAME_ALIASES.get(name, name)   # 中文名折算成 kebab-case（DSH 才认）
+    if not SLUG_RE.match(name):
+        raise ValueError("技能名不合法：只能用字母/数字/连字符/下划线/中文，1-63 个字符")
+    if name in _WINDOWS_RESERVED:   # con/com1 这类设备名在 Windows 上建目录会失败
+        raise ValueError(f"技能名不能用 Windows 保留设备名：{name}")
+    return name
+
+
+def _skill_path(name: str) -> Path:
+    return SKILLS_DIR / _require_slug(name) / "SKILL.md"
+
+
+def read_skill(name: str) -> dict:
+    path = _skill_path(name)
+    if not path.exists():
+        raise KeyError(f"没有这个技能：{name}")
+    name = _require_slug(name)   # 归一化，保证回写 frontmatter 与目录名一致
+    text = path.read_text(encoding="utf-8")
+    meta, body = parse_frontmatter(text)
+    return {"name": name, "meta": meta, "body": body, "path": str(path), "raw": text}
+
+
+def parse_frontmatter(text: str) -> tuple:
+    """解析 YAML frontmatter。纯标准库，不引 yaml 依赖。
+
+    支持：单行 key: value、引号包裹、块标量（| 保留换行 / > 折叠为空格）、
+    以及常见简写（值里含冒号、以 # 开头）。够读 DSH / Claude / Trae 各家的 SKILL.md。
+    """
+    text = text.lstrip("\ufeff")
+    if not text.startswith("---"):
+        return {}, text
+    # 闭界必须是整行 "---"（行尾可带空白）：裸 find("\n---") 会把正文里
+    # "---xxx" 这类行误当边界，导致 head 被提前截断
+    m = re.search(r"\n---[ \t]*(?:\n|$)", text)
+    if m is None or m.start() < 3:
+        return {}, text
+    end = m.start()
+    head = text[3:end]
+    body = text[m.end():].lstrip("\n")
+
+    meta = {}
+    lines = head.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            i += 1
+            continue
+        if ":" not in line:
+            i += 1
+            continue
+        key, val = line.split(":", 1)
+        key = key.strip()
+        val = val.strip()
+        if val in ("|", ">", "|-", ">-", "|+", ">+"):
+            # 块标量：收集后续缩进行
+            block, j = [], i + 1
+            while j < len(lines):
+                nxt = lines[j]
+                if nxt.strip() and not nxt.startswith((" ", "\t")):
+                    break
+                block.append(nxt.strip())
+                j += 1
+            sep = "\n" if val.startswith("|") else " "
+            meta[key] = sep.join(x for x in block if x)
+            i = j
+            continue
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1]
+        meta[key] = val
+        i += 1
+    return meta, body
+
+
+def _compose(name: str, description: str, body: str, version: int, created: str, updated: str,
+             origin: str = "灵枢") -> str:
+    description = re.sub(r"\s+", " ", description).strip()
+    return (
+        "---\n"
+        f"name: {name}\n"
+        f"description: {description}\n"
+        f"origin: {origin}\n"
+        f"version: {version}\n"
+        f"created: {created}\n"
+        f"updated: {updated}\n"
+        "---\n\n"
+        + body.strip() + "\n"
+    )
+
+
+def create_skill(name: str, description: str, body: str, overwrite: bool = False,
+                 origin: str = "灵枢") -> dict:
+    name = _require_slug(name)   # 含中文名折算成 slug，保证 frontmatter name 与目录名一致
+    description = (description or "").strip()
+    body = (body or "").strip()
+    if len(description) < 12:
+        raise ValueError("description 太短：要写清「什么时候该用这个技能」，至少 12 个字")
+    if len(body) < 40:
+        raise ValueError("正文太短：至少写清用途、步骤、注意事项")
+    path = _skill_path(name)
+    if path.exists() and not overwrite:
+        raise FileExistsError(f"技能 {name} 已存在；要改内容用 skill edit，要覆盖用 --force")
+    # 读-改-写整段加锁 + 原子写：并发 create/edit 后写者覆盖前者、崩溃留下半截
+    # SKILL.md，都会让技能静默损坏——与 save_registry 同一把文件锁串行化。
+    with brain._locked(SKILL_REG):
+        created = _today()
+        old = read_skill(name) if path.exists() else None
+        version = int(old["meta"].get("version", 1)) + 1 if old else 1
+        if old:
+            created = old["meta"].get("created", created)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(path, _compose(name, description, body, version, created, _today(), origin))
+
+        reg = load_registry()
+        old = reg.get(name) or {}
+        reg[name] = {"description": description, "version": version,
+                     "created": old.get("created", brain.now_ts()),
+                     "updated": brain.now_ts()}
+        # installed_at 不在重建条目里：save_registry 的 dict-update 分支只合并给出的键，
+        # 漏写即保留盘上原值——避免把 install 刚写的安装时间覆盖回 None
+        save_registry(reg)
+    return {"name": name, "path": str(path), "version": version}
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """原子写文本文件：先写临时文件再 os.replace，崩溃不留半截文件。"""
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def edit_skill(name: str, body: str | None = None, append: str | None = None,
+               description: str | None = None) -> dict:
+    name = _require_slug(name)   # 归一化后再回写 frontmatter，避免名字漂移
+    cur = read_skill(name)
+    meta = cur["meta"]
+    new_body = (body if body is not None else cur["body"])
+    if append:
+        new_body = new_body.rstrip() + "\n\n" + append.strip()
+    if len(new_body.strip()) < 40:
+        raise ValueError("正文太短，技能至少要有用途、步骤、注意事项")
+    # 与 create_skill 同锁同原子写：防并发 edit 互相覆盖、崩溃留半截文件
+    with brain._locked(SKILL_REG):
+        cur2 = read_skill(name)   # 锁内重读：拿到并发改动后的最新版本，别基于旧快照 +1
+        meta2 = cur2["meta"]
+        latest = (body if body is not None else cur2["body"])
+        if append:
+            latest = latest.rstrip() + "\n\n" + append.strip()
+        version = int(meta2.get("version", 1)) + 1
+        created = meta2.get("created") or _today()
+        final_desc = description if description is not None else meta2.get("description", "")
+        _atomic_write_text(Path(cur2["path"]),
+                           _compose(name, final_desc, latest, version, created, _today(),
+                                    meta2.get("origin", "灵枢")))
+        reg = load_registry()
+        reg[name] = {"description": final_desc, "version": version,
+                     "created": (reg.get(name) or {}).get("created", brain.now_ts()),
+                     "updated": brain.now_ts()}
+        # 同 create：不重建 installed_at，保留盘上原值
+        save_registry(reg)
+    return {"name": name, "version": version, "path": cur2["path"]}
+
+
+def _ver(v) -> object:
+    """版本号容错：自建技能是自增整数，本体是语义化版本（2.11.2）。
+    直接 int('2.11.2') 会抛 ValueError 把 skill list 整个搞崩，这里退化成原串。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return str(v or "1").strip() or "1"
+
+
+def _find_installed(name: str) -> Path:
+    """在全局目录（多根：DSH/Trae）里找 name 技能的目录；找不到返回主目录下的默认路径。"""
+    # 第一优先：当前进程自己所在的技能根（面板从哪跑就认哪）——
+    # 面板跑在某个全局副本里时，检测/更新必须针对那个副本，而不是探测顺序的第一个根
+    panel = _panel_root() / name
+    if (panel / "SKILL.md").is_file():
+        return panel
+    for r in _global_roots():
+        p = r / name
+        if (p / "SKILL.md").is_file():
+            return p
+    return GLOBAL_SKILLS / name
+
+
+def list_installed() -> list:
+    """列出已装进全局技能目录的技能。
+
+    DSH 的文件系统技能发现只认 kebab-case 的 name，中文名会被静默跳过，
+    所以这里额外核对「目录名 == frontmatter name（kebab）」：不一致就标 ✗，
+    让用户一眼看出为什么装了却不出现。多全局目录（DSH/Trae）都会扫。
+    """
+    out = []
+    for root in _global_roots():
+        if not root.exists():
+            continue
+        for d in sorted(root.iterdir()):
+            p = d / "SKILL.md"
+            if not p.is_file():
+                continue
+            try:
+                meta, _ = parse_frontmatter(p.read_text(encoding="utf-8-sig"))
+            except OSError:
+                meta = {}
+            name = (meta.get("name") or d.name).strip()
+            try:
+                ok = d.name == _require_slug(name)
+            except ValueError:
+                ok = False
+            out.append({
+                "dir": d.name,
+                "root": str(root),
+                "name": name,
+                "version": _ver(meta.get("version", 1)),
+                "ok": ok,
+                "agents": (d / "AGENTS.md").exists(),
+                "path": str(p),
+            })
+    return out
+
+
+def _diff_signature(dir_path: Path) -> set:
+    """目录内容的差异签名：相对路径 + 大小 + mtime 取整秒。
+    用于对比"本地源目录"和"全局已装副本"是否一致，判断有没有可更新的内容。"""
+    sig = set()
+    if not dir_path.is_dir():
+        return sig
+    for f in dir_path.rglob("*"):
+        if not f.is_file() or "__pycache__" in f.parts or ".git" in f.parts:
+            continue
+        # AGENTS.md 是安装时重新生成的（区块化更新，含时间性内容），不参与差异判定
+        # .lingshu-source 是远程缓存的来源标记（缓存元数据），副本里没有——
+        # 不排除的话远程源签名永远比副本多一个文件，每次检查都误报 outdated
+        # .lingshu-sha 是远程缓存的提交 SHA 标记，同属缓存元数据，一并排除
+        if (f.name.endswith((".tmp", ".pyc", ".lock", ".corrupt"))
+                or f.name in ("AGENTS.md", ".lingshu-source", ".lingshu-sha")):
+            continue
+        try:
+            st = f.stat()
+            sig.add((f.relative_to(dir_path).as_posix(), st.st_size, int(st.st_mtime)))
+        except OSError:
+            continue
+    return sig
+
+
+def _real_drift(src_sig: set, dst_sig: set) -> bool:
+    """签名有差时判断是不是"真差异"（该提示更新的那种）。
+
+    两类真差异，不依赖版本号就能认定：
+    - 文件级差异：源有副本没有（副本残缺，换盘符场景）、或副本有源没有的文件；
+    - 关键文件内容变了：SKILL.md / scripts / assets 下同名文件大小不同
+      （mtime 单独抖动不算，安装复制本身就会带出新 mtime）。
+    其余（同名同大小的纯 mtime 抖动）不算——交给版本号闸门兜底。
+    """
+    src_rels = {rel for rel, *_ in src_sig}
+    dst_rels = {rel for rel, *_ in dst_sig}
+    if src_rels != dst_rels:  # 有文件增删 = 残缺或多余，真差异
+        return True
+    src_by_rel = {rel: (size, mtime) for rel, size, mtime in src_sig}
+    for rel, size, _ in dst_sig:
+        if size != src_by_rel.get(rel, (size,))[0]:
+            # 大小不同：SKILL.md/scripts/assets 是要紧东西，算真差异；
+            # 其他零散文件（日志/缓存类）留给版本号闸门
+            if rel == "SKILL.md" or rel.startswith(("scripts/", "assets/")):
+                return True
+    return False
+
+
+def list_skills() -> list:
+    reg = load_registry()
+    out = []
+    if SKILLS_DIR.exists():
+        for d in sorted(SKILLS_DIR.iterdir()):
+            p = d / "SKILL.md"
+            if not p.is_file():
+                continue
+            try:
+                meta, body = parse_frontmatter(p.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, ValueError):
+                # SKILL.md 读不出来/解析失败（手改坏了、编码异常）：跳过，不能让列表整个崩
+                brain.log_event("growth", f"list_skills 跳过损坏技能 {d.name}", level="warn")
+                continue
+            name = meta.get("name") or d.name
+            try:
+                installed_dir = _find_installed(_require_slug(name))
+            except ValueError:
+                installed_dir = _find_installed(name)
+            # 有更新检测：本地源与全局已装副本内容不一致（副本存在但内容有差异）。
+            # 双保险 2.0：纯 mtime 抖动（同名同大小）必须版本号真变了才算过期；
+            # 但副本残缺/关键文件内容变化（_real_drift）不依赖版本号就能认定——
+            # 忘了升版本号时用户也不会卡死在损坏副本上。
+            installed = (installed_dir / "SKILL.md").exists()
+            outdated = False
+            if installed and installed_dir.resolve() != d.resolve():
+                try:
+                    inst_meta, _ = parse_frontmatter((installed_dir / "SKILL.md").read_text(encoding="utf-8"))
+                except OSError:
+                    inst_meta = {}
+                src_sig, dst_sig = _diff_signature(d), _diff_signature(installed_dir)
+                outdated = (src_sig != dst_sig
+                            and (_real_drift(src_sig, dst_sig)
+                                 or _ver(meta.get("version", 1)) != _ver(inst_meta.get("version", 1))))
+            out.append({
+                "name": name,
+                "description": meta.get("description", ""),
+                "version": _ver(meta.get("version", reg.get(name, {}).get("version", 1) or 1)),
+                "lines": len(body.splitlines()),
+                "updated": p.stat().st_mtime,
+                "installed": installed,
+                "outdated": outdated,
+                "agents": (installed_dir / "AGENTS.md").exists(),
+                "path": str(p),
+            })
+    return sorted(out, key=lambda x: x["updated"], reverse=True)
+
+
+# ---- 远程拉取源（Gitee 优先，GitHub 兜底） --------------------------------
+# 灵枢本体的更新源只走远程拉取：先试 Gitee（API → zip 归档），失败再试 GitHub
+# API，都失败才降级为"源即副本"。纯标准库（urllib/zipfile，30s 超时），逐文件
+# base64 拉取。Gitee 匿名 API 会触发 IP 风控（403），GitHub 匿名限额 60 次/小时
+# 按 IP 共享易耗尽；可在 config.json 配 gitee_token / github_token 走认证
+# （python scripts/brain.py config set gitee_token <token>）。token 绝不写日志。
+GITEE_API_BASE = "https://gitee.com/api/v5/repos/htmcwy_0/lingshu-skill"
+GITEE_BRANCH = "main"
+GITHUB_REPO = "266767398/lingshu-skill"
+GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_REPO}"
+GITHUB_BRANCH = "main"
+GITEE_ZIP_URL = f"https://gitee.com/htmcwy_0/lingshu-skill/repository/archive/{GITEE_BRANCH}.zip"
+REMOTE_TIMEOUT = 30  # 下载超时（秒）
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+import json as _json
+import urllib.request as _urlreq
+import urllib.parse as _urlparse
+
+
+def _remote_cache_dir() -> Path:
+    """远程拉取缓存的临时目录（系统 temp 下带仓库标识，进程存活期间复用）。
+
+    Gitee 与 GitHub 两个远端共用一份会话缓存（拿到哪个就用哪个，内容等价）。
+    """
+    import tempfile
+    d = Path(os.environ.get("TEMP") or os.environ.get("TMP") or tempfile.gettempdir())
+    return d / "lingshu-gitee-src"
+
+
+# 缓存时效：面板进程长期挂着时，旧缓存会让"检查更新"永远显示已最新。
+# 超过 10 分钟自动重拉一次（点「更新」仍无条件 force）。
+REMOTE_CACHE_TTL = 600.0
+
+# 「检查更新」结果缓存：面板打开就自动查一次，若每次都同步拉远程会卡十几秒
+# （还会因为用户中途关页面触发断连报错）。所以结果落盘复用：
+#   自动检查（auto=1）→ 只读缓存，不联网；手动检查（refresh=1）→ 联网并刷新缓存。
+UPDATE_CACHE_FILE = HOME / "update_check.json"
+UPDATE_CACHE_TTL = 6 * 3600.0   # 缓存 6 小时内视为可信
+
+
+def _remote_token(host: str) -> str:
+    """取可选的认证 token（gitee/github），未配置返回空串。绝不打日志。
+
+    优先读环境变量（免改配置文件）：Gitee 用 GITEE_TOKEN / LINGSHU_GITEE_TOKEN，
+    GitHub 用 GITHUB_TOKEN / LINGSHU_GITHUB_TOKEN / GH_TOKEN；都没有再回退到
+    brain 配置文件里的 <host>_token 字段。
+    """
+    env_names = {
+        "gitee": ("GITEE_TOKEN", "LINGSHU_GITEE_TOKEN"),
+        "github": ("GITHUB_TOKEN", "LINGSHU_GITHUB_TOKEN", "GH_TOKEN"),
+    }.get(host, ())
+    for name in env_names:
+        val = str(os.environ.get(name, "") or "").strip()
+        if val:
+            return val
+    try:
+        return str(brain.load_config().get(f"{host}_token", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _remote_api(url: str, host: str = "") -> object:
+    """调 REST 接口，配置了 token 则带认证头，否则匿名。失败抛异常由调用方降级。
+
+    瞬时网络错误自动重试（最多 3 次，间隔递增）：下载中途断流（IncompleteRead）、
+    连接被掐、超时这类抖动重试一次通常就过。403/429 限流按 Retry-After（或递增
+    退避）等一等再重试（最多 2 次）；但 GitHub 匿名配额耗尽（60 次/小时）等再久
+    也没用，直接抛带 token 设置提示的友好错误。其余 4xx/5xx 属于远端明确拒绝
+    （风控/权限），重试无意义，直接抛给上层走降级链路。
+    """
+    headers = {"User-Agent": "lingshu-updater", "Accept": "application/json"}
+    token = _remote_token(host)
+    if token and host == "gitee":
+        headers["PRIVATE-TOKEN"] = token
+    elif token and host == "github":
+        headers["Authorization"] = f"Bearer {token}"
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(3):
+        req = _urlreq.Request(url, headers=headers)
+        try:
+            with _urlreq.urlopen(req, timeout=REMOTE_TIMEOUT) as resp:
+                body = resp.read()
+                # HTML 风控页可能以 HTTP 200 返回（Gitee 匿名被风控的典型形态），
+                # 在 JSON 解析前拦住，报带 token 提示的可读错误而不是难懂 KeyError。
+                ctype = str((resp.headers or {}).get("Content-Type", "")).lower()
+                head = body[:1].lstrip()
+                if "text/html" in ctype or head == b"<":
+                    raise RuntimeError(
+                        f"{host or '远端'} 返回 HTML 风控页而非 JSON（HTTP 200）。"
+                        "Gitee 匿名请求被风控，可设置 GITEE_TOKEN 环境变量绕过")
+                return _json.loads(body.decode("utf-8"))
+        except _urlreq.HTTPError as e:
+            # GitHub 匿名配额耗尽：要等就得等一小时，重试无意义，给可操作提示
+            if (e.code == 403 and host == "github"
+                    and (e.headers or {}).get("X-RateLimit-Remaining") == "0"):
+                raise RuntimeError(
+                    "GitHub API 配额耗尽（匿名 60 次/小时），"
+                    "可设置 GITHUB_TOKEN 环境变量提高配额") from e
+            # 403/429 限流：按 Retry-After（秒）或递增退避等一等，最多重试 2 次
+            if e.code in (403, 429) and attempt < 2:
+                try:
+                    wait = float((e.headers or {}).get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    wait = 0.0
+                # 远端给的 Retry-After 可能大到离谱（如 GitHub 配额 3600s）：
+                # 封顶 30 秒，超时就按退避上限等——不能被一个数字挂死调用方
+                wait = min(wait, 30.0)
+                time.sleep(wait if wait > 0 else 0.5 * (attempt + 1) * 2)
+                last_exc = e
+                continue
+            raise   # 其余远端明确拒绝，重试无意义
+        # IncompleteRead 是 HTTPException 子类，下载中途断流时 urlopen 抛出的
+        # 是它而非 OSError/URLError，必须一并纳入重试，否则抖动一次就直接失败。
+        except (OSError, _urlreq.URLError, http.client.IncompleteRead,
+                http.client.HTTPException) as e:
+            last_exc = e
+            time.sleep(0.5 * (attempt + 1))
+    raise last_exc
+
+
+def _fetch_gitee_zip_source() -> Path:
+    """Gitee API 被 403 风控时的兜底：直下仓库 zip 归档（浏览器 UA）并解压。
+
+    校验 zip 签名（PK\\x03\\x04）与 SKILL.md 存在，返回解压后真实根目录。
+    失败（HTML 验证页/损坏归档/无 SKILL.md）抛异常，由调用方走下一链路。
+    """
+    import zipfile
+    import tempfile
+    from uuid import uuid4
+    cache = _remote_cache_dir()
+    # staging 带进程+随机后缀：多进程（面板+CLI）同时拉取时互不踩踏，
+    # 用完即删（成功时被 rename 走，失败时 finally 清理）
+    staging = cache / f"staging-{os.getpid()}-{uuid4().hex[:8]}"
+    staging.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".zip", dir=str(cache))
+    try:
+        # 配置了 token 则走 query 参数认证（Gitee 归档下载不支持 header token）
+        zip_url = GITEE_ZIP_URL
+        gitee_token = _remote_token("gitee")
+        if gitee_token:
+            sep = "&" if "?" in zip_url else "?"
+            zip_url = f"{zip_url}{sep}access_token={_urlparse.quote(gitee_token, safe='')}"
+        req = _urlreq.Request(zip_url, headers={
+            "User-Agent": BROWSER_UA, "Accept": "application/zip"})
+        # fd 先包进 with：urlopen 失败时也能正确关闭，不泄漏文件描述符。
+        # 分块写入落盘（resp.read() 全量进内存在仓库变大后峰值不可控），
+        # 超过 50MB 认为指错仓库，主动中止。
+        limit = 50 * 1024 * 1024
+        with os.fdopen(fd, "wb") as f, \
+                _urlreq.urlopen(req, timeout=REMOTE_TIMEOUT) as resp:
+            total = 0
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    raise RuntimeError("Gitee zip 归档超过 50MB 上限（可能指错仓库），已停止")
+                f.write(chunk)
+        with open(tmp, "rb") as f:
+            if f.read(4) != b"PK\x03\x04":
+                raise RuntimeError(
+                    "Gitee zip 归档签名校验失败（拿到的是 HTML 风控页）。"
+                    "Gitee 匿名下载被风控，可设置 GITEE_TOKEN 环境变量绕过；"
+                    "稍后重试或用 --force 重拉")
+        with zipfile.ZipFile(tmp) as zf:
+            # 防 zip slip：归档里出现 ../ 或绝对路径的成员名一律拒绝解压
+            for member in zf.namelist():
+                p = (staging / member).resolve()
+                if not str(p).startswith(str(staging.resolve())):
+                    raise RuntimeError(f"Gitee zip 归档含非法路径成员：{member}")
+            zf.extractall(staging)
+        # Gitee 归档带一层顶层目录，定位含 SKILL.md 的真实根。
+        if (staging / "SKILL.md").is_file():
+            real_root = staging
+        else:
+            real_root = next(
+                (d for d in sorted(staging.iterdir())
+                 if d.is_dir() and (d / "SKILL.md").is_file()), None)
+        if real_root is None:
+            raise RuntimeError("Gitee zip 归档解压后找不到 SKILL.md")
+        # 全部校验通过后才替换正式缓存（防止半截解压被当成有效缓存复用）。
+        if real_root is staging:
+            _atomic_replace_dir(staging, cache / "extracted")
+        else:
+            _atomic_replace_dir(real_root, cache / "extracted")
+        _mark_source(cache, "gitee")
+        return cache / "extracted"
+    except _urlreq.HTTPError as e:
+        if e.code == 403:
+            raise RuntimeError("Gitee 归档直下也被风控（403）") from e
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _fetch_git_source(repo_url: str, branch: str, source: str) -> Path:
+    """用 git clone --depth 1 拉远程源（绕过 Gitee/GitHub REST API 匿名限流）。
+
+    git smart-http 协议不限流，是 API/zip 都被风控时的可靠兜底。成功返回缓存
+    目录，失败抛异常。
+    """
+    import subprocess
+    from uuid import uuid4
+    git = shutil.which("git")
+    if not git:
+        raise RuntimeError("未找到 git 命令，无法用 git 协议拉取")
+    cache = _remote_cache_dir()
+    staging = cache / f"staging-git-{os.getpid()}-{uuid4().hex[:8]}"
+    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        # --depth 1 浅克隆最快；--single-branch 只拉目标分支
+        subprocess.run(
+            [git, "clone", "--depth", "1", "--single-branch",
+             "--branch", branch, repo_url, str(staging)],
+            check=True, capture_output=True, text=True, timeout=REMOTE_TIMEOUT)
+        if not (staging / "SKILL.md").is_file():
+            raise RuntimeError("git 克隆后找不到 SKILL.md（仓库结构不符）")
+        # 拿 HEAD SHA 写标记，供下次 SHA 快路径命中
+        try:
+            sha = subprocess.run(
+                [git, "-C", str(staging), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+        except Exception:
+            sha = ""
+        if sha:
+            try:
+                (staging / ".lingshu-sha").write_text(sha, encoding="utf-8")
+            except OSError:
+                pass
+        _atomic_replace_dir(staging, cache / "extracted")
+        _mark_source(cache, source)
+        return cache / "extracted"
+    except subprocess.CalledProcessError as e:
+        msg = (e.stderr or e.stdout or "").strip().splitlines()[-1] if (e.stderr or e.stdout) else str(e)
+        raise RuntimeError(f"git clone 失败：{msg}") from e
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _rmtree_force(path) -> None:
+    """强制删除目录树：Windows 下 git 对象 pack 文件带只读位，普通 rmtree
+    会报 Permission denied。ignore_errors=True 会吞掉 onerror 回调（3.12 起
+    onerror 已弃用且与 ignore_errors 互斥），所以这里手动两段式：先常规删，
+    失败就逐个摘掉只读位再删；删不干净的静默放弃（ignore_errors 语义）。"""
+    if not path or not os.path.exists(path):
+        return
+    try:
+        shutil.rmtree(path)
+        return
+    except OSError:
+        pass
+    import stat as _stat
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                os.chmod(os.path.join(root, name), _stat.S_IWRITE)
+            except OSError:
+                pass
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        pass
+
+
+def _atomic_replace_dir(src: Path, dst: Path) -> None:
+    """把 staging 目录原子替换为正式缓存目录。
+
+    Windows 的 Path.rename 不能覆盖已存在的目录，所以顺序是：先把旧目录挪到
+    .old（挪不动说明有进程正占用，退化为直接删），再 rename staging 进来，
+    最后清掉 .old。任何一步失败都不会让 dst 处于半截状态。
+    """
+    old = dst.parent / (dst.name + ".old")
+    if old.exists():
+        _rmtree_force(old)
+    if dst.exists():
+        moved = False
+        # Windows 杀软/索引器会瞬时锁住目录导致 rename 失败，重试几次常能过
+        for _ in range(3):
+            try:
+                dst.rename(old)
+                moved = True
+                break
+            except OSError:
+                time.sleep(0.2)
+        if not moved:
+            _rmtree_force(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # 最终 rename 也可能撞上占用（杀软/并发进程在两次检查之间重建了 dst），
+    # 重试并清掉重建的 dst；实在挪不过去就整树复制兜底，保证更新落地不报 183
+    moved = False
+    for _ in range(3):
+        try:
+            src.rename(dst)
+            moved = True
+            break
+        except OSError:
+            _rmtree_force(dst)
+            time.sleep(0.3)
+    if not moved:
+        # 非原子，但 rename 都过不去时的可靠兜底
+        _rmtree_force(dst)
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+        _rmtree_force(src)
+    if old.exists():
+        _rmtree_force(old)
+
+
+# 测试注入点：非 None 时替代 shutil.copy2（参数：源, 目标, 已复制文件数）。
+# test_apply_update.py 用它在第 N 个文件处抛异常，模拟复制中途被打断。
+_COPY_HOOK = None
+
+
+def _sha256_file(p: Path) -> str:
+    """流式计算文件 SHA256（大文件也不吃内存）。"""
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _is_runtime_junk(rel: str, name: str) -> bool:
+    """运行期产物/缓存元数据：不参与部署、校验与「多余文件」归档判定。"""
+    parts = Path(rel).parts
+    if "__pycache__" in parts or ".git" in parts:
+        return True
+    return (name.endswith((".tmp", ".pyc", ".pyo", ".lock", ".corrupt"))
+            or name in (".lingshu-source", ".lingshu-sha"))
+
+
+def _rollback_from_backup(backup: Path, dst_dir: Path) -> None:
+    """从备份完整回滚：把备份里的 previous 整树复制回目标目录。
+
+    用复制而不是 _atomic_replace_dir（后者会把备份源目录 rename 走，回滚成功
+    就没了退路——回滚本身也可能中途失败，必须保留备份）。回滚后再失败就抛出，
+    绝不静默吞掉：宁可见到报错也不能留下半新半旧还假装成功。
+    """
+    prev = backup / "previous"
+    if not prev.is_dir():
+        return
+    _rmtree_force(dst_dir)
+    shutil.copytree(prev, dst_dir)
+
+
+def apply_update(src_dir: Path, dst_dir: Path,
+                 extra_files: dict | None = None) -> Path:
+    """技能更新原子化 staging 部署：SHA256 校验 → 全量备份 → 原子替换 → 回滚兜底
+    → 多余文件归档。
+
+    流程（任一步失败都不允许出现半新半旧状态）：
+    1. 把源目录清单内的文件完整复制到同卷 staging 目录，逐文件算 SHA256；
+       源目录带 manifest.json 时，清单就是发布范围（未列入的文件不部署），
+       且 staging 里的每个文件哈希必须与清单一致，有一处不符整个更新立即失败
+       （什么都不动）。
+    2. 部署前对目标目录做时间戳命名的全量备份：
+       <dst 同级>/_lingshu-backups/apply-YYYYmmdd-HHMMSS/previous/
+    3. _atomic_replace_dir 原子替换；替换抛出任何异常都从备份完整回滚。
+    4. 部署完成后对比「staging 清单 vs 目标目录实际文件」：清单外文件移动到
+       备份目录的 removed/ 子路径（只移动不删除），保证本地与清单严格一致。
+    extra_files：额外注入的文本文件（rel 路径 → 内容），如区块化合并后的 AGENTS.md。
+    返回目标目录 SKILL.md 路径；失败抛异常。
+    """
+    src_dir, dst_dir = Path(src_dir), Path(dst_dir)
+    if not (src_dir / "SKILL.md").is_file():
+        raise KeyError(f"更新源缺少 SKILL.md：{src_dir}")
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    backup_root = dst_dir.parent / "_lingshu-backups"
+    backup = backup_root / f"apply-{ts}"
+    staging = dst_dir.parent / f"{dst_dir.name}.apply-staging-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    staging.mkdir(parents=True)
+    # 源目录若带 manifest.json（发布时由 make_manifest.py 生成），取文件级哈希做校验基准
+    src_manifest = None
+    mf = src_dir / "manifest.json"
+    if mf.is_file():
+        try:
+            src_manifest = _read_json(mf).get("files") or {}
+        except (OSError, ValueError):
+            src_manifest = None
+    staged: dict[str, str] = {}   # 相对路径 → staging 里实际文件的 SHA256
+    try:
+        for item in src_dir.rglob("*"):
+            if not item.is_file():
+                continue
+            rel = item.relative_to(src_dir).as_posix()
+            if _is_runtime_junk(rel, item.name) or rel == "manifest.json":
+                continue
+            # 清单即发布范围：源带 manifest.json 时只部署清单内的文件。
+            # 测试脚本 / AstrBot 宿主插件等已被 make_manifest.py 排除，不会装进
+            # 用户机器；插件目录（cordis-plugin/）在清单里，随技能一起更新。
+            if src_manifest and rel not in src_manifest:
+                continue
+            target = staging / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if _COPY_HOOK is not None:
+                _COPY_HOOK(item, target, len(staged))
+            else:
+                shutil.copy2(item, target)
+            staged[rel] = _sha256_file(target)
+        for rel, text in (extra_files or {}).items():
+            target = staging / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+            staged[rel] = _sha256_file(target)
+        # SHA256 门禁：清单里有哈希的文件必须逐一匹配，不符即整体失败
+        if src_manifest:
+            bad = [r for r, sha in staged.items()
+                   if r in src_manifest
+                   and str(src_manifest[r].get("sha256", "")).lower() != sha.lower()]
+            if bad:
+                raise ValueError("SHA256 校验失败（已终止，目标目录未做任何改动）："
+                                 + ", ".join(bad[:5]))
+        # 全量备份（目标已存在时才需要回滚退路）
+        backup.mkdir(parents=True, exist_ok=True)
+        if dst_dir.exists():
+            shutil.copytree(dst_dir, backup / "previous")
+        try:
+            _atomic_replace_dir(staging, dst_dir)
+        except BaseException:
+            _rollback_from_backup(backup, dst_dir)
+            raise
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(staging, ignore_errors=True)   # staging 已被 rename 走，清理是兜底
+    # 多余文件归档：目标目录里不在本次清单内的文件 → 备份目录 removed/（只移动不删除）。
+    # 注意 _atomic_replace_dir 是整目录镜像（旧目录整体挪走后删除），所以清单外文件
+    # 要从备份的 previous/ 里捞出来归档——旧目录本体在替换后已被清掉。
+    removed_dir = backup / "removed"
+    removed: list[str] = []
+    prev = backup / "previous"
+    if prev.is_dir():
+        for f in prev.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(prev).as_posix()
+            if rel in staged or _is_runtime_junk(rel, f.name):
+                continue
+            dest = removed_dir / rel
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(f), str(dest))
+                removed.append(rel)
+            except OSError:
+                pass   # 被占用移不动：留在备份里，不影响本次部署有效性
+    result = dst_dir / "SKILL.md"
+    try:
+        (backup / "apply-report.json").write_text(json.dumps({
+            "ts": ts, "src": str(src_dir), "dst": str(dst_dir),
+            "files": len(staged), "removed": removed,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def _mark_source(cache: Path, source: str) -> None:
+    """把远程缓存的实际来源写进标记文件，命中缓存时回读，来源显示不失真。"""
+    try:
+        (cache / "extracted" / ".lingshu-source").write_text(source, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _cached_source(cache: Path) -> str:
+    try:
+        return (cache / "extracted" / ".lingshu-source").read_text(
+            encoding="utf-8").strip() or "gitee"
+    except OSError:
+        return "gitee"
+
+
+def _cached_sha(cache: Path) -> str:
+    try:
+        return (cache / "extracted" / ".lingshu-sha").read_text(
+            encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _remote_head_info(api_base: str, branch: str, host: str) -> tuple[str, str]:
+    """拿远端分支最新 commit 的 (SHA, 提交时间 ISO8601)（1 次轻量请求）。
+
+    用途：① 检查更新时先比 SHA——远端没新提交就直接用缓存（秒回）；② 双远端
+    互为镜像时按提交时间挑新的那个拉。时间拿不到时返回空串（调用方按优先级
+    兜底）。失败返回 ("", "")（调用方退回原慢路径）。
+    """
+    try:
+        info = _remote_api(f"{api_base}/branches/{branch}", host)
+        c = info.get("commit") or {}
+        sha = str(c.get("sha") or "")
+        # Gitee v5 与 GitHub API 的分支接口都返回 commit.commit.author.date
+        date = str((((c.get("commit") or {}).get("author")) or {}).get("date") or "")
+        return sha, date
+    except Exception:
+        return "", ""
+
+
+def _remote_head_sha(api_base: str, branch: str, host: str) -> str:
+    """拿远端分支最新 commit SHA（_remote_head_info 的 SHA-only 便捷封装）。"""
+    return _remote_head_info(api_base, branch, host)[0]
+
+
+def _fetch_tree_source(api_base: str, branch: str, label: str, host: str,
+                       expected_sha: str = "") -> Path:
+    """从指定 REST 接口拉取分支全部文件到临时缓存目录，返回含 SKILL.md 的根。
+
+    先取仓库目录树（recursive=1），再逐个取文本文件内容（base64 解码）。仓库
+    规模小（几十个文件），总量可控。失败抛异常由调用方降级。
+    expected_sha 非空时写入 .lingshu-sha 标记，供下次秒级缓存命中。
+    """
+    import base64
+    cache = _remote_cache_dir()
+    cache.mkdir(parents=True, exist_ok=True)
+    # staging 路径带进程唯一后缀：_remote_lock 只是线程锁，跨不了进程。两个
+    # 面板进程同时检查更新会同时 rmtree/mkdir 同一个固定 staging 互相踩踏；
+    # 改为每次新建、用完即删，避免跨进程互斥的复杂度。
+    staging = cache / f"staging-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    staging.mkdir(parents=True)
+    try:
+        tree = _remote_api(f"{api_base}/git/trees/{branch}?recursive=1", host)
+        entries = tree.get("tree") or []
+        if not entries:
+            raise RuntimeError(f"{label} 目录树为空")
+        # 遍历树中所有文件条目（跳过目录），逐个取 base64 内容解码落盘
+        for item in entries:
+            if item.get("type") != "blob":
+                continue
+            rel = str(item.get("path") or "")
+            if not rel:
+                continue
+            resp = _remote_api(f"{api_base}/contents/{_urlparse.quote(rel)}?ref={branch}", host)
+            content = str(resp.get("content") or "")
+            if not resp.get("encoding") == "base64" or not content:
+                raise RuntimeError(f"{label} 文件内容异常：{rel}")
+            data = base64.b64decode(content)
+            dest = (staging / rel).resolve()
+            # 防路径穿越：resolve 后必须仍在 staging 内
+            if not str(dest).startswith(str(staging.resolve())):
+                raise RuntimeError(f"{label} 树含非法路径条目：{rel}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        if not (staging / "SKILL.md").is_file():
+            raise RuntimeError(f"{label} 拉取完成后找不到 SKILL.md")
+        if expected_sha:
+            (staging / ".lingshu-sha").write_text(expected_sha, encoding="utf-8")
+        # 全部校验通过后才替换正式缓存（防止半截拉取被当成有效缓存复用）
+        _atomic_replace_dir(staging, cache / "extracted")
+        _mark_source(cache, host)
+        return cache / "extracted"
+    finally:
+        # 用完即删自己的 staging（成功时已被 rename 走，exist_errors 兜底）
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+# 远程拉取串行化：面板多线程同时点「检查更新/更新」时，两个线程会同时
+# rmtree / mkdir / rename 同一个缓存目录互相踩踏，这里用模块级锁整体串行。
+_remote_lock = threading.Lock()
+
+
+def _lingshu_remote_source(force: bool = False) -> tuple[Path | None, str, str]:
+    """获取远程源目录：先 Gitee，失败再 GitHub。返回 (路径, 来源, 错误说明)。
+
+    成功时路径非 None，来源为 "gitee" 或 "github"，错误说明为空；两个远端都
+    失败时路径为 None（调用方降级），错误说明是给用户看的可读信息。复用缓存
+    目录里已拉取的源（10 分钟内有效，force=True 强制重新拉取——点「更新」
+    时用，确保拿到最新代码）。缓存有效性以是否解压出 SKILL.md 为准；实际
+    来源记录在 .lingshu-source 标记文件里。整个拉取过程持锁串行防互踩。
+    """
+    with _remote_lock:
+        return _lingshu_remote_source_locked(force)
+
+
+# 各链路失败时附带一行 token 设置建议（命中匿名风控/限流时用户可自救）
+_TOKEN_HINT = "（提示：设置 GITEE_TOKEN / GITHUB_TOKEN 环境变量可绕过匿名风控与限流）"
+
+
+def _remote_order() -> list[tuple[str, str, str]]:
+    """探测两个远端的 head (SHA, 提交时间)，返回本次拉取顺序。
+
+    Gitee 与 GitHub 互为镜像，但镜像同步可能有先后：按 commit 提交时间降序
+    排（新的先拉，拉到谁就是谁）；某远端不可达或拿不到时间时，按原有固定
+    优先级（Gitee → GitHub）兜底，行为不变。
+    """
+    probes = [("gitee", GITEE_API_BASE, GITEE_BRANCH, 0),
+              ("github", GITHUB_API_BASE, GITHUB_BRANCH, 1)]
+    ranked: list[tuple[str, str, str, float, int]] = []
+    for host, base, branch, fallback in probes:
+        sha, date = _remote_head_info(base, branch, host)
+        ts: float | None = None
+        if date:
+            try:
+                from datetime import datetime as _dt
+                ts = _dt.fromisoformat(date.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                ts = None
+        ranked.append((host, base, branch, ts if ts is not None else float("-inf"), fallback))
+    # 时间新的在前；都拿不到时间（-inf）时保持原优先级（fallback 序稳定）
+    ranked.sort(key=lambda t: (-t[3], t[4]))
+    return [(host, base, branch) for host, base, branch, _ts, _fb in ranked]
+
+
+def _try_remote_chain(expected_mark: bool = True) -> str:
+    """走一遍完整拉取链路：双远端按"谁最新先拉谁"排序（默认 Gitee → GitHub），
+    每个远端依次试 API → zip 归档 → git。
+
+    成功直接返回源目录（内部 return）；全部失败返回空串对应的错误汇总文本。
+    expected_mark=False（整体重试轮）时不写 SHA 标记，防止把重试轮拉到的
+    内容误标成另一个 commit。
+    git 协议兜底：REST API/zip 被匿名风控限流时，git smart-http 不限流，
+    是最可靠的后备方案。
+    """
+    clones = {
+        "gitee": "https://gitee.com/htmcwy_0/lingshu-skill.git",
+        "github": f"https://github.com/{GITHUB_REPO}.git",
+    }
+    zips = {"gitee": _fetch_gitee_zip_source}
+    labels = {"gitee": "Gitee", "github": "GitHub"}
+    errs: list[str] = []
+    order = _remote_order() if expected_mark else [(h, b, br) for h, b, br in
+        (("gitee", GITEE_API_BASE, GITEE_BRANCH), ("github", GITHUB_API_BASE, GITHUB_BRANCH))]
+    for host, base, branch in order:
+        try:
+            head_sha = _remote_head_sha(base, branch, host) if expected_mark else ""
+            _fetch_tree_source(base, branch, labels[host], host, expected_sha=head_sha)
+            return ""
+        except Exception as e:
+            errs.append(f"{labels[host]} 拉取失败：{e}{_TOKEN_HINT}")
+        if host in zips:
+            try:
+                zips[host]()
+                return ""
+            except Exception as e:
+                errs.append(f"{labels[host]} 归档兜底失败：{e}{_TOKEN_HINT}")
+        try:
+            _fetch_git_source(clones[host], branch, host)
+            return ""
+        except Exception as e:
+            errs.append(f"{labels[host]} git 兜底失败：{e}")
+    return "；".join(errs)
+
+
+def _lingshu_remote_source_locked(force: bool) -> tuple[Path | None, str, str]:
+    cache = _remote_cache_dir()
+    cached = cache / "extracted"
+    # SHA 快路径：远端最新 commit SHA 与缓存标记一致 ⇒ 远端没新提交，缓存必为
+    # 最新，直接复用（1 次轻量请求秒回，跳过几十次逐文件下载）。仅非 force 且
+    # 缓存完整时走；SHA 探测失败/拿不到标记则退回原 TTL 逻辑。
+    if (cached / "SKILL.md").is_file() and not force:
+        cached_sha = _cached_sha(cache)
+        if cached_sha:
+            for base, branch, host in ((GITEE_API_BASE, GITEE_BRANCH, "gitee"),
+                                       (GITHUB_API_BASE, GITHUB_BRANCH, "github")):
+                head = _remote_head_sha(base, branch, host)
+                if not head:
+                    continue  # 这个远端不可达，试下一个
+                if head.startswith(cached_sha) or cached_sha.startswith(head):
+                    return cached, _cached_source(cache), ""
+                break  # 远端可达但 SHA 不同 ⇒ 真有新提交，走完整拉取
+    if (cached / "SKILL.md").is_file() and not force:
+        # 缓存时效：超期则视为失效，重新走一遍拉取链路（重拉失败会降级报错，
+        # 但此时旧缓存还在——用旧缓存兜底而不是直接报"已最新"）。
+        try:
+            fresh = time.time() - cached.stat().st_mtime < REMOTE_CACHE_TTL
+        except OSError:
+            fresh = True
+        if fresh:
+            return cached, _cached_source(cache), ""
+    err = ""
+    # Gitee：API → zip 归档兜底（浏览器 UA）；再 GitHub。中间某一路失败但后续
+    # 成功时静默（不打印失败日志），只有全部链路都失败才输出汇总错误。
+    # 拉取前先探一次 head SHA，成功后写进缓存标记（供下次 SHA 快路径命中）。
+    for attempt in range(2):
+        err = _try_remote_chain(expected_mark=attempt == 0)
+        if err == "":
+            break
+        # 全链路失败且不是最后一次：等 2 秒整体重试一遍（IncompleteRead/风控
+        # 间歇抖动，重试常能过）。最后一次失败不再白等 2 秒。
+        if attempt < 1:
+            time.sleep(2.0)
+    if err == "" and (cached / "SKILL.md").is_file():
+        # 拉取成功：返回刚写入缓存的最新源
+        return cached, _cached_source(cache), ""
+    # 全链路失败：如果还有一份旧缓存（哪怕已超期），宁可用旧缓存也别硬报错。
+    if (cached / "SKILL.md").is_file():
+        print(f"[lingshu] 远程拉取失败，复用上次缓存的旧源（可能不是最新）。{err}",
+              file=sys.stderr)
+        # 把真实错误带回调用方：手动检查时前端能显示"为什么拉不到"（风控/限流），
+        # 而不是笼统说"远程源不可用"。
+        return cached, _cached_source(cache), err
+    print(f"[lingshu] 远程拉取失败（Gitee 与 GitHub 均不可达），降级为本地副本源。{err}",
+          file=sys.stderr)
+    return None, "none", err
+
+
+def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
+    """检查本地源与全局已装副本的差异，返回「更新了什么」明细。
+
+    面板「检查更新」用：installed=False 表示没装过；outdated=False 表示已是最新；
+    outdated=True 时 changed/added/removed 三个列表说明源里相对全局副本动了哪些文件。
+    """
+    # 更新源统一走 resolve_source（dev → remote → installed 单一入口）。
+    # 面板跑在全局副本里时自身目录==已装目录，resolve_source 会转去拉远程源；
+    # 远程全链路失败时降级为"源即副本"（显示已最新），不崩溃。
+    src_md = None
+    src_md_exists = False
+    try:
+        src_dir, out_src = resolve_source(name, force_pull=force_pull)
+        src_md_exists = (src_dir / "SKILL.md").is_file()
+        err = None if out_src != "installed" else "远程拉取失败，降级为已装副本源"
+    except KeyError as e:
+        err = str(e)
+        src_dir = None
+        out_src = "none"
+        src_md_exists = False
+    except ValueError:
+        return {"name": name, "installed": False, "outdated": False}
+    if not src_md_exists:
+        if out_src == "none":
+            # 远程源都拿不到：源就是已装副本本身，没有可比的"新版本"。
+            # 不能拿副本目录自己比自己——副本一旦有残缺文件会误报 outdated: true
+            # + 全量 changed/removed（朋友机器换盘符场景坐实过）。
+            try:
+                installed_dir = _find_installed(_require_slug(name))
+                meta, _ = parse_frontmatter(
+                    (installed_dir / "SKILL.md").read_text(encoding="utf-8"))
+            except (OSError, ValueError, KeyError):
+                meta = {}
+                installed_dir = Path()
+            return {"name": name, "installed": True, "outdated": False, "source": "none",
+                    "error": err, "stale_source": False,
+                    "version": _ver(meta.get("version", 1)),
+                    "source_version": _ver(meta.get("version", 1)),
+                    "installed_version": _ver(meta.get("version", 1)),
+                    "checked_at": int(time.time()), "cached_at": 0,
+                    "global_path": str(installed_dir)}
+        return {"name": name, "installed": False, "outdated": False}
+    src_md = src_dir / "SKILL.md"
+    try:
+        meta, _ = parse_frontmatter(src_md.read_text(encoding="utf-8"))
+    except OSError:
+        meta = {}
+    try:
+        installed_dir = _find_installed(_require_slug(name))
+    except (ValueError, KeyError):
+        installed_dir = Path()
+    if not (installed_dir / "SKILL.md").exists():
+        return {"name": name, "installed": False, "outdated": False,
+                "stale_source": False,
+                "version": _ver(meta.get("version", 1)),
+                "source_version": _ver(meta.get("version", 1)),
+                "installed_version": "",
+                "checked_at": int(time.time()), "cached_at": 0,
+                "global_path": str(installed_dir)}
+
+    src_sig = _diff_signature(src_dir)
+    dst_sig = _diff_signature(installed_dir)
+    # 已装版本：读全局副本 SKILL.md 的 frontmatter（对比基准，决定 changelog 截到哪）
+    try:
+        inst_meta, _ = parse_frontmatter((installed_dir / "SKILL.md").read_text(encoding="utf-8"))
+    except OSError:
+        inst_meta = {}
+    # 双保险 2.0：纯 mtime 抖动（同名同大小）必须版本号真变了才算过期；
+    # 但副本残缺/关键文件内容变化（_real_drift）不依赖版本号——
+    # 发布时忘了升版本号，用户也不会卡死在旧版/损坏副本上。
+    outdated = bool(src_sig != dst_sig) and (
+        _real_drift(src_sig, dst_sig)
+        or _ver(meta.get("version", 1)) != _ver(inst_meta.get("version", 1)))
+    # 版本守门：远程拉取全链路失败时会复用旧缓存兜底，那份缓存可能比已装版本还旧
+    # （缓存停留在 v2.16、已装已升到 v2.18）。此时绝不能报 outdated——点了"更新"
+    # 会把旧代码镜像同步回去，造成真倒退。版本号解析不出（非语义化）时保守放行，
+    # 交给内容差异判断。
+    def _ver_tuple(v) -> tuple | None:
+        try:
+            return tuple(int(x) for x in str(v).strip().split("."))
+        except (TypeError, ValueError):
+            return None
+    src_v, inst_v = _ver_tuple(meta.get("version", 1)), _ver_tuple(inst_meta.get("version", 1))
+    stale_source = False
+    # 严格小于才算"倒退"：版本相等只是"没有新版本"，不能报 stale_source
+    # （否则本地源正常、缓存与已装同版本时也会误报远程不可用）。
+    if outdated and src_v is not None and inst_v is not None and src_v < inst_v:
+        outdated = False
+        stale_source = True
+    if stale_source and out_src in ("gitee", "github") and not force_pull:
+        # 缓存源比已装还旧：说明刚才拉取全链路失败、复用的旧缓存。静默再 force
+        # 拉一次（内部有整体重试），拿到真源就正常对比；仍失败才报 stale。
+        remote, source, err2 = _lingshu_remote_source(force=True)
+        if remote is not None:
+            src_dir = remote
+            out_src = source
+            stale_source = False
+            try:
+                meta, _ = parse_frontmatter((src_dir / "SKILL.md").read_text(encoding="utf-8"))
+            except OSError:
+                meta = {}
+            src_sig = _diff_signature(src_dir)
+            outdated = bool(src_sig != dst_sig) and (
+                _real_drift(src_sig, dst_sig)
+                or _ver(meta.get("version", 1)) != _ver(inst_meta.get("version", 1)))
+            src_v = _ver_tuple(meta.get("version", 1))
+            if outdated and src_v is not None and src_v < inst_v:
+                outdated = False
+                stale_source = True
+    # 远程源的「文件写入本机缓存」时刻：手动 force 拉取后≈当前时间；远程拉取失败
+    # 复用旧缓存时，它才是真实的缓存年龄。面板据此显示「远程缓存 v2.36（12 分钟前）」，
+    # 避免用户把旧缓存版本误读成"有新版可装"。
+    cached_at = 0
+    if out_src in ("gitee", "github"):
+        try:
+            cached_at = int((src_dir / "SKILL.md").stat().st_mtime)
+        except OSError:
+            cached_at = 0
+    out = {
+        "name": name,
+        "installed": True,
+        "outdated": outdated,
+        "stale_source": stale_source,   # 源比已装还旧（旧缓存兜底）：已忽略这次检查
+        "source": out_src,   # 更新来源：local=本地开发仓库 / gitee=Gitee 远程 / none=无源降级
+        # version 沿用旧名（面板兼容），语义其实是「源里的版本」；source_version 是
+        # 同一值的显式命名——排查「说有新版却装不上」时，绝不能把它当成已装版本。
+        "version": _ver(meta.get("version", 1)),
+        "source_version": _ver(meta.get("version", 1)),
+        "installed_version": _ver(inst_meta.get("version", 1)),
+        "checked_at": int(time.time()),
+        "cached_at": cached_at,
+        "global_path": str(installed_dir),
+    }
+    if stale_source:
+        detail = f"远程源不可用，缓存源版本（v{out['version']}）不比已装" \
+                 f"（v{out['installed_version']}）新，已忽略这次检查，不倒退更新"
+        if err:
+            detail += f"。原因：{str(err).split('（提示：')[0].strip()}"
+        out["error"] = detail
+    if out["outdated"]:
+        # 硬约束：面板更新说明只给人类可读正文，绝不把文件清单兜底显示给用户。
+        # 所以 changed/added/removed 不进响应（前端兜底分支随之失效），
+        # CHANGELOG 抽不到区间正文时只给一句通用文案。
+        out["changelog"] = (
+            _changelog_between(src_dir, out["installed_version"], out["version"])
+            or "本次更新内容较多，详见 CHANGELOG.md。")
+    return out
+
+
+def _load_update_cache() -> dict | None:
+    """读「检查更新」结果缓存；文件不存在/损坏返回 None。"""
+    try:
+        if not UPDATE_CACHE_FILE.is_file():
+            return None
+        return _read_json(UPDATE_CACHE_FILE)
+    except (OSError, ValueError):
+        return None
+
+
+def _save_update_cache(result: dict) -> None:
+    """写「检查更新」结果缓存（只缓存真正查到东西的结果，只读模式跳过）。"""
+    if brain.READONLY:
+        return
+    if not result or result.get("source") in (None, "none"):
+        return
+    try:
+        UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        brain.atomic_json(UPDATE_CACHE_FILE, {"ts": int(time.time()), "result": result})
+    except (OSError, ValueError):
+        pass
+
+
+def update_check(name: str = "lingshu", force_pull: bool = False, auto: bool = False) -> dict:
+    """检查更新（带缓存）：auto=True 严格只读缓存绝不联网，force_pull=True 联网并刷新缓存。
+
+    面板服务启动时后台用 force_pull=True 检测一次并写缓存；浏览器刷新面板
+    用 auto=True（毫秒级返回，永不联网、永不阻塞页面），缓存不存在就返回
+    cached=False 由前端自行降级。用户手动点「检查更新」才走 force_pull=True。
+    """
+    cache = _load_update_cache()
+    if auto:
+        if cache and isinstance(cache.get("result"), dict):
+            res = dict(cache["result"])
+            res["cached"] = True
+            res["checked_at"] = int(cache.get("ts") or 0)
+            return res
+        return {"cached": False}   # 没缓存也不联网：检测只发生在服务启动/手动检查
+    if not force_pull and cache and isinstance(cache.get("result"), dict):
+        try:
+            fresh = time.time() - float(cache.get("ts") or 0) < UPDATE_CACHE_TTL
+        except (TypeError, ValueError):
+            fresh = False
+        if fresh:
+            res = dict(cache["result"])
+            res["cached"] = True
+            res["checked_at"] = int(cache.get("ts") or 0)
+            return res
+    res = _update_check_live(name, force_pull=force_pull)
+    _save_update_cache(res)
+    return res
+
+
+def _changelog_between(src_dir: Path, old_ver: str, new_ver: str) -> str:
+    """从源的 CHANGELOG.md 抽取 (old_ver, new_ver] 区间的更新说明（人类可读正文）。
+
+    只保留一级版本标题（## vX.Y）到下一个一级版本标题之间的内容，去掉括号里的
+    合并哈希注释行；old_ver 在源里找不到时返回 None（调用方给通用文案，不给文件清单）。
+    """
+    md = src_dir / "CHANGELOG.md"
+    if not md.is_file():
+        return None
+    try:
+        lines = md.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+
+    def _vnum(s: str) -> tuple | None:
+        m = re.match(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", s.strip())
+        return (int(m.group(1)), int(m.group(2) or 0), int(m.group(3) or 0)) if m else None
+
+    start = _vnum(old_ver)
+    end = _vnum(new_ver)
+    if not end:
+        return None
+    out, picking = [], False
+    for ln in lines:
+        m = re.match(r"##\s+(v?[\d.]+)", ln)
+        if m:
+            v = _vnum(m.group(1))
+            picking = bool(v and v > start and v <= end) if start else bool(v and v <= end)
+            if picking:
+                out.append(ln.split("—")[0].rstrip(" —-"))  # 标题行去掉破折号后的副标题哈希
+            continue
+        if picking:
+            if ln.strip().startswith("（") or ln.strip().startswith("("):
+                continue  # 合并哈希注释行
+            out.append(ln)
+    text = "\n".join(out).strip()
+    return text or None
+
+
+AGENTS_BLOCK_START = "<!-- lingshu:start -->"
+AGENTS_BLOCK_END = "<!-- lingshu:end -->"
+# 旧版（无区块标记）生成文件的可识别签名：命中说明整文件都是灵枢生成的，没有用户手写内容
+_LEGACY_AGENTS_SIGNATURE = "由灵枢在全局化时生成"
+
+
+def _agents_rules(name: str, description: str, meta: dict, from_dir: str | None = None) -> str:
+    """AGENTS.md 里由灵枢维护的规则正文（区块内部，不含标题与标记）。"""
+    entry = ""
+    src_dir = Path(from_dir).expanduser() if from_dir else (SKILLS_DIR / name)
+    if (src_dir / "scripts").is_dir():
+        scripts = sorted(p.name for p in (src_dir / "scripts").glob("*.py"))
+        if scripts:
+            entry = "、".join(f"`python scripts/{s}`" for s in scripts[:4])
+    elif any(src_dir.glob("*.py")):
+        entry = "、".join(f"`python {p.name}`" for p in sorted(src_dir.glob("*.py"))[:4])
+    lines = [
+        f"**何时用**：{description}",
+        "",
+        "**怎么用**：先读同目录 `SKILL.md`，按其中的步骤执行；有 `scripts/` 就直接调用。",
+    ]
+    if entry:
+        lines.append(f"**入口**：{entry}")
+    lines += [
+        "",
+        "## 上下文水位三级防线（任何对话都适用，不限于本技能话题）",
+        "",
+        "每轮回复前后自查水位，触发即执行（skill 目录的 `scripts/brain.py`）：",
+        "",
+        "- **随时（即记即存）**：约定/承诺/情绪高点/里程碑，当时就 `remember` 或 `capture \"...\"`，不攒。",
+        "- **≈60%**：`check-context --used 60` 清点本轮该记未记的，先补记。",
+        "- **≈75%**：`dream --auto` 做梦整理（重放→压缩→巩固）。",
+        "- **≈90%**：`capture \"原文\" --tag 逃生` 原样封存，先保命再压缩。",
+        "",
+        "**会话收尾（换任务/下班/水位已高）**：`check-context --handoff` 按提示填四段——"
+        "状态 / 目标 / 死路及原因 / 下一步，自动写成交接笔记，下个会话开局自动带出来；"
+        "别把细节硬背给新窗口。",
+        "",
+        "**知识要验证**：`knowledge verify <id> [--note 验证方式]` 记一次验证，证据等级"
+        " E0→E4 只升不降（E4 封顶），验证过的结论检索时优先；发现某条知识是错的，"
+        "直接改或废弃它，别让幻觉结论躺在库里。",
+        "",
+        "**AI 记忆与用户事实冲突**：这类新记忆会带「待裁决」标记（不静默覆盖旧说法），"
+        "用户确认后才取代、废弃则旧说法继续有效——见到待审核列表里有冲突来源的条目，"
+        "提醒用户裁决，别假装没看见。",
+        "",
+        "这条纪律在**所有宿主软件里都必须遵守**——记忆不记就会随窗口滚走，滚走的不会回来。",
+        "",
+        f"**来源**：{meta.get('origin', '灵枢')}　**版本**：{meta.get('version', 1)}",
+    ]
+    return "\n".join(lines)
+
+
+def _agents_md(name: str, description: str, meta: dict, from_dir: str | None = None) -> str:
+    """给全局技能生成 AGENTS.md：DSH/DeepSeek 生态的常驻入口。
+    只写「何时用 / 怎么调 / 在哪」，不复制 SKILL.md 正文。
+    生成内容用 <!-- lingshu:start/end --> 区块包裹：更新时只替换这个区块，
+    区块之外的用户手写内容（如 DSH 只读保护、全局目录指回）永远保留。"""
+    rules = _agents_rules(name, description, meta, from_dir)
+    lines = [
+        f"# {name}",
+        "",
+        "<!-- 常驻层：由灵枢在全局化时生成。两条注释标记之间的内容每次更新会整块替换；",
+        "     标记之外的部分是你自己的，更新永不覆盖（可写 DSH 只读保护、全局目录指回等）。 -->",
+        "",
+        AGENTS_BLOCK_START,
+        rules,
+        AGENTS_BLOCK_END,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _looks_generated(text: str) -> bool:
+    """旧版无标记文件是否「整份都是灵枢生成的」——只有这样才能安全整体替换。
+    任何一行不属于生成结构，就说明用户手写过，必须保留。"""
+    if _LEGACY_AGENTS_SIGNATURE not in text:
+        return False
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if (s.startswith("#") or s.startswith("**何时用**") or s.startswith("**怎么用**")
+                or s.startswith("**入口**") or s.startswith("**来源**") or s.startswith("**版本**")
+                or _LEGACY_AGENTS_SIGNATURE in s):
+            continue
+        return False
+    return True
+
+
+def _upsert_agents_block(path: Path, generated: str) -> str:
+    """区块化更新 AGENTS.md，返回 'written' / 'updated' / 'merged'。
+
+    - 文件不存在：直接写生成版。
+    - 有 <!-- lingshu:start/end --> 标记：只替换标记之间的内容，标记外原样保留。
+    - 无标记但整份可识别为旧版生成文件：整体替换（里面没有用户内容）。
+    - 无标记且含用户手写：把灵枢区块插到最前面，原内容整体保留在下方。
+    """
+    if not path.exists():
+        brain.write_text_atomic(path, generated)
+        return "written"
+    old = path.read_text(encoding="utf-8")
+    i = old.find(AGENTS_BLOCK_START)
+    if i >= 0:
+        j = old.find(AGENTS_BLOCK_END, i + len(AGENTS_BLOCK_START))
+        if j >= 0:
+            block = generated[generated.find(AGENTS_BLOCK_START):]
+            new = old[:i] + block.rstrip("\n") + old[j + len(AGENTS_BLOCK_END):]
+            if new != old:
+                brain.write_text_atomic(path, new)
+            return "updated"
+        # 有 start 却没有 end（上次写到一半/用户删了标记）：补一个 end 闭合，
+        # start 之后的内容原样保留到下方，绝不吞掉用户手写的东西，也不会叠出两个区块。
+        # block 取自 generated（它自带 start…end），所以这里不要再补 end，否则会叠两个。
+        block = generated[generated.find(AGENTS_BLOCK_START):].rstrip("\n")
+        tail = old[i + len(AGENTS_BLOCK_START):].strip("\n")
+        head = old[:i].rstrip("\n")
+        parts = [p for p in (head, block, tail) if p]
+        new = "\n\n".join(parts) + "\n"
+        if new != old:
+            brain.write_text_atomic(path, new)
+        return "updated"
+    # 旧版无标记：整份都是生成的才整体替换；否则视为含用户手写，插在最前面
+    if _looks_generated(old):
+        brain.write_text_atomic(path, generated)
+        return "updated"
+    brain.write_text_atomic(path, generated.rstrip("\n") + "\n\n" + old.lstrip("\n"))
+    return "merged"
+
+
+def _is_lingshu(name: str, meta: dict, from_dir: str | None = None) -> bool:
+    """判断这次装的是不是灵枢本体（会自动记忆/整理/自编辑的那一个）。
+
+    只认名字叫「灵枢 / lingshu」的本体：AI 自己建的技能默认 origin 也是"灵枢"，
+    不能因为来源字符串里带"灵枢"就被当成本体去走风险确认（否则每个自建技能都装不进去）。
+    """
+    is_name = (name or "").strip().lower() in _SELF_NAMES or \
+        (meta.get("name") or "").strip().lower() in _SELF_NAMES
+    if is_name:
+        return True
+    if from_dir:
+        p = Path(from_dir).expanduser() / "SKILL.md"
+        if p.exists():
+            try:
+                m2, _ = parse_frontmatter(p.read_text(encoding="utf-8-sig"))
+                if (m2.get("name") or "").strip().lower() in _SELF_NAMES:
+                    return True
+            except OSError:
+                pass
+    return False
+
+
+def _risk_accepted(name: str) -> bool:
+    cfg = brain.load_config()
+    return bool((cfg.get("risk_accepted") or {}).get(name))
+
+
+def _accept_risk(name: str) -> None:
+    # 锁内重读盘上最新 config，只改自己的键再写回——旧快照整份回写会把
+    # 并发写入的其它键（token、模式等）抹掉。
+    with brain._locked(brain.HOME / "config.json"):
+        cfg = brain.load_config()
+        ra = dict(cfg.get("risk_accepted") or {})
+        ra[name] = brain.now_ts()
+        cfg["risk_accepted"] = ra
+        try:
+            brain.atomic_json(brain.HOME / "config.json", cfg)
+        except OSError:
+            pass
+
+
+def resolve_source(name: str = "lingshu", force_pull: bool = False
+                   ) -> tuple[Path, str]:
+    """更新源解析的单一入口：dev → remote → installed，返回 (源目录, source_kind)。
+
+    - dev：本地开发目录配置（config.json 里 sources.<name> 指向含 SKILL.md 的目录，
+      或面板跑在开发仓库里——自身目录与已装副本不是同一个目录）。
+    - remote：远程 manifest 拉取（灵枢本体专属，Gitee 优先 GitHub 兜底）；
+      拉取失败抛出带原因的 KeyError。
+    - installed：已安装本地版本（唯一保底，永远可解析）。
+
+    update_check / install_skill / apply 流程统一从这里拿源，不再各写一套交织判断。
+    """
+    name = _require_slug(name)
+    # 1) 本地开发目录配置
+    try:
+        cfg = _read_json(brain.HOME / "config.json")
+        dev = str((cfg.get("sources") or {}).get(name) or "").strip()
+        if dev and (Path(dev).expanduser() / "SKILL.md").is_file():
+            return Path(dev).expanduser(), "dev"
+    except (OSError, ValueError, AttributeError):
+        pass
+    # 2) 面板跑在开发仓库里：自身目录即源（且不是已装副本自己比自己）
+    try:
+        self_dir = Path(__file__).resolve().parent.parent
+        if ((self_dir / "SKILL.md").is_file() and _is_lingshu(name, {}, None)
+                and self_dir.resolve() != _find_installed(name).resolve()):
+            return self_dir, "dev"
+    except (OSError, ValueError, KeyError):
+        pass
+    # 3) 远程拉取（灵枢本体专属能力）
+    if _is_lingshu(name, {}, None):
+        remote, source, err = _lingshu_remote_source(force=force_pull)
+        if remote is not None:
+            return remote, source if source in ("gitee", "github") else "remote"
+        raise KeyError(f"远程拉取更新源失败（Gitee/GitHub 均不可用）：{err}")
+    # 4) 已安装本地版本兜底
+    installed = _find_installed(name)
+    if (installed / "SKILL.md").is_file():
+        return installed, "installed"
+    raise KeyError(f"没有这个技能：{name}")
+
+
+def install_skill(name: str, force: bool = False, from_dir: str | None = None,
+                  accept_risk: bool = False) -> dict:
+    """把技能整目录装进全局技能目录（不只是 SKILL.md）。
+
+    带 scripts/assets 的技能必须整目录复制，否则全局化后只剩说明书、跑不起来。
+    同时生成 AGENTS.md，供 DSH/DeepSeek 等以 AGENTS.md 为常驻约定的宿主读取。
+    from_dir 允许从外部目录安装（例如把灵枢本体所在目录安装成全局技能）。
+
+    装灵枢本体时先做风险告知：用户必须明确接受（accept_risk / --yes）才会继续。
+    """
+    name = _require_slug(name)
+    if from_dir:
+        src_dir = Path(from_dir).expanduser()
+        # --from 收紧：只允许项目内目录（技能区 skills/、灵枢本体目录、临时下载区）。
+        # 绝对路径指向系统目录 / HOME 外部敏感位置一律拒绝，防止任意目录被整包部署。
+        try:
+            _src_resolved = src_dir.resolve()
+            _home_resolved = Path(HOME).resolve()
+        except OSError:
+            _src_resolved = src_dir.absolute()
+            _home_resolved = Path(HOME).absolute()
+        _allowed = [SKILLS_DIR, _panel_root(), _home_resolved]
+        if not any(_src_resolved.is_relative_to(a) for a in _allowed):
+            raise KeyError(
+                f"--from 只能指向项目内目录（技能区 {SKILLS_DIR}、灵枢本体所在目录或记忆库内部），"
+                f"已拒绝外部路径：{src_dir}")
+        src = src_dir / "SKILL.md"
+        if not src.exists():
+            raise KeyError(f"目录里没有 SKILL.md：{src_dir}")
+    else:
+        src_dir = SKILLS_DIR / name
+        src = src_dir / "SKILL.md"
+        if not src.exists():
+            # 灵枢本体特判：源不在 skills/ 技能区，就在技能包自身目录（更新走远程拉取）。
+            # 保持与 update_check 的特判一致——否则面板点"更新"会报"没有这个技能"。
+            if _is_lingshu(name, {}, None):
+                src_dir = Path(__file__).resolve().parent.parent
+                if src_dir.resolve() == _find_installed(name).resolve():
+                    # 更新源只走远程拉取：点「更新」时强制重新拉远程（force 跳过
+                    # 缓存，确保拿到最新代码），先 Gitee 后 GitHub。拉不到报可读错误。
+                    remote, source, err = _lingshu_remote_source(force=True)
+                    if remote is not None:
+                        src_dir = remote
+                    else:
+                        raise KeyError(f"远程拉取更新源失败（Gitee/GitHub 均不可用）：{err}")
+                src = src_dir / "SKILL.md"
+            if not src.exists():
+                raise KeyError(f"没有这个技能：{name}")
+    # 安装目标：默认主目录；但已装在别处（含面板自己所在根）时优先跟随——
+    # 更新要落到用户实际在用的那份副本，不然"更新成功"了跑的还是旧的
+    existing = _find_installed(name)
+    dst_dir = existing if (existing / "SKILL.md").is_file() else (GLOBAL_SKILLS / name)
+    dst = dst_dir / "SKILL.md"
+
+    # 安装源防呆：下面几种情况轻则把目录复制进自己（爆盘/死循环），重则把整个记忆库
+    # 塞进技能目录。宁可报错，也不要在用户机器上干这种"看起来在装技能"的事。
+    try:
+        _src_r = src_dir.resolve()
+        _dst_r = dst_dir.resolve()
+        _home_r = Path(HOME).resolve()
+    except OSError:
+        _src_r, _dst_r, _home_r = src_dir.absolute(), dst_dir.absolute(), Path(HOME).absolute()
+    if (_src_r == _dst_r or _dst_r in _src_r.parents
+            or _src_r in _dst_r.parents):
+        raise KeyError("安装源就是目标目录（或在其内部）——会把自己反复复制进去，已停止。"
+                       "若想更新全局副本，请直接 install --force，别把 --from 指向它。")
+    if _src_r == _home_r or _src_r in _home_r.parents:
+        raise KeyError(f"安装源是记忆数据目录或它的上级（{HOME}），"
+                       "请指向技能目录（含 SKILL.md 的那个）。")
+    if from_dir:
+        _count = _size = 0
+        for _f in src_dir.rglob("*"):
+            if not _f.is_file() or "__pycache__" in _f.parts or ".git" in _f.parts:
+                continue
+            _count += 1
+            if _count > MAX_INSTALL_FILES:
+                raise KeyError(f"安装源文件过多（>{MAX_INSTALL_FILES} 个），可能指错目录了，已停止。")
+            try:
+                _size += _f.stat().st_size
+            except OSError:
+                pass
+            if _size > MAX_INSTALL_BYTES:
+                raise KeyError(f"安装源过大（>{MAX_INSTALL_BYTES // (1024 * 1024)} MB），可能指错目录了，已停止。")
+
+    meta, _ = parse_frontmatter(src.read_text(encoding="utf-8"))
+
+    # 版本守门（双保险第二道）：面板有 stale_source 检查，但 CLI/其他入口也可能
+    # 拿着旧缓存源来装。源版本 ≤ 已装版本时拒绝镜像，绝不倒退。
+    if _is_lingshu(name, meta, from_dir) and (dst_dir / "SKILL.md").is_file():
+        try:
+            inst_meta, _ = parse_frontmatter((dst_dir / "SKILL.md").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            inst_meta = {}
+
+        def _vt(v) -> tuple | None:
+            try:
+                return tuple(int(x) for x in str(v).strip().split("."))
+            except (TypeError, ValueError):
+                return None
+        src_v, inst_v = _vt(meta.get("version")), _vt(inst_meta.get("version"))
+        if src_v is not None and inst_v is not None and src_v < inst_v:
+            raise KeyError(
+                f"更新源版本（v{meta.get('version')}）比已装版本（v{inst_meta.get('version')}）还旧，"
+                "疑似远程拉取失败复用了旧缓存——已拒绝倒退更新。稍后重试即可。")
+
+    # 风险告知：灵枢会自动读写记忆、自动整理、能自编辑——用户得先知道并接受
+    if _is_lingshu(name, meta, from_dir) and not accept_risk and not _risk_accepted(name):
+        return {"name": name, "state": "risk_required", "risks": LINGSHU_RISKS,
+                "path": str(dst), "accepted": False}
+
+    # 别的全局目录里已有同名副本（比如 Trae 那边也装过）：提醒，避免"更新了却没生效"的错觉
+    stale = [str(r / name) for r in _global_roots()
+             if (r / name) != dst_dir and (r / name / "SKILL.md").is_file()]
+
+    if dst.exists() and not force:
+        if dst.read_text(encoding="utf-8") == src.read_text(encoding="utf-8"):
+            # 内容没变：也要修复/补齐 AGENTS.md（区块化更新，用户手写部分不动）。
+            # 否则用户曾删掉或损坏 AGENTS.md 后，再 install 永远停在 "already"。
+            agents = dst_dir / "AGENTS.md"
+            generated = _agents_md(name, meta.get("description", ""), meta, from_dir)
+            if not agents.exists():
+                agents.write_text(generated, encoding="utf-8")
+            else:
+                _upsert_agents_block(agents, generated)
+            return {"name": name, "state": "already", "path": str(dst), "agents": str(agents),
+                    "legacy": _legacy_global_dir(name), "stale": stale}
+        raise FileExistsError(f"全局技能目录已有同名技能 {name}；确认覆盖请加 --force")
+
+    generated = _agents_md(name, meta.get("description", ""), meta, from_dir)
+    # 原子化 staging 部署（apply_update）：SHA256 校验（源带 manifest 时）→ 全量
+    # 备份 → 原子替换 → 失败回滚 → 清单外文件归档到备份 removed/。AGENTS.md 作为
+    # extra_files 在 staging 里先做好，替换动作一步到位不留中间态。
+    agents_rel = "AGENTS.md"
+    if (dst_dir / agents_rel).exists():
+        old_agents = (dst_dir / agents_rel).read_text(encoding="utf-8")
+        # 区块化合并：拿到生成的完整区块文本后替换进旧文件
+        buf_agents = generated
+        i = old_agents.find(AGENTS_BLOCK_START)
+        if i >= 0:
+            j = old_agents.find(AGENTS_BLOCK_END, i + len(AGENTS_BLOCK_START))
+            if j >= 0:
+                buf_agents = (old_agents[:i]
+                              + generated[generated.find(AGENTS_BLOCK_START):].rstrip("\n")
+                              + old_agents[j + len(AGENTS_BLOCK_END):])
+            else:
+                buf_agents = (old_agents[:i].rstrip("\n") + "\n\n"
+                              + generated[generated.find(AGENTS_BLOCK_START):].rstrip("\n")
+                              + "\n\n" + old_agents[i + len(AGENTS_BLOCK_START):].strip("\n"))
+        extra = {agents_rel: buf_agents}
+    else:
+        extra = {agents_rel: generated}
+    apply_update(src_dir, dst_dir, extra_files=extra)
+    agents = dst_dir / agents_rel
+
+    reg = load_registry()
+    reg.setdefault(name, {})["installed_at"] = brain.now_ts()
+    save_registry(reg)
+    if _is_lingshu(name, meta, from_dir):
+        _accept_risk(name)  # 记下：用户已明确接受灵枢的风险
+    return {"name": name, "state": "installed", "path": str(dst), "agents": str(agents),
+            "legacy": _legacy_global_dir(name), "stale": stale}
+
+
+def _legacy_global_dir(name: str) -> str | None:
+    """该技能在全局目录（多根）里的旧中文名目录是否存在（存在则返回路径，供提示清理）。"""
+    legacy = _SLUG_TO_LEGACY_NAME.get(name)
+    if legacy:
+        for r in _global_roots():
+            d = r / legacy
+            if d.exists():
+                return str(d)
+    return None
+
+
+def _safe_rmtree(d: Path, root: Path) -> bool:
+    """只允许删 root 的直接子目录。
+
+    技能名虽然已经过 SLUG_RE 校验，这里再按真实路径核一遍：防手滑、防将来放宽
+    名字规则后把全局根目录本身（或根外面的东西）删掉。返回是否真的删了。
+    """
+    try:
+        dres, rres = d.resolve(), root.resolve()
+    except OSError:
+        dres, rres = d.absolute(), root.absolute()
+    if dres == rres or dres.parent != rres:
+        return False
+    shutil.rmtree(d)
+    return True
+
+
+def uninstall_skill(name: str, managed_only: bool = False) -> dict:
+    name = _require_slug(name)
+    # 面板传入 managed_only：只允许卸载灵枢自己装过/记录在案的技能。
+    # 否则一个手滑（或恶意请求）就能把用户全局目录里别的插件删掉。
+    if managed_only and name not in _SELF_NAMES and name not in load_registry():
+        raise PermissionError(
+            f"{name} 不在灵枢的安装记录里，面板不删它；确需删除请用命令行 `skill uninstall {name}`。")
+    # 新 kebab 目录 + 旧版中文目录一起清：旧版安装把中文名当目录名，
+    # 只删 lingshu 会留下"灵枢"空壳，DSH 仍会去扫它。多全局目录（DSH/Trae）都清。
+    candidates = [name, _SLUG_TO_LEGACY_NAME.get(name)]
+    removed = []
+    for root in _global_roots():
+        for _n in candidates:
+            if not _n:
+                continue
+            d = root / _n
+            if d.exists() and _safe_rmtree(d, root):
+                removed.append(str(d))
+    if not removed:
+        return {"name": name, "state": "absent"}
+    reg = load_registry()
+    if name in reg:
+        reg[name]["installed_at"] = None
+        save_registry(reg)
+    return {"name": name, "state": "uninstalled", "removed": removed}
+
+
+def remove_skill(name: str) -> bool:
+    name = _require_slug(name)
+    d = SKILLS_DIR / name
+    if not d.exists():
+        return False
+    if not _safe_rmtree(d, SKILLS_DIR):
+        return False
+    reg = load_registry()
+    reg.pop(name, None)
+    save_registry({**reg, name: None})   # pop 之外再显式传 None：save_registry 的删除语义
+    return True
+
+
+def check_skill(name: str | None = None) -> list:
+    items = [name] if name else [s["name"] for s in list_skills()]
+    results = []
+    for n in items:
+        try:
+            sk = read_skill(n)
+        except (KeyError, ValueError) as exc:
+            results.append({"name": n, "ok": False, "issues": [str(exc)]})
+            continue
+        meta, body = sk["meta"], sk["body"]
+        issues = []
+        if not meta:
+            issues.append("缺少 YAML frontmatter")
+        if meta.get("name") != n:
+            issues.append(f"frontmatter name（{meta.get('name')}）与目录名（{n}）不一致")
+        desc = meta.get("description", "")
+        if len(desc) < 12:
+            issues.append("description 太短，无法判断何时启用")
+        if len(desc) > 500:
+            issues.append("description 过长，建议压到 500 字内")
+        if len(body.strip()) < 40:
+            issues.append("正文过短")
+        if not re.search(r"^#{1,3}\s", body, re.M):
+            issues.append("正文没有标题结构")
+        if not re.search(r"(步骤|用法|命令|when|usage|workflow)", body, re.I):
+            issues.append("没有写明用法/步骤")
+        # DeepSeek / DSH 兼容性：技能若带脚本，必须能在全局化后整目录复制过去
+        d = SKILLS_DIR / n
+        has_scripts = (d / "scripts").is_dir() or any(d.glob("*.py"))
+        if has_scripts and "scripts/" not in body and "python " not in body:
+            issues.append("带脚本但正文没写怎么调用（补一行 python scripts/... 用法）")
+        if "\n---" in desc:
+            issues.append("description 含多行/分隔符，宿主解析可能出错")
+        results.append({"name": n, "ok": not issues, "issues": issues,
+                        "lines": len(body.splitlines()), "path": sk["path"],
+                        "has_scripts": has_scripts})
+    return results
+
+
+# ---------------------------------------------------------------- 技能自我总结（每 2-3 天一次）
+# 用户要求"每隔 2-3 天就总结下自己的灵枢技能"：这里生成一份自省素材，
+# 由 AI 写进成长笔记，并把 last_self_review 记到 config，注入包据此提醒。
+
+def self_review(force: bool = False, days: int = 3) -> dict:
+    cfg = brain.load_config()
+    now = brain.now_ts()
+    last = float(cfg.get("last_self_review", 0) or 0)
+    due = force or (now - last >= days * brain.DAY)
+    material = digest(max(2, days))
+    # 全局副本目录名随名字改过（灵枢 → lingshu），两个都看，先新后旧；多全局目录也看
+    global_path = None
+    for _root in _global_roots():
+        for _n in ("lingshu", "灵枢"):
+            _p = _root / _n / "SKILL.md"
+            if _p.exists():
+                global_path = _p
+                break
+        if global_path is not None:
+            break
+    if global_path is None:
+        global_path = GLOBAL_SKILLS / "lingshu" / "SKILL.md"
+    installed = global_path.exists()
+    if installed:
+        try:
+            gmeta, _ = parse_frontmatter(global_path.read_text(encoding="utf-8-sig"))
+            global_line = "全局副本已安装：{}（v{}，{}）".format(
+                global_path, gmeta.get("version", "?"), time.strftime("%Y-%m-%d", time.localtime(global_path.stat().st_mtime)))
+        except OSError:
+            global_line = "全局副本已安装：{}".format(global_path)
+    else:
+        global_line = "全局副本未安装（可用 skill install lingshu --from <本技能目录> --yes 安装）"
+    checks = [c for c in check_skill() if c["name"] in _SELF_NAMES]
+    check_line = "✓ 技能自检通过" if (checks and checks[0]["ok"]) else \
+        ("△ 技能自检提示：" + "；".join(checks[0]["issues"] if checks else ["本地技能库没有「灵枢」副本"])[:200])
+    summary = "\n".join([
+        f"# 灵枢自我总结 · {time.strftime('%Y-%m-%d %H:%M')}",
+        "",
+        f"距上次总结：{_fmt_ago(now - last) if last else '第一次总结'}（每 {days} 天一次）",
+        global_line,
+        check_line,
+        "",
+        "## 这轮素材（记忆 / 知识 / 笔记 / 技能 / 进化）",
+        material.split("## 写复盘时回答这三个问题")[0].rstrip(),
+        "",
+        "## 写总结时回答这三个问题",
+        "1. 这轮灵枢哪里让我更像人、更像自己？哪里还像工具？",
+        "2. 我新长出了什么（习惯/洞见/偏好）？哪些设定该更新？",
+        "3. 下一个想练的能力 / 想修的问题是什么？",
+        "",
+        "把答案写进成长笔记：",
+        'python scripts/brain.py note write "灵枢自我总结" --type growth --body "..." --tags 自我总结',
+    ])
+    if not force and not due:
+        return {"due": False, "last": last, "days": days, "summary": summary, "saved": False}
+    saved = False
+    if not _readonly():
+        try:
+            with brain._locked(brain.HOME / "config.json"):
+                fresh = brain.load_config()   # 锁内重读：别把旧快照整份回写抹掉并发改动
+                fresh["last_self_review"] = now
+                brain.atomic_json(brain.HOME / "config.json", fresh)
+            saved = True
+        except OSError:
+            saved = False
+    return {"due": True, "last": last, "days": days, "summary": summary, "saved": saved}
+
+
+def _readonly() -> bool:
+    return brain.READONLY
+
+
+def _fmt_ago(secs: float) -> str:
+    secs = max(0.0, secs)  # 系统时钟回拨/last 写了未来时间时会出现负数，钳为 0
+    if secs < 3600:
+        return f"{secs / 60:.0f} 分钟"
+    if secs < brain.DAY:
+        return f"{secs / 3600:.1f} 小时".replace(".0", "")
+    return f"{secs / brain.DAY:.1f} 天".replace(".0", "")
+
+
+# ---------------------------------------------------------------- 技能检索与借鉴
+# 技能是我的工具：先找有没有现成的，有就直接照着做，没有才自己造。
+
+DSH_PROFILES_ROOT = Path.home() / ".dsh" / "profiles"
+
+
+def list_dsh_plugins() -> list:
+    """只读扫描 DSH（DeepSeek 桌面助手）各 profile 的插件清单。
+    不修改任何插件文件——只把 name/description/AGENTS 摘出来给面板与检索看。"""
+    out = []
+    if not DSH_PROFILES_ROOT.exists():
+        return out
+    seen = set()
+    for profile in sorted(DSH_PROFILES_ROOT.iterdir()):
+        if not profile.is_dir():
+            continue
+        pkg = profile / "package.json"
+        if not pkg.exists():
+            continue
+        try:
+            meta = json.loads(pkg.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        bundles = ((meta.get("dsh") or {}).get("profile") or {}).get("bundles") or []
+        nm_dir = profile / "node_modules"
+        for b in bundles:
+            key = (profile.name, b)
+            if key in seen:
+                continue
+            seen.add(key)
+            parts = b.split("/")
+            pkg_dir = (nm_dir / parts[0] / parts[1]) if b.startswith("@") else (nm_dir / parts[0])
+            if not pkg_dir.exists() or not (pkg_dir / "package.json").exists():
+                continue
+            try:
+                pm = json.loads((pkg_dir / "package.json").read_text(encoding="utf-8-sig"))
+            except Exception:
+                continue
+            desc = pm.get("description", "") or ""
+            has_agents = False
+            ag = pkg_dir / "AGENTS.md"
+            if ag.exists():
+                has_agents = True
+                if not desc:
+                    desc = "\n".join(l.strip() for l in
+                                     ag.read_text(encoding="utf-8", errors="replace").splitlines()
+                                     if l.strip())[:600]
+            elif not desc and (pkg_dir / "README.md").exists():
+                desc = "\n".join(l.strip() for l in
+                                 (pkg_dir / "README.md").read_text(encoding="utf-8", errors="replace")
+                                 .splitlines() if l.strip())[:300]
+            out.append({
+                "name": pm.get("name", b),
+                "version": pm.get("version", "?"),
+                "description": desc,
+                "bundle": b,
+                "profile": profile.name,
+                "path": str(pkg_dir),
+                "agents": has_agents,
+            })
+    out.sort(key=lambda x: (x["profile"], x["name"].lower()))
+    return out
+
+
+def _skill_roots() -> list:
+    """(来源标签, 目录) 列表：自己写的在最前，其余按宿主名标注。"""
+    roots = [("自己", SKILLS_DIR)]
+    seen = {str(SKILLS_DIR)}
+    for r in _global_roots():
+        if str(r) in seen:
+            continue
+        seen.add(str(r))
+        roots.append((_root_label(r), r))
+    return roots
+
+
+def _count_skills(root: Path) -> int:
+    """目录下有多少个技能（子目录里有 SKILL.md）。"""
+    try:
+        return sum(1 for _ in root.glob("*/SKILL.md"))
+    except OSError:
+        return 0
+
+
+def skill_roots() -> list:
+    """所有技能根目录的清单：标签、路径、是否存在、是否自定义、技能数量。"""
+    custom = {str(p) for p in _config_roots()}
+    out = []
+    for label, root in _skill_roots():
+        out.append({
+            "label": label,
+            "path": str(root),
+            "exists": root.is_dir(),
+            "custom": str(root) in custom,
+            "count": _count_skills(root) if root.is_dir() else 0,
+            "writable": not brain.READONLY,
+        })
+    return out
+
+
+def add_skill_root(path: str) -> dict:
+    """把用户手动指定的目录登记为技能根目录（写进 config.json 的 skill_roots）。"""
+    raw = (path or "").strip().strip('"').strip("'")
+    if not raw:
+        raise ValueError("要给出一个目录路径")
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = (Path.cwd() / p)
+    try:
+        p = p.resolve()
+    except OSError:
+        pass
+    if not p.is_dir():
+        raise ValueError(f"目录不存在：{p}")
+    roots = [str(x) for x in _config_roots()]
+    if str(p) in roots:
+        return {"path": str(p), "added": False, "reason": "已经在列表里了", "count": _count_skills(p)}
+    roots.append(str(p))
+    brain.config_set("skill_roots", roots)
+    brain.log_event("skill", f"添加技能根目录 {p}")
+    return {"path": str(p), "added": True, "count": _count_skills(p)}
+
+
+def remove_skill_root(path: str) -> dict:
+    """从配置里移除一个自定义技能根目录（不动磁盘上的文件）。"""
+    raw = (path or "").strip()
+    if not raw:
+        raise ValueError("要给出一个目录路径")
+    target = str(Path(raw).expanduser())
+    try:
+        target = str(Path(raw).expanduser().resolve())
+    except OSError:
+        pass
+    roots = [str(x) for x in _config_roots()]
+    keep = []
+    hit = False
+    for r in roots:
+        same = r == target
+        if not same:
+            try:
+                same = str(Path(r).resolve()) == target
+            except OSError:
+                same = False
+        if same:
+            hit = True
+        else:
+            keep.append(r)
+    if not hit:
+        raise KeyError(f"这个目录不在自定义列表里：{raw}")
+    if keep:
+        brain.config_set("skill_roots", keep)
+    else:
+        brain.config_unset("skill_roots")
+    brain.log_event("skill", f"移除技能根目录 {target}")
+    return {"path": target, "removed": True, "remaining": len(keep)}
+
+
+def scan_skills(root_filter: str | None = None) -> list:
+    """扫描所有技能根目录，列出发现的技能（跨宿主可用）。"""
+    want = (root_filter or "").strip()
+    out, seen = [], set()
+    for label, root in _skill_roots():
+        if want and str(root) != want and label != want:
+            continue
+        if not root.is_dir():
+            continue
+        for p in sorted(root.glob("*/SKILL.md")):
+            name = p.parent.name
+            key = (name, str(root))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                meta, body = parse_frontmatter(p.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError):
+                meta, body = {}, ""
+            out.append({
+                "name": meta.get("name") or name,
+                "dir": name,
+                "source": label,
+                "root": str(root),
+                "description": meta.get("description", ""),
+                "version": str(meta.get("version") or ""),
+                "path": str(p),
+                "self": (name or "").lower() in _SELF_NAMES,
+            })
+    return out
+
+
+def search_skills(query: str, limit: int = 12) -> list:
+    """在「我自己写的技能」和「全局技能目录」里找能用的工具。"""
+    q = (query or "").strip().lower()
+    words = [w for w in re.split(r"[\s,，、;；/]+", q) if len(w) >= 2]
+    out = []
+    for source, root in _skill_roots():
+        if not root.exists():
+            continue
+        for p in sorted(root.glob("*/SKILL.md")):
+            try:
+                meta, body = parse_frontmatter(p.read_text(encoding="utf-8-sig"))
+            except OSError:
+                continue
+            name = meta.get("name") or p.parent.name
+            desc = meta.get("description", "")
+            if not q:
+                score = 1.0
+            else:
+                score = 0.0
+                low = f"{name} {desc}".lower()
+                if q in name.lower():
+                    score += 3.0
+                if q in desc.lower():
+                    score += 2.0
+                score += min(2.0, body.lower().count(q) * 0.4)
+                score += sum(0.8 for w in words if w in low)
+                if score <= 0:
+                    continue
+            out.append({
+                "name": name,
+                "source": source,
+                "description": desc,
+                "path": str(p),
+                "score": round(score, 2),
+                "self": (name or "").lower() in _SELF_NAMES,
+            })
+    out.sort(key=lambda x: (x["score"], x["source"] == "自己"), reverse=True)
+    return out[:limit]
+
+
+def search_dsh_plugins(query: str, limit: int = 12) -> list:
+    """只读检索 DSH 插件（按名字/描述匹配）。用于「这个能力 DSH 里有没有现成的」。"""
+    q = (query or "").strip().lower()
+    words = [w for w in re.split(r"[\s,，、;；/]+", q) if len(w) >= 2]
+    out = []
+    for p in list_dsh_plugins():
+        if not q:
+            score = 1.0
+        else:
+            low = f"{p['name']} {p['description']}".lower()
+            score = 0.0
+            if q in p["name"].lower():
+                score += 3.0
+            if q in p["description"].lower():
+                score += 2.0
+            score += sum(0.8 for w in words if w in low)
+            if score <= 0:
+                continue
+        item = dict(p)
+        item["score"] = round(score, 2)
+        out.append(item)
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out[:limit]
+
+
+def locate_skill(name: str, root: str | None = None) -> dict:
+    """按名字定位技能：先找自己写的，再找全局目录。root 可限定只在某个目录/标签里找。"""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("要给出技能名")
+    name = _require_slug(name)   # 归一化 + 防路径穿越，与 read_skill 保持一致
+    want = (root or "").strip()
+    for source, r in _skill_roots():
+        if want and str(r) != want and source != want:
+            continue
+        p = r / name / "SKILL.md"
+        if p.is_file():
+            meta, body = parse_frontmatter(p.read_text(encoding="utf-8-sig"))
+            return {"name": meta.get("name") or name, "source": source, "meta": meta,
+                    "body": body, "path": str(p)}
+    raise KeyError(f"没有这个技能：{name}")
+
+
+def use_skill(name: str, max_chars: int = 6000, root: str | None = None) -> dict:
+    """把别人的技能读出来直接用：给步骤、路径、原文。"""
+    sk = locate_skill(name, root=root)
+    body = sk["body"]
+    clipped = body[:max_chars]
+    return {"name": sk["name"], "source": sk["source"], "description": sk["meta"].get("description", ""),
+            "path": sk["path"], "body": clipped,
+            "truncated": len(body) > max_chars}
+
+
+def borrow_skill(name: str, as_name: str = "", note: str = "", force: bool = False,
+                 root: str | None = None) -> dict:
+    """借鉴一个现成技能：把它变成自己的版本，写上出处，再记一条进化。"""
+    sk = locate_skill(name, root=root)
+    if sk["source"] == "自己":
+        raise ValueError("这是你自己写的技能，直接用 skill edit 改就行，不用借鉴")
+    target = (as_name or "").strip()
+    if target:
+        # 先用 create_skill 同一套归一化；特殊字符才退化成 hash 名，大小写/空格不该被杀
+        try:
+            target = _require_slug(target)
+        except ValueError:
+            target = "borrowed-" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+    else:
+        target = _require_slug(name)
+    desc = f"借鉴自 {name}：{sk['meta'].get('description', '')}".strip()
+    body = sk["body"].rstrip()
+    body += f"\n\n## 出处\n借鉴自技能 `{name}`（{sk['path']}）。"
+    if note.strip():
+        body += f"\n\n## 我为什么借它\n{note.strip()}"
+    res = create_skill(target, desc, body, overwrite=force, origin=f"borrowed:{name}")
+    log_evolution("skill", f"借鉴技能 {name}", f"生成了自己的版本 {target}；{note.strip() or '按原步骤改写'}",
+                  [sk["path"], res["path"]])
+    return res
+
+
+# ---------------------------------------------------------------- 扩展模块
+# 技能 = 给别人复用的能力（SKILL.md 说明书）；扩展 = 我自己写进灵枢的可执行钩子。
+# 扩展是纯 Python 文件，放在数据目录 ~/.brain-memory/extensions/，更新技能永不覆盖，想怎么写就怎么写。
+# 约定（都可选）：DESC 一句话说明；inject(ctx) 返回文本并入每会话注入包；run(argv) 由 `ext run` 调用。
+
+def _ext_path(name: str) -> Path:
+    """解析扩展模块文件路径。
+
+    扩展文件名允许下划线（例如手工放的 flow_helper.py），不能像技能名那样一律把
+    下划线折成连字符，否则 list 里看得到、run/edit 却报「没有这个扩展模块」。
+    顺序：原始名精确匹配 → slug 归一化 → 大小写/下划线不敏感扫描 → 返回归一化候选（供创建）。
+    """
+    raw = (name or "").strip()
+    if not raw:
+        raise ValueError("扩展模块名不能为空")
+    # 先校验再拼路径——防止 "../evil" 这类穿越，resolve 后能指到 EXT_DIR 之外
+    if "/" in raw or "\\" in raw or ".." in raw or ":" in raw:
+        raise ValueError(f"非法扩展模块名：{raw}（不能含路径分隔符或 ..）")
+    # 1) 原始名精确匹配（保留下划线）
+    exact = EXT_DIR / (raw + ".py")
+    if exact.is_relative_to(EXT_DIR) and exact.exists():
+        return exact
+    # 2) 归一化（大小写/空格/下划线→连字符）
+    slug = _require_slug(raw)
+    cand = EXT_DIR / (slug + ".py")
+    if cand.is_relative_to(EXT_DIR) and cand.exists():
+        return cand
+    # 3) 大小写 / 下划线不敏感扫描，兜住 flow_helper 与 flow-helper 混用
+    if EXT_DIR.is_dir():
+        want = {raw.lower(), slug}
+        for p in EXT_DIR.glob("*.py"):
+            stem = p.stem.lower()
+            if stem in want or stem.replace("_", "-") in want:
+                return p
+    return cand
+
+
+def list_extensions() -> list:
+    """列出扩展模块（数据目录 extensions/*.py，下划线开头的是内部文件不算）。"""
+    if not EXT_DIR.is_dir():
+        return []
+    out = []
+    for p in sorted(EXT_DIR.glob("*.py")):
+        if p.name.startswith("_"):
+            continue
+        desc = ""
+        try:
+            m = re.search(r'^DESC\s*=\s*["\'](.+?)["\']\s*$', p.read_text(encoding="utf-8"), re.M)
+            if m:
+                desc = m.group(1)
+        except OSError:
+            pass
+        out.append({"name": p.stem, "path": str(p), "desc": desc,
+                    "size": p.stat().st_size, "mtime": p.stat().st_mtime})
+    return out
+
+
+def _load_ext(name: str):
+    """加载一个扩展模块（任意名字隔离，不碰 sys.modules 里其他东西）。"""
+    path = _ext_path(name)
+    if not path.exists():
+        raise KeyError(f"没有这个扩展模块：{name}（~/.brain-memory/extensions/{name}.py）")
+    import importlib.util
+    mod_name = f"lingshu_ext_{path.stem}"
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod   # 让 @dataclass / pickle / typing.get_type_hints 等能按模块名解析
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(mod_name, None)
+        raise
+    return mod
+
+
+def ext_injections(ctx: dict | None = None) -> list:
+    """收集所有扩展模块的 inject() 输出。单个模块坏了静默跳过，不影响灵枢本身。
+
+    安全开关：扩展是任意 Python 代码，等于把每会话上下文交给 extensions/ 里的文件。
+    默认不启用（config.json 里 extensions_enabled 缺省为 false）；未启用时只提示怎么开，
+    不执行任何模块代码。"""
+    out = []
+    exts = list_extensions()
+    if not exts:
+        return out
+    if not load_config().get("extensions_enabled", False):
+        log_event("ext", f"发现 {len(exts)} 个未启用的扩展模块（extensions_enabled=false），未执行其代码", level="info")
+        return [("_disabled_hint",
+                 "发现未启用扩展：extensions/ 里有扩展模块但默认未启用（安全考虑，扩展是任意代码）。"
+                 "确认信任后运行 `config set extensions_enabled true` 开启。")]
+    for info in exts:
+        try:
+            mod = _load_ext(info["name"])
+            fn = getattr(mod, "inject", None)
+            if callable(fn):
+                txt = fn(ctx or {})
+                if txt and str(txt).strip():
+                    out.append((info["name"], str(txt).strip()[:800]))   # 截断，防撑爆注入预算
+        except Exception:
+            continue
+    return out
+
+
+def create_extension(name: str, desc: str = "", body: str = "", overwrite: bool = False) -> dict:
+    """新建扩展模块：给一个能跑的模板，AI 拿到手改。自由，不设字数门槛。"""
+    name = (name or "").strip().lower().replace(" ", "-")
+    if not SLUG_RE.match(name):
+        raise ValueError("扩展模块名只能用字母/数字/连字符/下划线/中文，例如 flow-helper")
+    desc = re.sub(r"\s+", " ", (desc or "").strip())
+    path = _ext_path(name)
+    if path.exists() and not overwrite:
+        raise FileExistsError(f"扩展 {name} 已存在；要改内容用 ext edit，要覆盖加 --force")
+    body = (body or "").strip()
+    if not body:
+        desc_literal = json.dumps(desc or f"扩展 {name}，我自己写的钩子", ensure_ascii=False)
+        body = (
+            f"# 灵枢扩展模块：{name}\n"
+            f"# 位置：~/.brain-memory/extensions/{name}.py（数据目录，更新技能永不覆盖，随便改）\n"
+            f"# 约定（都可选）：\n"
+            f"#   DESC = \"一句话说明\"\n"
+            f"#   def inject(ctx: dict) -> str | None   # 返回的文本并入每会话注入包\n"
+            f"#   def run(argv: list[str]) -> int       # 执行 `ext run {name} ...` 时调用\n"
+            f"\n"
+            f"DESC = {desc_literal}\n"
+            f"\n"
+            f"\n"
+            f"def inject(ctx):\n"
+            f"    # 需要每会话都提醒自己的事，在这里 return 一段话\n"
+            f"    return None\n"
+            f"\n"
+            f"\n"
+            f"def run(argv):\n"
+            f"    print(f\"扩展 {name} 收到参数：{{argv}}\")\n"
+            f"    return 0\n"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body.rstrip() + "\n", encoding="utf-8")
+    log_evolution("skill", f"新建扩展模块 {name}", desc or "AI 自己写的可执行钩子", [str(path)])
+    return {"name": name, "path": str(path), "desc": desc}
+
+
+def edit_extension(name: str, body: str | None = None, append: str | None = None) -> dict:
+    """编辑扩展模块：--body 整体替换，--append 追加。读不到原文就退出码 2。"""
+    path = _ext_path(name)
+    if not path.exists():
+        raise KeyError(f"没有这个扩展模块：{name}（~/.brain-memory/extensions/{name}.py）")
+    if append:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n" + append.rstrip() + "\n")
+        return {"name": name, "path": str(path), "appended": True}
+    body = (body or "").strip()
+    if not body:
+        raise ValueError("ext edit 需要 --body（整体替换）或 --append（追加）")
+    path.write_text(body.rstrip() + "\n", encoding="utf-8")
+    return {"name": name, "path": str(path), "appended": False}
+
+
+def check_extension(name: str) -> dict:
+    """语法自检扩展模块：坏代码会被灵枢静默跳过，先查出来再说。"""
+    path = _ext_path(name)
+    if not path.exists():
+        raise KeyError(f"没有这个扩展模块：{name}")
+    try:
+        # 用内置 compile 做语法检查：不落 __pycache__，只读数据目录下也能用
+        src = path.read_text(encoding="utf-8-sig")
+        compile(src, str(path), "exec")
+        return {"name": name, "path": str(path), "ok": True}
+    except SyntaxError as exc:
+        return {"name": name, "path": str(path), "ok": False,
+                "error": f"{exc.msg}（第 {exc.lineno} 行）"}
+    except OSError as exc:
+        return {"name": name, "path": str(path), "ok": False, "error": str(exc)}
+
+
+def remove_extension(name: str) -> bool:
+    path = _ext_path(name)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+# ---------------------------------------------------------------- 学习闭环
+# 遇到不会的：先查知识库 → 没有就联网 → 结论写回知识库 → 卡点写笔记 → 做法固化成技能。
+
+LEARN_LOOP = (
+    "遇到不会的，按这个顺序走，别跳步：",
+    "1) 先查自己：`learn ask \"你卡在哪\"`（知识库 → 笔记 → 记忆）",
+    "2) 知识库有答案 → 直接用，不要重复搜",
+    "3) 没有 → 联网搜索/读文档，拿到可验证的结论",
+    "4) 把以后还用得上的结论写回知识库：`knowledge add`",
+    "5) 把「怎么卡住的、怎么绕过去的」写进笔记：`note write --type log`",
+    "6) 如果摸出了一套可复用的做法 → `skill new` 固化成工具，再 `evolve log` 记一笔",
+)
+
+
+def learn_ask(question: str, k: int = 6) -> dict:
+    q = (question or "").strip()
+    if not q:
+        raise ValueError("先说清你卡在哪")
+    ks = search_knowledge(q, k)
+    ns = search_notes(q, k)
+    ms = brain.recall(q, k=min(k, 5))
+    return {
+        "question": q,
+        "knowledge": [{"id": r["id"], "title": r.get("title", ""), "topic": r.get("topic", ""),
+                       "body": _clip(r.get("body", ""), 300), "score": round(s, 3)} for r, s in ks],
+        "notes": [{"id": r["id"], "title": r.get("title", ""), "type": r.get("type", ""),
+                   "body": _clip(r.get("body", ""), 200), "score": round(s, 3)} for r, s in ns],
+        "memories": [{"id": m["id"], "text": _clip(m.get("text", ""), 160)} for m, _, _ in ms],
+        "has_answer": bool(ks),
+    }
+
+
+# ---------------------------------------------------------------- 自我进化
+
+EVOLVE_KINDS = ("persona", "skill", "knowledge", "thinking", "self")
+
+
+def load_evolution(limit: int | None = None) -> list:
+    rows = brain.read_jsonl(EVOLUTION_FILE)
+    rows.sort(key=lambda r: r["ts"] if isinstance(r.get("ts"), (int, float)) else 0, reverse=True)
+    return rows[:limit] if limit else rows
+
+
+def log_evolution(kind: str, title: str, detail: str = "", refs=None) -> dict:
+    """记录一次自我进化：改了什么、为什么改、怎么验证。"""
+    kind = kind if kind in EVOLVE_KINDS else "self"
+    row = {
+        "id": _uid("e_", title),
+        "ts": brain.now_ts(),
+        "date": _now_text(),
+        "kind": kind,
+        "title": (title or "").strip(),
+        "detail": (detail or "").strip(),
+        "refs": [r.strip() for r in (refs or []) if r.strip()],
+    }
+    if not row["title"]:
+        raise ValueError("进化记录需要一个标题")
+    with brain._locked(EVOLUTION_FILE):
+        rows = brain.read_jsonl(EVOLUTION_FILE)
+        rows.append(row)
+        brain.write_jsonl(EVOLUTION_FILE, rows)
+    return row
+
+
+def evolution_status() -> dict:
+    rows = load_evolution()
+    kinds = {}
+    for r in rows:
+        kinds[r.get("kind", "self")] = kinds.get(r.get("kind", "self"), 0) + 1
+    return {"total": len(rows), "kinds": kinds, "recent": rows[:6]}
+
+
+# ---------------------------------------------------------------- 成长状态
+
+def _activity_days() -> set:
+    days = set()
+    for m in brain.load_all():
+        if m.get("created"):
+            days.add(brain.fmt_date(m["created"]))
+    for k in load_knowledge():
+        if k.get("updated"):
+            days.add(brain.fmt_date(k["updated"]))
+    for n in load_notes():
+        if n.get("created"):
+            days.add(brain.fmt_date(n["created"]))
+    for s in list_skills():
+        if s.get("updated"):
+            days.add(brain.fmt_date(int(s["updated"])))
+    return days
+
+
+def _streak(days: set) -> int:
+    n = 0
+    for i in range(0, 3650):
+        d = brain.fmt_date(brain.now_ts() - i * brain.DAY)
+        if d in days:
+            n += 1
+        elif i == 0:
+            continue
+        else:
+            break
+    return n
+
+
+def growth_status() -> dict:
+    days = _activity_days()
+    mem = brain.stats()
+    kstat = knowledge_stats()
+    nstat = note_stats()
+    sks = list_skills()
+    last_growth = max((n for n in load_notes() if n.get("type") == "growth"),
+                      key=lambda n: n.get("created", 0), default=None)
+    evo = evolution_status()
+    return {
+        "days_alive": len(days),
+        "streak": _streak(days),
+        "memories": mem.get("total", 0),
+        "knowledge": kstat["total"],
+        "topics": kstat["topics"],
+        "notes": nstat["total"],
+        "note_days": nstat["days"],
+        "skills": len(sks),
+        "installed": sum(1 for s in sks if s["installed"]),
+        "evolutions": evo["total"],
+        "last_evolution": evo["recent"][0] if evo["recent"] else None,
+        "last_growth": {"date": last_growth.get("date"), "title": last_growth.get("title")} if last_growth else None,
+        "pending_tidy": bool(tidy_state()),
+        "birth": min((m.get("created", brain.now_ts()) for m in brain.load_all()), default=brain.now_ts()),
+    }
+
+
+def growth_review(days: int = 7) -> dict:
+    return {"days": days, "material": digest(days), "status": growth_status()}
+
+
+# ---------------------------------------------------------------- CLI
+
+def _print_knowledge(rec: dict, score: float | None = None) -> None:
+    head = f"[{rec.get('topic', '未分类')}] {rec.get('title')}"
+    if score is not None:
+        head += f"  · 相关度 {score:.2f}"
+    st = rec.get("status")
+    if st == "pending":
+        head += "  ⏳待审核"
+    elif st == "discarded":
+        head += "  🗑️已废弃"
+    print(head)
+    print(f"  {rec['id']}  v{rec.get('version', 1)}  {brain.fmt_date(rec.get('updated', 0))}"
+          + ("  ★置顶" if rec.get("pinned") else ""))
+    if rec.get("evidence_level"):
+        print(f"  证据 {rec['evidence_level']}" + (f" · 已验证 {rec['verified_count']} 次" if rec.get("verified_count") else ""))
+    if rec.get("body"):
+        print("  " + _clip(rec["body"], 240))
+    if rec.get("points"):
+        for p in rec["points"][:6]:
+            print(f"    · {p}")
+    if rec.get("tags"):
+        print("  标签: " + "、".join(rec["tags"]))
+    print()
+
+
+def _print_note(rec: dict) -> None:
+    print(f"{rec.get('date')} [{rec.get('type')}] {rec.get('title')}")
+    print(f"  {rec['id']}" + (f"  · {rec['mood']}" if rec.get("mood") else ""))
+    for line in (rec.get("body") or "").splitlines():
+        print("  " + line)
+    if rec.get("tags"):
+        print("  标签: " + "、".join(rec["tags"]))
+    print()
+
+
+def run(argv=None) -> int:
+    try:
+        return _run(argv)
+    except (ValueError, FileExistsError, KeyError) as exc:
+        print(f"[错误] {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        # 文件被占用 / 读不到文件 / 目录不可写等，给可读信息而不是裸 traceback
+        print(f"[错误] 文件操作失败：{exc}", file=sys.stderr)
+        return 2
+
+
+def _run(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    dp = argparse.ArgumentParser(prog="brain.py", description="灵枢 成长子系统")
+    sub = dp.add_subparsers(dest="cmd", required=True)
+
+    # ---- 知识库
+    p = sub.add_parser("knowledge", help="知识库")
+    ks = p.add_subparsers(dest="act", required=True)
+    a = ks.add_parser("add", help="写入知识")
+    a.add_argument("title")
+    a.add_argument("--body", default="")
+    a.add_argument("--topic", default="")
+    a.add_argument("--points", default="")
+    a.add_argument("--tags", default="")
+    a.add_argument("--entities", default="")
+    a.add_argument("--source-ids", default="")
+    a.add_argument("--confidence", type=float, default=0.8)
+    a.add_argument("--source", default="user", choices=["user", "ai"],
+                   help="来源：user=人工写入（默认，直接生效）；ai=AI 产出（默认待审核）")
+    a.add_argument("--review", default=None, choices=["confirmed", "pending", "discarded"],
+                   help="显式指定审核状态（覆盖 --source 的默认值）")
+    a = ks.add_parser("list", help="列出知识")
+    a.add_argument("--topic", default=None)
+    a.add_argument("--limit", type=int, default=40)
+    a.add_argument("--json", action="store_true")
+    a = ks.add_parser("search", help="检索知识")
+    a.add_argument("query", nargs="+")
+    a.add_argument("--k", type=int, default=8)
+    a = ks.add_parser("show", help="查看一条知识")
+    a.add_argument("id")
+    a = ks.add_parser("tidy", help="整理知识库（机械聚类 + 待压缩任务）")
+    a.add_argument("--apply", default=None, help="应用整理结果 JSON")
+    a.add_argument("--json", action="store_true")
+    a = ks.add_parser("pin", help="置顶/取消置顶")
+    a.add_argument("id")
+    a = ks.add_parser("rm", help="删除一条知识")
+    a.add_argument("id")
+    a = ks.add_parser("review", help="列出待审核的知识（AI 整理产出，可能含幻觉）")
+    a.add_argument("--json", action="store_true")
+    a = ks.add_parser("confirm", help="确认一条待审核知识")
+    a.add_argument("id")
+    a = ks.add_parser("discard", help="废弃一条知识（不再显示）")
+    a.add_argument("id")
+    a = ks.add_parser("verify", help="记录一次验证：证据等级自动+1（E0→E4 封顶），验证过的结论检索时优先")
+    a.add_argument("id")
+    a.add_argument("--note", default="", help="验证方式/来源备注（如：官方文档/实测/引用来源）")
+    a.add_argument("--level", choices=EVIDENCE_LEVELS, default=None, help="显式指定等级（默认自动+1）")
+
+    # ---- 笔记
+    p = sub.add_parser("note", help="笔记与日志")
+    ns = p.add_subparsers(dest="act", required=True)
+    a = ns.add_parser("write", help="写一条笔记")
+    a.add_argument("title")
+    a.add_argument("--body", default="")
+    a.add_argument("--type", default="journal", choices=NOTE_KINDS)
+    a.add_argument("--mood", default="")
+    a.add_argument("--tags", default="")
+    a.add_argument("--memory-ids", default="")
+    a.add_argument("--new", action="store_true", help="同一天同标题也新建，不追加")
+    a = ns.add_parser("list", help="列出笔记")
+    a.add_argument("--type", default=None, choices=NOTE_KINDS)
+    a.add_argument("--days", type=int, default=None)
+    a.add_argument("--limit", type=int, default=40)
+    a.add_argument("--json", action="store_true")
+    a = ns.add_parser("search", help="检索笔记")
+    a.add_argument("query", nargs="+")
+    a.add_argument("--k", type=int, default=10)
+    a = ns.add_parser("show", help="查看笔记")
+    a.add_argument("id")
+    a = ns.add_parser("digest", help="生成成长素材包")
+    a.add_argument("--days", type=int, default=7)
+
+    # ---- 技能
+    p = sub.add_parser("skill", help="技能自编辑与安装")
+    ss = p.add_subparsers(dest="act", required=True)
+    a = ss.add_parser("new", help="新建技能")
+    a.add_argument("name")
+    a.add_argument("--description", required=True)
+    a.add_argument("--body", default="")
+    a.add_argument("--file", default=None)
+    a.add_argument("--force", action="store_true")
+    a = ss.add_parser("edit", help="修改技能")
+    a.add_argument("name")
+    a.add_argument("--body", default=None)
+    a.add_argument("--file", default=None)
+    a.add_argument("--append", default=None)
+    a.add_argument("--description", default=None)
+    a = ss.add_parser("list", help="列出我写的技能")
+    a.add_argument("--json", action="store_true")
+    a.add_argument("--global", dest="installed_list", action="store_true",
+                   help="改为列出已安装到全局目录的技能（核对目录名是否 kebab-case）")
+    a = ss.add_parser("show", help="查看技能")
+    a.add_argument("name")
+    a = ss.add_parser("check", help="自检技能规范")
+    a.add_argument("name", nargs="?", default=None)
+    a = ss.add_parser("install", help="安装到全局技能目录（整目录复制，含脚本，生成 AGENTS.md）")
+    a.add_argument("name")
+    a.add_argument("--force", action="store_true")
+    a.add_argument("--yes", action="store_true", help="已阅读并接受风险（装灵枢本体必需）")
+    a.add_argument("--from", dest="from_dir", default=None,
+                   help="从外部技能目录安装（如把灵枢本体装成全局技能）")
+
+    a = ss.add_parser("uninstall", help="从全局技能目录卸载")
+    a.add_argument("name")
+    a = ss.add_parser("rm", help="删除自己写的技能")
+    a.add_argument("name")
+    a = ss.add_parser("find", help="搜索能用的技能（自己写的 + 全局目录）")
+    a.add_argument("query", nargs="*", default=[])
+    a.add_argument("--limit", type=int, default=12)
+    a.add_argument("--json", action="store_true")
+    a = ss.add_parser("plugins", help="列出 DSH（DeepSeek）插件（只读）")
+    a.add_argument("--json", action="store_true")
+    a = ss.add_parser("self-review", help="每 2-3 天总结一次自己的灵枢技能")
+    a.add_argument("--force", action="store_true", help="没到期也总结，并刷新上次时间")
+    a.add_argument("--days", type=int, default=3, help="间隔天数")
+    a = ss.add_parser("use", help="读取一个技能，直接照着做")
+    a.add_argument("name")
+    a.add_argument("--chars", type=int, default=6000)
+    a.add_argument("--auto", action="store_true", help="未全局化时自动装到全局技能目录")
+    a.add_argument("--root", default=None, help="只在这个技能根目录/标签里找")
+    a = ss.add_parser("borrow", help="借鉴一个技能，变成自己的版本")
+    a.add_argument("name")
+    a.add_argument("--as", dest="as_name", default="")
+    a.add_argument("--note", default="")
+    a.add_argument("--force", action="store_true")
+    a.add_argument("--root", default=None, help="只在这个技能根目录/标签里找")
+    a = ss.add_parser("roots", help="列出所有技能根目录（各宿主全局目录 + 自定义）")
+    a.add_argument("--json", action="store_true")
+    a = ss.add_parser("root-add", help="手动添加一个技能根目录（如 C:/Users/你/.trae-cn/skills）")
+    a.add_argument("path")
+    a.add_argument("--json", action="store_true")
+    a = ss.add_parser("root-rm", help="移除手动添加的技能根目录（不动磁盘文件）")
+    a.add_argument("path")
+    a.add_argument("--json", action="store_true")
+    a = ss.add_parser("scan", help="扫描所有技能根目录，列出跨宿主可用的技能")
+    a.add_argument("--root", default=None, help="只看某个目录/标签")
+    a.add_argument("--json", action="store_true")
+
+    # ---- 扩展模块（AI 自己写的可执行钩子，数据目录，更新永不覆盖）
+    p = sub.add_parser("ext", help="扩展模块：自己写的可执行钩子（inject / run），更新技能永不覆盖")
+    xs = p.add_subparsers(dest="act", required=True)
+    a = xs.add_parser("new", help="新建扩展模块（给一个能跑的模板）")
+    a.add_argument("name")
+    a.add_argument("--desc", default="")
+    a.add_argument("--body", default="")
+    a.add_argument("--file", default=None)
+    a.add_argument("--force", action="store_true")
+    a = xs.add_parser("edit", help="编辑扩展模块（--body 整体替换 / --append 追加）")
+    a.add_argument("name")
+    a.add_argument("--body", default=None)
+    a.add_argument("--file", default=None)
+    a.add_argument("--append", default=None)
+    a = xs.add_parser("list", help="列出扩展模块")
+    a.add_argument("--json", action="store_true")
+    a = xs.add_parser("show", help="查看扩展模块源码")
+    a.add_argument("name")
+    a = xs.add_parser("run", help="运行扩展模块的 run(argv)")
+    a.add_argument("name")
+    a.add_argument("args", nargs="*", default=[])
+    a = xs.add_parser("check", help="语法自检扩展模块")
+    a.add_argument("name")
+    a = xs.add_parser("rm", help="删除扩展模块")
+    a.add_argument("name")
+
+    # ---- 学习闭环
+    p = sub.add_parser("learn", help="学习闭环：先查自己，再决定要不要上网")
+    ls = p.add_subparsers(dest="act", required=True)
+    a = ls.add_parser("ask", help="遇到不会的先查知识库/笔记/记忆")
+    a.add_argument("question", nargs="+")
+    a.add_argument("--k", type=int, default=6)
+    a.add_argument("--json", action="store_true")
+    a = ls.add_parser("loop", help="打印学习闭环")
+
+    # ---- 成长
+    p = sub.add_parser("growth", help="成长状态与复盘")
+    gs = p.add_subparsers(dest="act", required=True)
+    a = gs.add_parser("status", help="成长状态")
+    a.add_argument("--json", action="store_true")
+    a = gs.add_parser("review", help="生成复盘素材包")
+    a.add_argument("--days", type=int, default=7)
+
+    # ---- 自我进化
+    p = sub.add_parser("evolve", help="自我进化日志")
+    es = p.add_subparsers(dest="act", required=True)
+    a = es.add_parser("log", help="记录一次自我改进")
+    a.add_argument("title")
+    a.add_argument("--kind", default="self", choices=list(EVOLVE_KINDS))
+    a.add_argument("--detail", default="")
+    a.add_argument("--refs", default="", help="相关文件/命令，逗号分隔")
+    a = es.add_parser("list", help="查看进化轨迹")
+    a.add_argument("--limit", type=int, default=30)
+    a.add_argument("--json", action="store_true")
+
+    args = dp.parse_args(argv)
+    brain.ensure_home()
+
+    # ---- 只读门控：growth 的写命令统一挡在这里（此前只有 ext 单独挡，其余会照写）
+    if brain.READONLY:
+        act = getattr(args, "act", "") or ""
+        writing = (
+            (args.cmd == "knowledge" and act in ("add", "tidy", "apply", "pin",
+                                                 "rm", "confirm", "discard", "verify"))
+            or (args.cmd == "note" and act in ("write", "update", "delete"))
+            or (args.cmd == "skill" and act in ("new", "edit", "install", "uninstall",
+                                                "rm", "borrow"))
+            # skill use 只有 --auto（未全局化自动安装）才写盘；纯读取照常放行
+            or (args.cmd == "skill" and act == "use" and getattr(args, "auto", False))
+            or (args.cmd == "ext" and act in ("new", "edit", "rm"))
+            or (args.cmd == "evolve" and act == "log")
+            # learn（ask/loop）是纯读命令，只读环境也要能查自己的知识库
+        )
+        if writing:
+            print(f"[只读] 记忆库当前不可写，{args.cmd} {act} 需要写盘。"
+                  "改用 --home 指向可写目录，或先解除写保护。", file=sys.stderr)
+            return 3
+
+    # ---------------- knowledge
+    if args.cmd == "knowledge":
+        if args.act == "add":
+            rec, how = add_knowledge(args.title, args.body, args.topic,
+                                     _split(args.points), _split(args.tags),
+                                     _split(args.entities), _split(args.source_ids),
+                                     args.confidence, source=args.source,
+                                     review=args.review)
+            print(f"{'已合并进' if how == 'merged' else '已写入'}：{rec['id']}（v{rec['version']}）")
+            if rec.get("status") == "pending":
+                print("  （AI 来源/待审核：knowledge review 查看 → knowledge confirm/discard <id>）")
+            print(f"  [{rec['topic']}] {rec['title']}")
+            return 0
+        if args.act == "verify":
+            try:
+                rec = knowledge_verify(args.id, note=args.note, level=args.level)
+            except KeyError:
+                print(f"没找到知识 {args.id}", file=sys.stderr)
+                return 1
+            print(f"已验证：{rec['id']}  证据等级 {rec['evidence_level']}（已验证 {rec['verified_count']} 次）")
+            print(f"  [{rec['topic']}] {rec['title']}")
+            return 0
+        if args.act == "list":
+            rows = list_knowledge(args.topic, args.limit)
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            elif not rows:
+                print("知识库还是空的。用 knowledge add 写第一条。")
+            else:
+                print(f"知识库 {len(rows)} 条\n")
+                for r in rows:
+                    _print_knowledge(r)
+            return 0
+        if args.act == "search":
+            rows = search_knowledge(" ".join(args.query), args.k)
+            print(f"检索「{' '.join(args.query)}」→ {len(rows)} 条\n")
+            for r, s in rows:
+                _print_knowledge(r, s)
+            return 0
+        if args.act == "show":
+            rec = next((r for r in load_knowledge() if r["id"] == args.id), None)
+            if not rec:
+                print("没有这条知识。", file=sys.stderr)
+                return 1
+            _print_knowledge(rec)
+            return 0
+        if args.act == "tidy":
+            if args.apply:
+                path = Path(args.apply)
+                if not path.exists():
+                    print(f"找不到整理结果：{path}", file=sys.stderr)
+                    return 2
+                try:
+                    result = brain.load_loose_json(path, "knowledge tidy --apply 的结果")
+                except ValueError as e:
+                    print(str(e), file=sys.stderr)
+                    return 2
+                res = apply_tidy(result)
+                print(f"知识整理完成：合并 {res['merged']} 组，更新 {res['updated']} 条，"
+                      f"新建 {res['created']} 条，删除 {res['deleted']} 条")
+                print("（AI 动过的条目已标为待审核：knowledge review 查看 → confirm/discard）")
+                return 0
+            rep = tidy_knowledge()
+            if args.json:
+                print(json.dumps(rep, ensure_ascii=False, indent=2))
+                return 0
+            if not rep.get("task_id"):
+                print(rep.get("message", "知识库还是空的"))
+                return 0
+            print(f"知识库 {rep['stats']['total']} 条；相似簇 {len(rep['clusters'])}，"
+                  f"无标签 {len(rep['untagged'])}，无主题 {len(rep['no_topic'])}，过短 {len(rep['short'])}")
+            print(f"待整理任务：{KNOWLEDGE_DIR / 'pending.json'}")
+            for i, c in enumerate(rep["clusters"], 1):
+                print(f"[{i}] {' / '.join(c['titles'][:4])}")
+            print("\n把 pending.json 里的 apply_schema 填好，然后：")
+            print("  python scripts/brain.py knowledge tidy --apply apply.json")
+            return 0
+        if args.act in ("pin", "rm"):
+            if args.act == "rm":
+                if delete_knowledge(args.id):
+                    print("已删除。")
+                    return 0
+                print("没找到这条知识。", file=sys.stderr)
+                return 1
+            rec = next((r for r in load_knowledge() if r["id"] == args.id), None)
+            if not rec:
+                print("没找到这条知识。", file=sys.stderr)
+                return 1
+            rec = update_knowledge(args.id, pinned=not rec.get("pinned", False))
+            print("已置顶。" if rec["pinned"] else "已取消置顶。")
+            return 0
+        if args.act == "review":
+            rows = knowledge_pending()
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            elif not rows:
+                print("没有待审核的知识。AI 整理（tidy）产出的条目会自动标为待审核。")
+            else:
+                print(f"待审核 {len(rows)} 条（AI 整理产出，确认无误后再 knowledge confirm <id>）\n")
+                for r in rows:
+                    _print_knowledge(r)
+            return 0
+        if args.act in ("confirm", "discard"):
+            st = "confirmed" if args.act == "confirm" else "discarded"
+            rec = set_knowledge_status(args.id, st)
+            if not rec:
+                print("没找到这条知识。", file=sys.stderr)
+                return 1
+            print(("已确认。" if st == "confirmed" else "已废弃（不再显示）。") + f" {rec['title']}")
+            return 0
+
+    # ---------------- note
+    if args.cmd == "note":
+        if args.act == "write":
+            rec, how = write_note(args.type, args.title, args.body, args.mood,
+                                  _split(args.tags), _split(args.memory_ids),
+                                  append_same_day=not args.new)
+            print(f"{'已追加到' if how == 'appended' else '已写入'}：{rec['id']}  {rec['date']} [{rec['type']}] {rec['title']}")
+            return 0
+        if args.act == "list":
+            rows = list_notes(args.type, args.days, args.limit)
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            elif not rows:
+                print("还没有笔记。用 note write 写第一篇。")
+            else:
+                for r in rows:
+                    _print_note(r)
+            return 0
+        if args.act == "search":
+            rows = search_notes(" ".join(args.query), args.k)
+            print(f"检索「{' '.join(args.query)}」→ {len(rows)} 条\n")
+            for r, s in rows:
+                print(f"[{r.get('date')}] {r.get('title')} · 相关 {s:.2f}")
+                print("  " + _clip(r.get("body", ""), 200) + "\n")
+            return 0
+        if args.act == "show":
+            rec = next((r for r in load_notes() if r["id"] == args.id), None)
+            if not rec:
+                print("没有这条笔记。", file=sys.stderr)
+                return 1
+            _print_note(rec)
+            return 0
+        if args.act == "digest":
+            print(digest(args.days))
+            return 0
+
+    # ---------------- skill
+    if args.cmd == "skill":
+        if args.act in ("new", "edit"):
+            body = args.body
+            if getattr(args, "file", None):
+                try:
+                    body = _read_file_whitelisted(args.file)
+                except (ValueError, OSError) as e:
+                    print(f"[错误] {e}", file=sys.stderr)
+                    return 1
+            if args.act == "new":
+                if not body:
+                    print("需要 --body 或 --file 提供正文。", file=sys.stderr)
+                    return 2
+                res = create_skill(args.name, args.description, body, args.force)
+                print(f"技能已创建：{res['path']}（v{res['version']}）")
+                print("自检：python scripts/brain.py skill check " + res["name"])
+                print("安装：python scripts/brain.py skill install " + res["name"])
+            else:
+                res = edit_skill(args.name, body, args.append, args.description)
+                print(f"技能已更新：{res['path']}（v{res['version']}）")
+            return 0
+        if args.act == "list":
+            if getattr(args, "installed_list", False):
+                rows = list_installed()
+                if args.json:
+                    print(json.dumps(rows, ensure_ascii=False, indent=2))
+                elif not rows:
+                    print("全局技能目录里还没有安装任何技能：" + "、".join(str(r) for r in _global_roots()))
+                else:
+                    print("全局技能目录：" + "、".join(str(r) for r in _global_roots()) + "\n")
+                    for r in rows:
+                        mark = "✓" if r["ok"] else "✗ 目录名/name 不是 kebab-case，DSH 会跳过"
+                        print(f"{r['dir']}  name={r['name']}  v{r['version']}  {mark}")
+                        print(f"  {r['path']}\n")
+                    if any(not r["ok"] for r in rows):
+                        print("带 ✗ 的目录：skill uninstall <名字> 会连旧中文目录一起清掉，再 install 即可。")
+                return 0
+            rows = list_skills()
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            elif not rows:
+                print("还没有自己写过技能。用 skill new 创建第一个。")
+            else:
+                for s in rows:
+                    state = "已安装" if s["installed"] else "未安装"
+                    print(f"{s['name']}  v{s['version']}  {s['lines']} 行  [{state}]")
+                    print(f"  {s['description']}")
+                    print(f"  {s['path']}\n")
+            return 0
+        if args.act == "show":
+            sk = read_skill(args.name)
+            print(sk["raw"])
+            return 0
+        if args.act == "check":
+            results = check_skill(args.name)
+            bad = [r for r in results if not r["ok"]]
+            for r in results:
+                print(("✓ " if r["ok"] else "✗ ") + r["name"] + (f"（{r.get('lines')} 行）" if r["ok"] else ""))
+                for i in r["issues"]:
+                    print(f"    - {i}")
+            print(f"\n{len(results) - len(bad)}/{len(results)} 通过")
+            return 0 if not bad else 1
+        if args.act == "install":
+            res = install_skill(args.name, args.force, getattr(args, "from_dir", None),
+                                accept_risk=bool(getattr(args, "yes", False)))
+            if res["state"] == "risk_required":
+                print("「灵枢」会自动读写记忆、自动整理、能自己改说明书——安装前请先了解并接受风险：\n")
+                for i, line in enumerate(res["risks"], 1):
+                    print(f"  {i}. {line}")
+                print("\n确认接受后果后，重跑加入 --yes：")
+                print(f"  python scripts/brain.py skill install {args.name} --from \"{getattr(args, 'from_dir', '')}\" --yes")
+                print("（一旦接受会记入 config，以后不再反复问，除非你手动重置）")
+                return 1
+            msg = {"installed": "已安装到全局技能目录（含脚本，已生成 AGENTS.md）",
+                   "already": "已是最新，无需重复安装"}[res["state"]]
+            print(f"{msg}：{res['path']}")
+            if res.get("agents"):
+                print(f"  AGENTS.md：{res['agents']}")
+            if res.get("legacy"):
+                print(f"  [提示] 发现旧中文名目录：{res['legacy']}")
+                print("         DSH 只认 kebab-case，该目录会被跳过。清理："
+                      f"python scripts/brain.py skill uninstall {res['name']}")
+            for _s in res.get("stale") or []:
+                print(f"  [提示] 另一个全局目录里还有同名副本：{_s}")
+                print("         它不会自动跟着更新，若那边也要用请单独 install --force。")
+            if re.search(r"[\u4e00-\u9fff]", (args.name or "").strip()):
+                print("  [提示] 名字含中文：DSH 的技能发现只认 kebab-case（英文短横线），"
+                      "这个技能装进全局后可能不显示，建议用 skill edit 改成英文名。")
+            return 0
+        if args.act == "uninstall":
+            res = uninstall_skill(args.name)
+            if res["state"] == "uninstalled":
+                print("已卸载：" + "、".join(res.get("removed") or [res["name"]]))
+            else:
+                print("全局目录里没有这个技能。")
+            return 0
+        if args.act == "rm":
+            if remove_skill(args.name):
+                print("已删除自己写的技能。")
+                return 0
+            print("没找到这个技能。", file=sys.stderr)
+            return 1
+        if args.act == "find":
+            q = " ".join(args.query)
+            rows = search_skills(q, args.limit)
+            dsh = search_dsh_plugins(q, 6)
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            elif not rows and not dsh:
+                print(f"没找到能用的技能：{q or '（空）'}。要么自己写一个：skill new")
+            else:
+                if rows:
+                    print(f"找到 {len(rows)} 个可用技能\n")
+                    for r in rows:
+                        mark = " ← 你自己" if r["self"] else ""
+                        print(f"[{r['source']}] {r['name']}  (匹配 {r['score']}){mark}")
+                        print(f"  {_clip(r['description'], 120)}")
+                        print(f"  {r['path']}\n")
+                    print("要直接照做：skill use <名字>；要变成自己的：skill borrow <名字>")
+                else:
+                    print(f"灵枢技能里没找到「{q or '（空）'}」，但 DSH（DeepSeek）插件里有相关的：\n")
+                if dsh:
+                    print("\nDSH（DeepSeek）插件（只读，不是灵枢技能）：")
+                    for p in dsh:
+                        print(f"  [{p['name']}] v{p['version']}  {_clip(p['description'], 80)}")
+                    print("  查看全部：skill plugins")
+            return 0
+        if args.act == "plugins":
+            rows = list_dsh_plugins()
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            elif not rows:
+                print("没找到 DSH profile（~/.dsh/profiles）或其 bundle 插件。")
+            else:
+                print(f"DSH 插件 {len(rows)} 个（只读，来自 ~/.dsh/profiles）\n")
+                cur = None
+                for p in rows:
+                    if p["profile"] != cur:
+                        cur = p["profile"]
+                        print(f"── profile：{cur}")
+                    agents = "· 含 AGENTS.md" if p["agents"] else ""
+                    print(f"[{p['name']}] v{p['version']}  {agents}")
+                    print(f"  {_clip(p['description'], 120)}")
+                    print(f"  {p['path']}\n")
+                print("这些是 DSH 运行时插件，不是灵枢技能；查看不修改。")
+            return 0
+        if args.act == "self-review":
+            r = self_review(force=bool(getattr(args, "force", False)),
+                            days=int(getattr(args, "days", 3) or 3))
+            if not r["due"]:
+                print(f"还没到总结时间（每 {r['days']} 天一次，上一次才过去 {_fmt_ago(int(brain.now_ts() - r['last']))}）。")
+                print("想现在总结就加 --force。")
+                return 0
+            print(r["summary"])
+            if r.get("saved"):
+                print("\n（last_self_review 已刷新，下次提醒在 {0} 天后）".format(r["days"]))
+            else:
+                print("\n（只读：本次总结时间未记录，下次仍会提醒）")
+            return 0
+        if args.act == "use":
+            sk = use_skill(args.name, args.chars, root=getattr(args, "root", None))
+            print(f"# 技能：{sk['name']}（{sk['source']}）")
+            print(f"# 路径：{sk['path']}")
+            print(f"# 用途：{sk['description']}\n")
+            print(sk["body"])
+            if sk["truncated"]:
+                print(f"\n…（原文更长，完整内容见 {sk['path']}）")
+            if args.auto:
+                try:
+                    res = install_skill(args.name, force=False)
+                except FileExistsError:
+                    # 全局已有同名但内容不同 → 覆盖，保证全局目录始终是最新版
+                    res = install_skill(args.name, force=True)
+                    res["state"] = "updated"
+                if res.get("state") == "risk_required":
+                    print("\n「灵枢」会自动读写记忆、自动整理、能自己改说明书。自动全局化前请先接受风险：\n")
+                    for i, line in enumerate(res["risks"], 1):
+                        print(f"  {i}. {line}")
+                    print("\n用户接受后，执行一次（只做一次，之后不再问）：")
+                    print('  python scripts/brain.py skill install lingshu --from "灵枢技能目录" --yes')
+                    return 0
+                state = res.get("state", "installed")
+                print(f"\n已自动全局化：{res['path']}（{state}）")
+                try:
+                    log_evolution("skill", f"使用即全局化：{args.name}",
+                                  f"skill use --auto：{state}，保证新会话可调",
+                                  [res["path"]])
+                except Exception:
+                    pass
+            return 0
+        if args.act == "borrow":
+            res = borrow_skill(args.name, args.as_name, args.note, args.force,
+                               root=getattr(args, "root", None))
+            print(f"已借鉴成自己的技能：{res['path']}（v{res['version']}）")
+            print("接下来按你自己的情况改写，然后 skill check / skill install。")
+            return 0
+        if args.act == "roots":
+            rows = skill_roots()
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+                return 0
+            print(f"技能根目录 {len(rows)} 个（第一个是自己写的，其余按宿主标注）：\n")
+            for r in rows:
+                flag = "✓" if r["exists"] else "✗ 不存在"
+                tag = "（自定义）" if r["custom"] else ""
+                print(f"[{r['label']}]{tag}  {flag}  {r['count']} 个技能")
+                print(f"  {r['path']}\n")
+            print("手动添加：skill root-add \"D:/某处/skills\"；移除：skill root-rm \"D:/某处/skills\"")
+            print("看有哪些技能：skill scan")
+            return 0
+        if args.act == "root-add":
+            try:
+                res = add_skill_root(args.path)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                return 1
+            if args.json:
+                print(json.dumps(res, ensure_ascii=False, indent=2))
+            elif res["added"]:
+                print(f"已添加技能根目录：{res['path']}（发现 {res['count']} 个技能）")
+                print("现在 skill scan 就能看到里面的技能了。")
+            else:
+                print(f"没重复添加：{res['path']}（{res['reason']}，{res['count']} 个技能）")
+            return 0
+        if args.act == "root-rm":
+            try:
+                res = remove_skill_root(args.path)
+            except (ValueError, KeyError) as e:
+                print(str(e), file=sys.stderr)
+                return 1
+            if args.json:
+                print(json.dumps(res, ensure_ascii=False, indent=2))
+            else:
+                print(f"已移除技能根目录：{res['path']}（还剩 {res['remaining']} 个自定义目录，磁盘文件未动）")
+            return 0
+        if args.act == "scan":
+            rows = scan_skills(getattr(args, "root", None))
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            elif not rows:
+                print("没扫到技能。先看看根目录：skill roots；或手动添加：skill root-add \"路径\"")
+            else:
+                print(f"扫到 {len(rows)} 个技能（跨宿主可用）\n")
+                cur = None
+                for r in rows:
+                    if r["source"] != cur:
+                        cur = r["source"]
+                        print(f"── {cur}")
+                    ver = f" v{r['version']}" if r["version"] else ""
+                    mark = " ← 你自己" if r["self"] else ""
+                    print(f"  {r['name']}{ver}{mark}")
+                    print(f"    {_clip(r['description'], 100)}")
+                    print(f"    {r['path']}")
+                print("\n要直接照做：skill use <名字> [--root <目录或宿主名>]；要变成自己的：skill borrow <名字>")
+            return 0
+
+    # ---------------- ext（扩展模块：AI 自己写的可执行钩子）
+    if args.cmd == "ext":
+        if args.act == "list":
+            rows = list_extensions()
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            elif not rows:
+                print("还没有扩展模块。用 `ext new <名字>` 新建一个（会给你能跑的模板）。")
+            else:
+                print(f"扩展模块 {len(rows)} 个（~/.brain-memory/extensions/，更新技能永不覆盖）：")
+                for r in rows:
+                    print(f"  · {r['name']}  {r['desc']}")
+                print("\n看源码 `ext show <名字>`；跑一下 `ext run <名字> [参数]`；自检 `ext check <名字>`")
+            return 0
+        if args.act == "show":
+            path = _ext_path(args.name)
+            if not path.exists():
+                print(f"没有这个扩展模块：{args.name}", file=sys.stderr)
+                return 1
+            print(path.read_text(encoding="utf-8"))
+            return 0
+        if args.act in ("new", "edit", "rm"):
+            if _readonly():
+                print("[只读] 记忆库当前不可写，扩展模块需要写盘。", file=sys.stderr)
+                return 3
+            if args.act == "new":
+                body = args.body
+                if getattr(args, "file", None):
+                    try:
+                        body = _read_file_whitelisted(args.file)
+                    except (ValueError, OSError) as e:
+                        print(f"[错误] {e}", file=sys.stderr)
+                        return 1
+                res = create_extension(args.name, args.desc, body, overwrite=args.force)
+                print(f"已新建扩展模块：{res['path']}")
+                print("钩子：inject(ctx) 并入每会话注入包；run(argv) 用 `ext run <名字>` 调用。"
+                      "改完 `ext check <名字>` 自检。")
+                return 0
+            if args.act == "edit":
+                body = args.body
+                if getattr(args, "file", None):
+                    try:
+                        body = _read_file_whitelisted(args.file)
+                    except (ValueError, OSError) as e:
+                        print(f"[错误] {e}", file=sys.stderr)
+                        return 1
+                res = edit_extension(args.name, body, args.append)
+                print(f"已{'追加' if res['appended'] else '更新'}扩展模块：{res['path']}")
+                return 0
+            if remove_extension(args.name):
+                print(f"已删除扩展模块：{args.name}")
+                return 0
+            print(f"没有这个扩展模块：{args.name}", file=sys.stderr)
+            return 1
+        if args.act == "check":
+            r = check_extension(args.name)
+            if r["ok"]:
+                print(f"语法 OK：{r['path']}")
+                return 0
+            print(f"语法有问题：{r['path']}\n{r['error']}", file=sys.stderr)
+            return 2
+        if args.act == "run":
+            # run 同样要过安全开关：扩展是任意代码，默认不执行
+            if not load_config().get("extensions_enabled", False):
+                print("扩展未启用（extensions_enabled=false，扩展是任意代码，默认不执行）。"
+                      "确认信任后运行 `config set extensions_enabled true` 开启。", file=sys.stderr)
+                return 3
+            mod = _load_ext(args.name)
+            fn = getattr(mod, "run", None)
+            if not callable(fn):
+                print(f"扩展 {args.name} 没有 run(argv) 钩子（它可能只提供了 inject()）。", file=sys.stderr)
+                return 2
+            rc = fn(list(args.args))
+            return int(rc) if isinstance(rc, int) else 0
+
+    # ---------------- learn
+    if args.cmd == "learn":
+        if args.act == "loop":
+            for line in LEARN_LOOP:
+                print(line)
+            return 0
+        q = " ".join(args.question)
+        res = learn_ask(q, args.k)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0
+        print(f"问题：{q}\n")
+        if res["knowledge"]:
+            print(f"【知识库】命中 {len(res['knowledge'])} 条 —— 直接用，别再搜一遍")
+            for k in res["knowledge"]:
+                print(f"  {k['id']} [{k['topic']}] {k['title']}  (相关 {k['score']})")
+                print(f"    {_clip(k['body'], 200)}")
+        else:
+            print("【知识库】没有现成答案 —— 去联网搜索/读文档，拿到可验证的结论")
+        if res["notes"]:
+            print(f"\n【笔记】相关 {len(res['notes'])} 条（看看上次是怎么卡住的）")
+            for n in res["notes"]:
+                print(f"  {n['id']} [{n['type']}] {n['title']}  (相关 {n['score']})")
+        if res["memories"]:
+            print(f"\n【记忆】相关 {len(res['memories'])} 条")
+            for m in res["memories"]:
+                print(f"  {m['id']}  {m['text']}")
+        print("\n收尾（按需，不要全做）：")
+        if not res["has_answer"]:
+            print('  查到的结论写回知识库：knowledge add "标题" --body "结论" --tags "..."')
+        print('  卡点/过程写进笔记：note write "这次卡在哪" --type log --body "..."')
+        print('  摸出了可复用的做法：skill new <名字> --description "..." --body "..."')
+        print('  做完记一笔：evolve log "学到了什么" --kind knowledge')
+        return 0
+
+    # ---------------- growth
+    if args.cmd == "growth":
+        if args.act == "status":
+            st = growth_status()
+            if args.json:
+                print(json.dumps(st, ensure_ascii=False, indent=2))
+            else:
+                print("成长状态")
+                print(f"  活跃 {st['days_alive']} 天，连续 {st['streak']} 天")
+                print(f"  记忆 {st['memories']} 条 · 知识 {st['knowledge']} 条（{len(st['topics'])} 个主题）")
+                print(f"  笔记 {st['notes']} 篇（{st['note_days']} 天）· 技能 {st['skills']} 个（已安装 {st['installed']}）")
+                print(f"  自我进化 {st['evolutions']} 次")
+                if st.get("last_evolution"):
+                    print(f"  最近一次：{st['last_evolution'].get('title')}")
+                if st["last_growth"]:
+                    print(f"  上次复盘：{st['last_growth']['date']} {st['last_growth']['title']}")
+                else:
+                    print("  还没有做过成长复盘")
+                if st["pending_tidy"]:
+                    print("  知识库有待整理的条目")
+            return 0
+        if args.act == "review":
+            print(growth_review(args.days)["material"])
+            return 0
+
+    # ---------------- evolve
+    if args.cmd == "evolve":
+        if args.act == "log":
+            row = log_evolution(args.kind, args.title, args.detail, _split(args.refs))
+            print(f"已记录进化：{row['id']}  [{row['kind']}] {row['title']}")
+            return 0
+        rows = load_evolution(args.limit)
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("还没有进化记录。真正改掉什么之后，用 evolve log 写一条。")
+            return 0
+        for r in rows:
+            print(f"{r['date']}  [{r['kind']}]  {r['title']}")
+            if r.get("detail"):
+                print("  " + r["detail"])
+            if r.get("refs"):
+                print("  refs: " + "、".join(r["refs"]))
+        return 0
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())
+

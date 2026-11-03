@@ -1,0 +1,7 @@
+name: astrbot_plugin_lingshu
+display_name: 灵枢记忆桥
+desc: 通过 subprocess 调用灵枢 CLI，把群聊/私聊记忆接入 AstrBot，含群友隐私保护（本人同意才能对外分享关于自己的记忆）。
+short_desc: 灵枢 AI 记忆系统的 AstrBot 桥接插件，带群友隐私保护。
+version: v0.1.0
+author: lingshu
+repo: https://github.com/Q2667671398/lingshu-skill

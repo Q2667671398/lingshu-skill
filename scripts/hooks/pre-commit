@@ -1,0 +1,18 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""灵枢 pre-commit 钩子（Windows 兼容：直接用 git 能找到的 python 解释器执行逻辑）。
+
+逻辑在 scripts/check_version.py --staged：
+  1. 代码/技能文件变更但 SKILL.md version 没升 → 拒绝；
+  2. version 升了但 CHANGELOG.md 没有对应版本小节 → 拒绝；
+  3. manifest.json 存在且 version 与 SKILL.md 不一致 → 拒绝。
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent.parent
+logic = root / "scripts" / "check_version.py"
+if not logic.is_file():
+    sys.exit(0)   # 不完整的工作区：放行，别把人挡死
+sys.exit(subprocess.call([sys.executable, str(logic), "--staged"]))

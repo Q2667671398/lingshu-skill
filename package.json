@@ -1,0 +1,13 @@
+{
+  "name": "lingshu-skill",
+  "version": "2.28.0",
+  "description": "Brain-inspired persistent memory, persona and growth system for AI coding agents. Local-only, zero-dependency Python. Requires Python 3.9+.",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
