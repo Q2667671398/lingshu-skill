@@ -2,6 +2,19 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.61 — 注入性能与健壮性微修
+
+- **注入包一次读盘（memory.py）**：startup 注入时 mistake / relationship 区块
+  共用一次 `recent(40)` 全量读盘后分拣，减少重复 I/O；不再整段 try 包裹。
+- **时段语境修正（memory.py `_time_context`）**：深夜描述由「0 点到凌晨 5 点」
+  修正为「23 点到凌晨 5 点」，与 18-23 夜晚分支的判定边界一致。
+- **`persona check` 计入只读白名单（cli.py / persona.py）**：check 动作加入
+  persona 的只读子命令列表（只读降级下也可用）；traits.value 校验改用
+  `_check_num` 统一路径。
+- **启发式重要性补缺（memory.py）**：`mistake` / `relationship` 加入 kind 基础
+  分表（0.70），不再落到 0.5 兜底。
+- **清理测试脚本**：删除 `scripts/test_*.py` 开发期自测（不随发布）。
+
 ## v2.60 — P1：persona check / 时段语境 / relationship 记忆
 
 - **`persona check` 人格自检（persona.py / cli.py）**：新子命令校验人格档案

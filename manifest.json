@@ -1,12 +1,12 @@
 {
-  "version": "2.60",
+  "version": "2.61",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "9b4ae34be1d8df893630431e34f460c931b2bb13f8c5d74d73156b4e9b409637",
-      "size": 111159
+      "sha256": "6506d1f44dca3aa945e98276b5d82242e797a0c1c01972840c7ecc117000b58b",
+      "size": 112031
     },
     "README.md": {
-      "sha256": "4afc357d1c57f1c903856b5d8b1cf527202a033ba3cfd112c43b9155acda5cf4",
+      "sha256": "d3e41b800525c3f7fa3ea01466b4a7c362a0c691ce5c9a7dd21ef5a1ec12b5fc",
       "size": 50533
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "560aa08e24e9392bbd988a163d921874fb69e09572b3217aa05a0debd674322e",
+      "sha256": "6f9ac704324d167f004f59dcf1c33211101a7be24ba27f99dbed24654fb3f1fb",
       "size": 19503
     },
     "assets/panel.html": {
@@ -98,8 +98,8 @@
       "size": 7230
     },
     "scripts/cli.py": {
-      "sha256": "2320de9503ae8339a6747aae9f3103501747965bba0cf194d6c408c53067687c",
-      "size": 134481
+      "sha256": "aaf014e29ff6a7021e0863c73d085024656d172e681c06c28c62bb7b9d5a2a14",
+      "size": 134547
     },
     "scripts/core.py": {
       "sha256": "13114b7b30d09ee7c937a8a2689fba8d36dac2daa1b62e0215e11c8415a7f645",
@@ -126,8 +126,8 @@
       "size": 7704
     },
     "scripts/memory.py": {
-      "sha256": "77718f83b540cfcee59b0e8f2e32d39a5a7a5d48448e428aa084a8def23205fb",
-      "size": 112852
+      "sha256": "b015ecbee46d99adcbc8f8a15db732bbd48f10fe84bd91ec65b5728f32d3f106",
+      "size": 112952
     },
     "scripts/panel_cloud.py": {
       "sha256": "23f35a190c3b96d5a2d7320dce41f4a2911407e61811c45a223629a559d538f7",
@@ -142,8 +142,8 @@
       "size": 25806
     },
     "scripts/persona.py": {
-      "sha256": "7b6634163295255dd7d30897c7d53cce2ee08d7e7b44f9ce6397e5108104d984",
-      "size": 56540
+      "sha256": "5681f05a5ddb11ae2a04dc901862f288830ef54ea34a6fbf04e53a296b6ec1dd",
+      "size": 56287
     },
     "start-panel.bat": {
       "sha256": "48dc3d2957b17216788870e7aa1d3afd9ddf304692d8d001682d990e1b90022d",

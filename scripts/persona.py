@@ -1170,11 +1170,7 @@ def persona_check() -> dict:
     else:
         for name, t in traits.items():
             if isinstance(t, dict):
-                v = t.get("value")
-                if not isinstance(v, (int, float)) or isinstance(v, bool) \
-                        or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) \
-                        or not (0 <= v <= 100):
-                    fails.append(f"traits[{name}].value 非法：{v!r}（须 0-100 数值）")
+                _check_num(f"traits[{name}].value", t.get("value"), 0, 100, fails, warns)
                 ev = t.get("evidence")
                 if not isinstance(ev, list):
                     fails.append(f"traits[{name}].evidence 不是数组（{type(ev).__name__}）"

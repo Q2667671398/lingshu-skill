@@ -1197,7 +1197,8 @@ def _main(argv=None) -> int:
             or (args.cmd == "dream" and not args.dry_run)
             or (args.cmd == "work" and action in ("add", "done", "flush", "clear"))
             or (args.cmd == "persona" and action not in ("show", "path", "onboarding",
-                                                         "history", "snapshots", "drift"))
+                                                         "history", "snapshots", "drift",
+                                                         "check"))
             or (args.cmd == "mind" and action in ("set", "tune"))
             or (args.cmd == "emotion" and action in ("feel", "evaluate", "mirror",
                                                      "adjust", "del", "cool"))

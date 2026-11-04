@@ -664,6 +664,7 @@ def heuristic_importance(text: str, kind: str) -> float:
     base = {
         "identity": 0.95, "insight": 0.75, "preference": 0.70,
         "habit": 0.65, "emotion": 0.60, "fact": 0.58, "episode": 0.40,
+        "mistake": 0.70, "relationship": 0.70,
     }.get(kind, 0.5)
     hot = ("记住", "重要", "永远", "一定", "绝不", "喜欢", "讨厌", "生日",
            "名字", "答应", "承诺", "第一次", "决定")
@@ -2007,7 +2008,7 @@ def _time_context() -> str:
     elif 18 <= h < 23:
         seg = "夜晚，节奏可以慢下来"
     else:
-        seg = ("深夜（0 点到凌晨 5 点之间）——若用户此刻还在，多半有事或睡不着，"
+        seg = ("深夜（23 点到凌晨 5 点之间）——若用户此刻还在，多半有事或睡不着，"
                "别用元气满满的腔调")
     if lt.weekday() >= 5:
         seg += "（今天周末）"
@@ -2023,33 +2024,34 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     p = load_persona()
     session_mode = resolve_mode(query)
 
+    brief = persona_brief(p, mood=(session_mode != "work"))
     out = ["===== 长期记忆注入（灵枢）=====",
            "算力给我思考，人格给我灵魂，记忆给我生命。",
-           "## 我是谁", persona_brief(p, mood=(session_mode != "work"))]
-    used = len(persona_brief(p, mood=(session_mode != "work"))) + 60
+           "## 我是谁", brief]
+    used = len(brief) + 60
+
+    # mistake / relationship 各取最近 3 条非 dust——一次 recent(40) 全量读盘后分拣
+    try:
+        _recent40 = recent(40)
+        _mistakes = [m for m in _recent40 if m.get("kind") == "mistake"
+                     and m.get("layer") != "dust"][:3]
+        _rels = [m for m in _recent40 if m.get("kind") == "relationship"
+                 and m.get("layer") != "dust"][:3]
+    except Exception:
+        _mistakes, _rels = [], []
 
     # 「我犯过的错」：成长型人格的地基（kind=mistake，独立成块注入）
-    try:
-        _mistakes = [m for m in recent(40) if m.get("kind") == "mistake"
-                     and m.get("layer") != "dust"][:3]
-        if _mistakes:
-            out.append("\n## 我犯过的错（遇到类似情境先想起这些）")
-            for m in _mistakes:
-                out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
-    except Exception:
-        pass
+    if _mistakes:
+        out.append("\n## 我犯过的错（遇到类似情境先想起这些）")
+        for m in _mistakes:
+            out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
 
     # 「我的人际关系」：kind=relationship 独立成块注入——记得谁是谁、欠了谁、
     # 被谁帮过，关系才有连续性（群聊场景跨群共享同一份画像）。
-    try:
-        _rels = [m for m in recent(40) if m.get("kind") == "relationship"
-                 and m.get("layer") != "dust"][:3]
-        if _rels:
-            out.append("\n## 我的人际关系（提到这些人时先想起这些）")
-            for m in _rels:
-                out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
-    except Exception:
-        pass
+    if _rels:
+        out.append("\n## 我的人际关系（提到这些人时先想起这些）")
+        for m in _rels:
+            out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
 
     # 时段语境：一句话给当下时间定性，让语气/行为与真实时间对齐（克制，不煽情）。
     try:
