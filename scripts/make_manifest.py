@@ -53,12 +53,29 @@ def _excluded(rel: str, name: str) -> bool:
     return name.startswith("test_") and name.endswith(".py")
 
 
-def sha256_file(p: Path) -> str:
+def sha256_file(p: Path) -> tuple[str, int]:
+    """规范形态哈希：CRLF→LF 归一化 + 去 UTF-8 BOM 后再算，返回 (sha256, size)。
+
+    manifest 是发布契约——它必须对应"发布内容的规范形态"，而不是作者本机的
+    磁盘形态。作者机器 core.autocrlf=true + 记事本存盘会把工作区文件写成
+    CRLF+带 BOM，逐字节哈希记录的就是这套形态；用户按 raw / zip 拿到的是
+    LF+无 BOM，逐字节比对永远失败（v2.52 只修了比对侧，没修生成侧）。
+    换行符与 BOM 都不改变内容语义，归一化后哈希才与发布内容对齐；
+    真正的内容篡改仍拦得住。
+    """
     h = hashlib.sha256()
+    size = 0
+    first = True
     with open(p, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 16), b""):
+            if first:
+                first = False
+                if chunk.startswith(b"\xef\xbb\xbf"):
+                    chunk = chunk[3:]
+            chunk = chunk.replace(b"\r\n", b"\n")
             h.update(chunk)
-    return h.hexdigest()
+            size += len(chunk)
+    return h.hexdigest(), size
 
 
 def read_skill_version(root: Path = ROOT) -> str:
@@ -74,7 +91,8 @@ def scan_files(root: Path = ROOT) -> dict:
     for name in SCAN_FILES:
         p = root / name
         if p.is_file():
-            files[name] = {"sha256": sha256_file(p), "size": p.stat().st_size}
+            sha, size = sha256_file(p)
+            files[name] = {"sha256": sha, "size": size}
     for d in SCAN_DIRS:
         base = root / d
         if not base.is_dir():
@@ -85,7 +103,8 @@ def scan_files(root: Path = ROOT) -> dict:
             rel = f.relative_to(root).as_posix()
             if _excluded(rel, f.name):
                 continue
-            files[rel] = {"sha256": sha256_file(f), "size": f.stat().st_size}
+            sha, size = sha256_file(f)
+            files[rel] = {"sha256": sha, "size": size}
     return dict(sorted(files.items()))
 
 
