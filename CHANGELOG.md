@@ -2,6 +2,13 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.65 — 市场安装版本对齐
+
+- **package.json 版本补齐（package.json）**：市场（awesome-app-plugin）按
+  package.json 的 version 展示与安装，仓库里却一直停在 2.28.0 没跟着
+  SKILL.md 升——装出来的包版本错乱、后续更新比对失真。改为与 SKILL.md
+  同步（2.65.0），此后随版本链一起升。
+
 ## v2.64 — 数据目录可视化迁移
 
 - **面板一键迁移（panel_server.py + panel.html）**：「诊断」页新增「数据目录」
