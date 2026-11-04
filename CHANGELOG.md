@@ -2,6 +2,15 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.66 — 商库兼容声明修复
+
+- **补宿主兼容声明（package.json）**：商库 UI 对未声明 `peerDependencies`
+  （`@deepseek-ai/*` 宿主包版本范围）的插件显示「无法安装 · 宿主要求未知」，
+  导致商库里更新不了（pnpm 实际安装成功，纯属 UI 校验拒绝）。参照
+  appmarket / app-deepseek-usage 补上 `peerDependencies` +
+  `peerDependenciesMeta`（optional），覆盖 0.2.x 系列 rc/alpha 版本；
+  同时去掉 `private: true`、补 keywords。版本链同步升 2.66。
+
 ## v2.65 — 市场安装版本对齐
 
 - **package.json 版本补齐（package.json）**：市场（awesome-app-plugin）按

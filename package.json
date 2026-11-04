@@ -1,11 +1,26 @@
 {
   "name": "lingshu-skill",
-  "version": "2.65.0",
+  "version": "2.66.0",
   "description": "Brain-inspired persistent memory, persona and growth system for AI coding agents. Local-only, zero-dependency Python. Requires Python 3.9+.",
-  "private": true,
   "type": "module",
   "main": "index.js",
-  "dsh": {
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^0.2.0-rc.1 || ^0.2.1-alpha.3 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "app",
+    "deepseek",
+    "coding-agent",
+    "plugin",
+    "memory",
+    "persona"
+  ],
+  "app": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
