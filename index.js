@@ -22,6 +22,10 @@ function loadSkillBody() {
 
 export const name = 'lingshu-skill'
 
+// cordis 跨服务访问必须声明注入：直接访问 ctx.skills 会报
+// "cannot get property "skills" without inject"，导致宿主激活失败并回滚安装。
+export const inject = ['skills']
+
 export function apply(ctx) {
   const content = loadSkillBody()
   if (content === undefined) {
