@@ -1,13 +1,13 @@
 {
-  "version": "2.56",
+  "version": "2.57",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "971f3ccb7116f71711c4b3daebc6a24c2cad25ee07c9140e73c627faa6752f7c",
-      "size": 105860
+      "sha256": "458f796e55ee02cba758940ac32a578b097088b19a220d9679304da0cad64d7c",
+      "size": 107616
     },
     "README.md": {
-      "sha256": "a809befac11b8ef07301ec9a6b7380d18ac0bed354265e77a0c5e05d8031b65b",
-      "size": 50532
+      "sha256": "bd0d46d63110204420aa24807d5d9ba82e499c855fe673ae53e4252d4a8a5e27",
+      "size": 50533
     },
     "SKILL-lite.md": {
       "sha256": "055fa7bc54f273e5fa16517c38b2a7d25f0726ece43428b68fbf60d276f197a3",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "f18fc7fe4c0275673cee47f35f01efc780b0fb4a49e38e7598fb11b55d108488",
+      "sha256": "03adbeabcfcbc56b8740adc82c79f9ba13d75a447548ec5860b337832f724035",
       "size": 18996
     },
     "assets/panel.html": {
@@ -102,8 +102,8 @@
       "size": 133644
     },
     "scripts/core.py": {
-      "sha256": "8c31436320ada662cd1ad8e84b3824307bb3efebdd5a9198b0f89df728458ba7",
-      "size": 45803
+      "sha256": "f3a54be623f8270324ea22e5ee970a8281c37e573f87b71e3217b8dab6db6ce0",
+      "size": 45926
     },
     "scripts/dream.py": {
       "sha256": "266d989036e0ff4d1cb03fd671418695958a69f4849bd78370cea9e8dabf6976",
@@ -126,8 +126,8 @@
       "size": 7234
     },
     "scripts/memory.py": {
-      "sha256": "3813d744494b794c1c03eaf612320ce52654989e51ecbfd89aad9446cef1e2fa",
-      "size": 110573
+      "sha256": "855e844978170610cc4aa517275e588a924f67015fa6ce50e7409afc421bccc8",
+      "size": 111195
     },
     "scripts/panel_cloud.py": {
       "sha256": "23f35a190c3b96d5a2d7320dce41f4a2911407e61811c45a223629a559d538f7",
@@ -142,8 +142,8 @@
       "size": 25806
     },
     "scripts/persona.py": {
-      "sha256": "c659bddf20463b9b545288da719e8c74742f4b9b4fa863e5747ba3eb45705163",
-      "size": 49686
+      "sha256": "fcdfcc19b47b4af09657a6e6381b311777ae0357b25dc3e8606c0be0fa98fd75",
+      "size": 53221
     },
     "start-panel.bat": {
       "sha256": "48dc3d2957b17216788870e7aa1d3afd9ddf304692d8d001682d990e1b90022d",

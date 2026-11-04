@@ -2004,6 +2004,17 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
            "## 我是谁", persona_brief(p, mood=(session_mode != "work"))]
     used = len(persona_brief(p, mood=(session_mode != "work"))) + 60
 
+    # 「我犯过的错」：成长型人格的地基（kind=mistake，独立成块注入）
+    try:
+        _mistakes = [m for m in recent(40) if m.get("kind") == "mistake"
+                     and m.get("layer") != "dust"][:3]
+        if _mistakes:
+            out.append("\n## 我犯过的错（遇到类似情境先想起这些）")
+            for m in _mistakes:
+                out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
+    except Exception:
+        pass
+
     if model_tier() == "small":
         out.append("\n## 小模型模式（当前模型档位 = small）")
         out.append("你的上下文和推理都有限，下面这些高风险自动能力**不要主动做**：")
@@ -2074,7 +2085,8 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     if dr.get("curiosity") is None and dr.get("reason") is None:
         _traits = p.get("traits") or {}
         if _traits.get("好奇") is not None or _traits.get("理智") is not None:
-            dr = {"curiosity": _traits.get("好奇"), "reason": _traits.get("理智")}
+            dr = {"curiosity": trait_value(_traits["好奇"]) if _traits.get("好奇") is not None else None,
+                  "reason": trait_value(_traits["理智"]) if _traits.get("理智") is not None else None}
     out.append("\n## 我怎么想事情")
     if dr.get("curiosity") is not None or dr.get("reason") is not None:
         out.append(f"好奇心 {dr.get('curiosity', '未成形')} / 理智 {dr.get('reason', '未成形')}。"

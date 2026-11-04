@@ -2,6 +2,28 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.57 — 成长型人格 P0：mistake 记忆 / 特质溯源 / 第一人称注入
+
+- **`--kind mistake` 错误记忆类型（memory/core/cli）**：KINDS 枚举新增
+  `mistake`，可写入错误、失误、判断偏差类记录；startup 注入时独立渲染
+  「## 我犯过的错」区块（最近 3 条），遇到类似情境先想起这些——成长型人格
+  的地基，补上"系统没有失败记录"的根本缺口。
+- **人格特质溯源（persona.py）**：traits 从纯数字 `"好奇": 86` 升级为
+  `{"value": 86, "evidence": [...], "why": "..."}` 结构，不建独立
+  trait_sources，全部信息收拢在 traits 对象内部。新增兼容层：
+  `trait_value()`（dict 取 value / 旧数字直接返回）、`trait_meta()`、
+  `set_trait()`（更新就地 update、evidence 空时不覆盖丢旧证据；evidence
+  永远是数组，禁止 null）。全链路读取点改造：persona_brief 排序展示、
+  内驱兜底、update_persona（做梦漂移）、edit_persona / set_persona_field
+  （面板/CLI）、persona_interview / self（初识）全部走兼容层。写入路径规约：
+  初识 `evidence=[]` + `why="初识时用户指定"`；漂移 `evidence=[触发记忆id]`；
+  手动编辑 `evidence=[]` + `why="用户手动调整"`。旧纯数字数据自动兼容读取。
+- **注入展示带溯源**：人格块 trait 展示格式改为「好奇 86 —— 反复追问细节时
+  没嫌烦」，数值携带行为依据，模型保持行为一致性而非机械执行参数。
+- **注入第一人称改造（persona_brief）**：全部人格注入内容从"你是「砚」"
+  改为"我是「砚」"，自称/说话方式/底线/喜好/心情等同步改第一人称，强化
+  自我认知代入感。
+
 ## v2.56 — cordis 插件 APP 接入收尾（bundle 键 + 环境变量名）
 
 - **package.json 顶层 bundle 键改为 APP 认的写法**（lingshu-cron）：

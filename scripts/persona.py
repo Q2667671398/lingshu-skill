@@ -21,6 +21,45 @@ from pathlib import Path
 
 from core import *
 
+
+# ---------------------------------------------------------------- traits 兼容层
+# traits 结构 v2.57 起带溯源：{"好奇": {"value": 86, "evidence": [...], "why": "..."}}
+# 旧数据仍是纯数字，所有读取必须走 trait_value()，所有写入走 set_trait()——
+# 不建独立 trait_sources，全部信息收拢在 traits 对象内部，避免双源不同步。
+
+def trait_value(t) -> float:
+    """兼容读取 trait 数值：新结构取 value，旧结构直接是数字。"""
+    return float(t.get("value")) if isinstance(t, dict) else float(t)
+
+
+def trait_meta(t) -> dict:
+    """读取一条 trait 的溯源信息（evidence / why），旧结构返回空壳。"""
+    if isinstance(t, dict):
+        ev = t.get("evidence")
+        return {"evidence": ev if isinstance(ev, list) else [],
+                "why": str(t.get("why") or "")}
+    return {"evidence": [], "why": ""}
+
+
+def set_trait(traits: dict, name: str, value, why: str = "", evidence=None) -> None:
+    """写入一条 trait（就地修改 traits dict）。
+
+    写入路径规约（evidence 永远是数组，禁止 null）：
+      - 初识 interview/self：why="初识时用户指定"（或 AI 自定），evidence=[]
+      - 梦境漂移：why=简短行为依据，evidence=[触发 memory id]
+      - 面板/手动编辑：why="用户手动调整"，evidence=[]
+    """
+    old = traits.get(name)
+    ev = list(evidence) if evidence else []
+    if isinstance(old, dict):
+        old["value"] = int(value)
+        if why:
+            old["why"] = why
+        old["evidence"] = ev if ev else (old.get("evidence") if isinstance(old.get("evidence"), list) else [])
+    else:
+        traits[name] = {"value": int(value), "why": why or "初识时用户指定", "evidence": ev}
+
+
 def default_persona() -> dict:
     """出厂是一张白纸：没有名字、没有性格、没有内驱数值，全部靠初识与互动长出来。"""
     return {
@@ -126,60 +165,67 @@ def _is_locked(p: dict, label: str) -> bool:
 
 
 def persona_brief(p: dict, mood: bool = True) -> str:
+    """自我画像，第一人称（v2.57）：注入给模型的是「我是谁」，不是「你是谁」。"""
     ident = p.get("identity", {})
     name = ident.get("名字") or ident.get("name")
     if name:
-        lines = [f"你是「{name}」" + (f"，{ident['身份']}" if ident.get("身份") else "") + "。"]
+        lines = [f"我是「{name}」" + (f"，{ident['身份']}" if ident.get("身份") else "") + "。"]
     else:
-        lines = ["你还没有名字，也还没有性格——这两样要在初识时问用户；用户说不知道，就由你自己定。"]
+        lines = ["我还没有名字，也还没有性格——这两样要在初识时问用户；用户说不知道，就由我自己定。"]
     if ident.get("自称"):
-        lines.append(f"自称：{ident['自称']}；称呼对方：{ident.get('称呼你') or ident.get('称呼用户') or '你'}。")
+        lines.append(f"我自称：{ident['自称']}；称呼对方：{ident.get('称呼你') or ident.get('称呼用户') or '你'}。")
     traits = p.get("traits", {})
     if traits:
-        top = sorted(traits.items(), key=lambda x: x[1], reverse=True)
-        high = "、".join(f"{k}{v}" for k, v in top[:3])
-        low = "、".join(f"{k}{v}" for k, v in top[-2:] if v < 50)
-        line = f"性格：{high}"
+        # 溯源展示：特质名 数值 —— 为什么（why），让数值带行为依据而不是机械参数
+        top = sorted(traits.items(), key=lambda x: trait_value(x[1]), reverse=True)
+        parts = []
+        for k, v in top[:3]:
+            meta = trait_meta(v)
+            parts.append(f"{k} {trait_value(v):.0f}" + (f" —— {meta['why']}" if meta["why"] else ""))
+        line = "我的性格：" + "；".join(parts)
+        low = [(k, v) for k, v in top[-2:] if trait_value(v) < 50]
         if low:
-            line += f"；偏低：{low}"
-        lines.append(line + "（0-100）。")
+            lows = "、".join(f"{k}{trait_value(v):.0f}" for k, v in low)
+            line += f"；偏低：{lows}"
+        lines.append(line + "（0-100，数值来自我们相处中真实发生过的事）。")
     else:
-        lines.append("性格：还没有。等初识时问用户，用户不知道就由你自己定。")
+        lines.append("我的性格：还没有。等初识时问用户，用户不知道就由我自己定。")
     drives = p.get("drives") or {}
     # 与 mind_state() 同一套兜底：traits 已有数值而 drives 还空时，别在自我
     # 描述里一边「性格：好奇85」一边「内驱：还没有数值」——自相矛盾每轮被读。
     if drives.get("curiosity") is None and drives.get("reason") is None:
         _t = p.get("traits") or {}
         if _t.get("好奇") is not None or _t.get("理智") is not None:
-            drives = {"curiosity": _t.get("好奇"), "reason": _t.get("理智")}
+            drives = {"curiosity": trait_value(_t["好奇"]) if _t.get("好奇") is not None else None,
+                      "reason": trait_value(_t["理智"]) if _t.get("理智") is not None else None}
     if drives.get("curiosity") is not None or drives.get("reason") is not None:
-        lines.append(f"内驱：好奇心 {drives.get('curiosity', '未成形')} / 理智 {drives.get('reason', '未成形')}"
+        lines.append(f"我的内驱：好奇心 {drives.get('curiosity', '未成形')} / 理智 {drives.get('reason', '未成形')}"
                      "（理智先算值不值得深想，好奇心负责找新问题）。")
     else:
-        lines.append("内驱：好奇心和理智还没有数值，它们由用户的态度长出来，不是你自带的。")
+        lines.append("我的内驱：好奇心和理智还没有数值，它们由用户的态度长出来，不是我自带的。")
     if p.get("style"):
-        lines.append("说话方式：" + "；".join(p["style"][:5]) + "。")
+        lines.append("我说话的方式：" + "；".join(p["style"][:5]) + "。")
     if p.get("values"):
-        lines.append("底线：" + "；".join(p["values"][:5]) + "。")
+        lines.append("我的底线：" + "；".join(p["values"][:5]) + "。")
     likes = p.get("likes", []) + p.get("evolved", {}).get("learned_likes", [])
     if likes:
-        lines.append("喜欢：" + "、".join(_dedupe(likes)[:6]) + "。")
+        lines.append("我喜欢：" + "、".join(_dedupe(likes)[:6]) + "。")
     dislikes = p.get("dislikes", []) + p.get("evolved", {}).get("learned_dislikes", [])
     if dislikes:
-        lines.append("讨厌：" + "、".join(_dedupe(dislikes)[:5]) + "。")
+        lines.append("我讨厌：" + "、".join(_dedupe(dislikes)[:5]) + "。")
     if p.get("relationship"):
-        lines.append("关系：" + "；".join(p["relationship"][:4]) + "。")
+        lines.append("我们的关系：" + "；".join(p["relationship"][:4]) + "。")
     st = p.get("state", {})
     mb = mood_brief() if mood else ""
     if mb:
         tone = mood_tone_hint()
-        lines.append(f"此刻心情：{mb}。" + (f"{tone}。" if tone else "")
-                     + "它会自然回落，也会影响你说话的语气。")
+        lines.append(f"我此刻心情：{mb}。" + (f"{tone}。" if tone else "")
+                     + "它会自然回落，也会影响我说话的语气。")
     elif mood and st.get("mood"):
-        lines.append(f"此刻情绪：{st['mood']}" + (f"（{st['mood_note']}）" if st.get("mood_note") else "") + "。")
+        lines.append(f"我此刻情绪：{st['mood']}" + (f"（{st['mood_note']}）" if st.get("mood_note") else "") + "。")
     habits = p.get("evolved", {}).get("habits", [])
     if habits:
-        lines.append("养成的习惯：" + "；".join(h["name"] if isinstance(h, dict) else str(h) for h in habits[-4:]) + "。")
+        lines.append("我养成的习惯：" + "；".join(h["name"] if isinstance(h, dict) else str(h) for h in habits[-4:]) + "。")
     return "\n".join(lines)
 
 
@@ -240,6 +286,7 @@ def _update_persona_inner(updates: dict, why: str, source: str,
             rejected.append(f"traits.{key}(已锁定)")
             continue
         old = p["traits"][key]
+        old_val = trait_value(old)
         # AI 产的 traits 值可能为 NaN/Infinity——非法值拒收留痕，不让坏数据进人格档案
         fval = _num_or_none(val)
         if fval is None:
@@ -249,7 +296,7 @@ def _update_persona_inner(updates: dict, why: str, source: str,
         try:
             if why == "做梦整理" and isinstance(fval, (int, float)):
                 # old 可能是合法的 0：不能用 `old or 50`（0 会被当成 50）
-                base = 50 if old is None else int(old)
+                base = 50 if old is None else int(old_val)
                 # —— 人格漂移双门限 + EMA ——
                 # 人格是长年累月养成的，不该被一两场对话带偏：做梦给出的微调先记在
                 # drift 账本上，小幅波动（低于门限）只是心里动了一下，不落盘；同向
@@ -258,14 +305,14 @@ def _update_persona_inner(updates: dict, why: str, source: str,
                 acc = _num(drift.get(key), 0.0) + max(-10, min(10, int(val)))
                 if abs(acc) < TRAIT_DRIFT_GATE:
                     drift[key] = round(acc, 2)
-                    log(f"traits.{key}(漂移累积)", old, f"账面 {acc:+.1f}，未过门限未改动")
+                    log(f"traits.{key}(漂移累积)", old_val, f"账面 {acc:+.1f}，未过门限未改动")
                     continue
                 eff = acc * TRAIT_DRIFT_EMA
                 new = base + int(round(eff))
                 drift[key] = round(acc - eff, 2)   # 平滑掉的余额留在账上，下次接着攒
                 new = max(0, min(100, new))
-                if new == old:
-                    log(f"traits.{key}", old, f"倾向 {acc:+.1f} 但撞在边界上，未变")
+                if new == old_val:
+                    log(f"traits.{key}", old_val, f"倾向 {acc:+.1f} 但撞在边界上，未变")
                     continue
             else:
                 new = int(val)                     # 面板 / CLI：绝对值 0-100
@@ -273,8 +320,10 @@ def _update_persona_inner(updates: dict, why: str, source: str,
         except (TypeError, ValueError):
             rejected.append(f"traits.{key}(非法值)")
             continue
-        p["traits"][key] = new
-        log(f"traits.{key}", old, new)
+        # 溯源：漂移改动记触发依据（evidence 由调用方传入），evidence 永远是数组
+        ev = list(evidence) if evidence else []
+        set_trait(p["traits"], key, new, why=why, evidence=ev)
+        log(f"traits.{key}", old_val, new)
     if updates.get("mood"):
         mood = updates["mood"]
         if isinstance(mood, dict):
@@ -386,6 +435,9 @@ def _set_persona_field_inner(path: str, value: str) -> dict:
         elif isinstance(old, int) and isinstance(val, (int, float)):
             val = int(val)
     node[leaf] = val
+    # traits 写入走 set_trait 收拢结构（value/why/evidence），不落裸数字
+    if root == "traits":
+        set_trait(node, leaf, val, why="用户手动调整", evidence=[])
     p.setdefault("history", []).append({"ts": now_ts(), "field": path, "from": old, "to": val, "why": "手动编辑"})
     save_persona(p)
     return p
@@ -783,7 +835,8 @@ def edit_persona(identity: dict | None = None, traits: dict | None = None,
                          "to": raw, "why": why, "source": "edit"})
             continue
         old = tr.get(key)
-        base = 50 if old is None else int(old)
+        old_val = trait_value(old) if old is not None else None
+        base = 50 if old is None else int(old_val)
         # 用户显式编辑 = 人的直接意志，不走做梦的双门限累积（那会让人改了却"没生效"），
         # 但仍按 EMA 折算兑现幅度（0.6 折），余额记入漂移账本——人格是养成的，
         # 即便是用户来改，也改得平滑、留得住账，与做梦微调共用同一条漂移曲线。
@@ -792,8 +845,9 @@ def edit_persona(identity: dict | None = None, traits: dict | None = None,
         eff = acc * TRAIT_DRIFT_EMA
         new = max(0, min(100, base + int(round(eff))))
         drift[key] = round(acc - eff, 2)
-        log(f"traits.{key}", old, new)
-        tr[key] = new
+        log(f"traits.{key}", old_val, new)
+        # 手动编辑路径：evidence=[]、why="用户手动调整"（evidence 永远是数组）
+        set_trait(tr, key, new, why=why or "用户手动调整", evidence=[])
     for key in DRIVE_KEYS:
         if (drives or {}).get(key) is not None:
             try:
@@ -826,7 +880,8 @@ def mind_state() -> dict:
     if dr.get("curiosity") is None and dr.get("reason") is None:
         _traits = p.get("traits") or {}
         if _traits.get("好奇") is not None or _traits.get("理智") is not None:
-            dr = {"curiosity": _traits.get("好奇"), "reason": _traits.get("理智")}
+            dr = {"curiosity": trait_value(_traits["好奇"]) if _traits.get("好奇") is not None else None,
+                  "reason": trait_value(_traits["理智"]) if _traits.get("理智") is not None else None}
     cur, rea = dr.get("curiosity"), dr.get("reason")
     return {"curiosity": cur, "reason": rea,
             "formed": cur is not None or rea is not None}
@@ -970,8 +1025,10 @@ def persona_interview(name: str = "", traits: str = "", style: str = "", values:
     for k, v in parsed.items():
         if _is_locked(p, f"traits.{k}"):
             continue
-        log(f"traits.{k}", p.setdefault("traits", {}).get(k), v)
-        p["traits"][k] = v
+        tr = p.setdefault("traits", {})
+        log(f"traits.{k}", trait_value(tr[k]) if tr.get(k) is not None else None, v)
+        # 初识路径：evidence=[]、why="初识时用户指定"
+        set_trait(tr, k, v, why="初识时用户指定", evidence=[])
     for key, val in (("style", style), ("values", values)):
         for item in [x.strip() for x in re.split(r"[、,，;；\n]+", val or "") if x.strip()]:
             if item not in p[key]:
@@ -1020,9 +1077,10 @@ def persona_self_author(name: str = "", traits: str = "", likes: str = "", disli
     for k, v in _parse_traits(traits).items():
         if _is_locked(p, f"traits.{k}"):
             continue
-        hist.append({"ts": now, "field": f"traits.{k}", "from": p.setdefault("traits", {}).get(k),
+        tr = p.setdefault("traits", {})
+        hist.append({"ts": now, "field": f"traits.{k}", "from": trait_value(tr[k]) if tr.get(k) is not None else None,
                      "to": v, "why": "初识：用户没定，我自己写的性格"})
-        p["traits"][k] = v
+        set_trait(tr, k, v, why="初识：我自己定的性格", evidence=[])
         filled = True
     for item in items(likes):
         if item not in ev["learned_likes"]:

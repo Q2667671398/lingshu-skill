@@ -61,7 +61,8 @@ RETENTION_FLOOR = 0.10
 TRAIT_DRIFT_GATE = 5     # 账面倾向累计满 ±5 才真正改人格
 TRAIT_DRIFT_EMA = 0.6    # 兑现比例：账面 6 分只改 3.6 分，余款下次接着用
 
-KINDS = ("episode", "fact", "preference", "emotion", "insight", "identity", "habit")
+#   "mistake"：错误/失误/判断偏差类记录（成长型人格的地基——注入时独立成块）。
+KINDS = ("episode", "fact", "preference", "emotion", "insight", "identity", "habit", "mistake")
 LAYERS = ("hippo", "cortex", "dust")
 
 # 冷热归档层：长期没被想起、保留度极低的沉眠记忆雪藏到这里。
