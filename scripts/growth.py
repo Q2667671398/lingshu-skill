@@ -1654,9 +1654,25 @@ def apply_update(src_dir: Path, dst_dir: Path,
             staged[rel] = _sha256_file(target)
         # SHA256 门禁：清单里有哈希的文件必须逐一匹配，不符即整体失败
         if src_manifest:
-            bad = [r for r, sha in staged.items()
-                   if r in src_manifest
-                   and str(src_manifest[r].get("sha256", "")).lower() != sha.lower()]
+            def _norm_sha(p: Path) -> str:
+                # 换行符归一化哈希：git clone 拉取时 autocrlf=true 会把仓库里的
+                # LF 转成 CRLF，字节变了但内容没变——按 CRLF→LF 归一后再算哈希，
+                # 内容真被篡改仍然拦得住（sha256 允许的容差只有换行符这一种）。
+                h = hashlib.sha256()
+                with open(p, "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 16), b""):
+                        h.update(chunk.replace(b"\r\n", b"\n"))
+                return h.hexdigest()
+            bad = []
+            for r, sha in staged.items():
+                if r not in src_manifest:
+                    continue
+                expect = str(src_manifest[r].get("sha256", "")).lower()
+                if expect == sha.lower():
+                    continue
+                if expect == _norm_sha(staging / r).lower():
+                    continue
+                bad.append(r)
             if bad:
                 raise ValueError("SHA256 校验失败（已终止，目标目录未做任何改动）："
                                  + ", ".join(bad[:5]))

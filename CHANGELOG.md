@@ -2,6 +2,15 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.52 — 更新被 SHA256 误杀（换行符归一化比对）
+
+- **修复「执行更新：SHA256 校验失败」**：更新源经 git clone 拉取时，
+  用户机器 `core.autocrlf=true` 会把仓库里的 LF 换成 CRLF，文件字节变了
+  内容没变，manifest 逐字节哈希比对把 CHANGELOG.md / README.md / package.json
+  等正常文本文件误判为篡改，整个更新被终止。现在哈希不符时退一步做
+  CRLF→LF 归一化后再比对一次——换行符差异放行，真正的内容篡改仍拦截
+  （sha256 允许的容差只有换行符这一种）。
+
 ## v2.51 — 五步全自动化（即记即存/上下文清理/联想建链/每日漂移/自动归档）
 
 - **即记即存**：`brain.py extract` 子命令 + lingshu-cron 插件每 4 轮把攒下的

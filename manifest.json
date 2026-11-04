@@ -1,9 +1,9 @@
 {
-  "version": "2.51",
+  "version": "2.52",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "25a4b7671e179f9dc1ed60e2c7abf7174e83ef5d20ac7a9c3e898ffca6fd23fb",
-      "size": 101305
+      "sha256": "7b5a853a9822ba631d90bab20e486275f09def4591f50db23cd0b1d95ef23834",
+      "size": 103212
     },
     "README.md": {
       "sha256": "77d16ddacb0bee82efd842cd85a422e8f77b48650e5c6b412f3ab03ffe83fc41",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "e80780d210dfc6671063bea3f671cdf73facdea9d63b317b38c830e93413c509",
+      "sha256": "de172e240e284dbc3a97a162f6d97945f6365c51d17716d0650d12f200509579",
       "size": 19266
     },
     "assets/panel.html": {
@@ -114,8 +114,8 @@
       "size": 42104
     },
     "scripts/growth.py": {
-      "sha256": "763133f9c57bd3c65e2fd3b3646bb411a21380b9138b968ae370a5281f5e8aa9",
-      "size": 199362
+      "sha256": "6c550f22a0ffcd8b73df15e797420f8a6f7b0be3385e6031b7960fc9c7ff065c",
+      "size": 200186
     },
     "scripts/hooks/pre-commit": {
       "sha256": "14dafabbfd698f7e510411b144ec624affe41023113b1ffd0f1aa8f3e623a275",
