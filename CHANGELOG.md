@@ -2,6 +2,14 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.63 — 面板 tval 报错修复
+
+- **tval 提升为全局函数（panel.html）**：v2.57 把 tval 声明成 renderOverview
+  内部的局部 const，但 renderPersonaEditor（30s 轮询路径）和 onboarding 卡片
+  也用它——概览渲染到人格编辑器时抛 `ReferenceError: tval is not defined`，
+  轮询中断。提升为全局函数，三处调用统一。
+- v2.62 的 traits 溯源迁移使面板 persona 数据结构变化，此报错在迁移后暴露。
+
 ## v2.62 — 人格旧结构自动迁移
 
 - **load_persona 迁移层（persona.py）**：读取人格时自动把 v2.57 前的裸数字

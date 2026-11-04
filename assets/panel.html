@@ -1094,6 +1094,13 @@ function memCard(m){
   </article>`;
 }
 
+// v2.57 traits 带溯源（{value,evidence,why} 或旧纯数字），统一取数值展示。
+// 全局函数：renderOverview / renderPersonaEditor / onboarding 卡片多处使用，
+// 之前声明在 renderOverview 内部，renderPersonaEditor 轮询调用时 ReferenceError。
+function tval(t) {
+  return (t && typeof t === "object") ? Number(t.value || 0) : Number(t || 0);
+}
+
 function renderOverview(){
   const ov = S.ov; if (!ov) return;
   const p = ov.persona || {}, st = ov.stats || {}, ident = p.identity || {};
@@ -1162,8 +1169,6 @@ function renderOverview(){
   if ($("chk-alerts")) renderChkAlerts(ov.emotion_alerts || []);
 
   const traits = p.traits || {};
-  // v2.57 traits 带溯源（{value,evidence,why} 或旧纯数字），统一取数值展示
-  const tval = (t) => (t && typeof t === "object") ? Number(t.value || 0) : Number(t || 0);
   $("p-traits").innerHTML = Object.keys(traits).length
     ? Object.entries(traits).map(([k, v]) => `<div class="trait" title="${esc((v && typeof v === "object" && v.why) || "")}"><span>${esc(k)}</span><div class="bar"><i style="width:${tval(v)}%"></i></div><b>${tval(v)}</b></div>`).join("")
     : `<div class="sub">还没有性格设定：等初识，或由它自己决定。</div>`;
