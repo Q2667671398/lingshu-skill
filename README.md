@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v2.63**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v2.64**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -309,6 +309,7 @@ python scripts/brain.py assoc unlink m_3f2a... m_9c1d...
 - **损坏行自愈**：JSONL 里出现坏行自动分拣——好行写回，坏行挪到 `.corrupt`，绝不静默丢失
 - **备份/恢复**：`backup` 打包整个记忆库（含 verbatim/ 与 skills/），自动修剪旧备份；`restore` 恢复前先留现状备份，校验 zip 合法性并防 zip-slip 路径穿越
 - **只读降级**：沙箱写盘被拒时自动降级为只读注入，已有的记忆照样带回；`--home` 支持把数据目录迁到工作区
+- **数据目录可迁移**：目录解析优先级为 环境变量 `BRAIN_MEMORY_HOME` > 指针文件 `~/.brain-memory/.home` > 默认位置；面板「诊断」页的「数据目录」卡片可一键把整库复制到新位置并写好指针（重启生效，旧目录保留）
 - **原子写入**：所有文件写入走临时文件 + `os.replace`，不会出现写一半的脏文件
 - **运行日志可见**：锁冲突、内部异常、解析报错写进 `lingshu.log`（滚动截断），面板「日志」页按级别查看——出问题先看这里，不用翻文件
 

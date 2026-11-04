@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import secrets
+import shutil
 import sys
 import threading
 import webbrowser
@@ -42,6 +43,8 @@ _WRITE_ENDPOINTS = {
     "/api/extensions",
     # 云端面板市场：发布/下载/配置（token 写 config.json）
     "/api/panels/cloud",
+    # 数据目录迁移：写指针文件 + 复制数据（迁移目标在数据目录之外，单独放行只读门控）
+    "/api/home/migrate",
 }
 
 # 本机随机 token：页面加载时注入，之后每个 API 请求都要带上。
@@ -318,6 +321,72 @@ def _readonly_allowed(path: str, data: dict) -> bool:
     return str(data.get("action") or "") in allowed
 
 
+# --------------------------------------------------------------- 数据目录（查看 / 迁移）
+
+_PTR_FILE = Path.home() / ".brain-memory" / ".home"
+
+
+def _dir_size(p: Path) -> int:
+    """目录体积（字节）：只统计普通文件，符号链接/不可读项跳过。"""
+    total = 0
+    try:
+        for f in p.rglob("*"):
+            try:
+                if f.is_file() and not f.is_symlink():
+                    total += f.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return total
+
+
+def _home_info() -> dict:
+    ptr_active = False
+    try:
+        ptr_active = _PTR_FILE.is_file() and bool(_PTR_FILE.read_text(encoding="utf-8").strip())
+    except OSError:
+        pass
+    env_set = bool(os.environ.get("BRAIN_MEMORY_HOME"))
+    return {
+        "home": str(brain.HOME),
+        "default_home": str(Path.home() / ".brain-memory"),
+        "via_env": env_set,          # 环境变量指定（优先级最高，面板改不了它）
+        "via_pointer": ptr_active,   # 指针文件指定（面板可改）
+        "size_bytes": _dir_size(brain.HOME),
+        "readonly": bool(brain.READONLY),
+    }
+
+
+def _migrate_home(target_raw: str) -> dict:
+    """把数据目录迁移到 target：整目录复制（旧目录保留不动）+ 写指针文件。
+
+    进程内的 brain.HOME 不切换——本进程的各模块已各自复制了 HOME，运行中切换
+    会造成新旧两处混写；正确姿势是迁完提示用户重启面板/会话。指针文件对
+    下一次进程生效，环境变量 BRAIN_MEMORY_HOME 仍优先。
+    """
+    target = Path(target_raw).expanduser().resolve()
+    if not str(target.name).strip() or target_raw.strip() in ("", "/", "\\"):
+        raise ValueError("目标目录不能为空")
+    if target == brain.HOME.resolve():
+        raise ValueError("目标目录与当前数据目录相同")
+    if target.exists() and any(target.iterdir()):
+        raise ValueError("目标目录已存在且非空——请选一个空目录（或先手动清理）")
+    # 计划写指针的位置必须可写：指针文件永远在默认位置 ~/.brain-memory/ 下
+    _PTR_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # 复制数据（目标已确保不存在或为空）
+    shutil.copytree(brain.HOME, target, symlinks=True, dirs_exist_ok=True)
+    _PTR_FILE.write_text(str(target) + "\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "from": str(brain.HOME),
+        "to": str(target),
+        "pointer": str(_PTR_FILE),
+        "note": "迁移完成。重启面板/新会话后生效；旧目录原样保留，确认无误后可自行删除。",
+    }
+
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "LingShuPanel/1.0"
 
@@ -568,6 +637,10 @@ class Handler(BaseHTTPRequestHandler):
             # 自诊断：死链 / 冲突未裁决 / 数据膨胀 / 淡忘可逆状态 / 来源归属完整率
             self._json(brain.diagnose())
             return
+        if path == "/api/home":
+            # 数据目录信息：当前位置、是否指针生效、默认位置、当前库体积（面板设置卡片用）
+            self._json(_home_info())
+            return
         if path == "/api/assoc":
             mid = (parse_qs(url.query).get("id") or [""])[0]
             self._json({"id": mid, "neighbors": brain.assoc_of(mid)})
@@ -689,6 +762,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "readonly", "message": "数据目录当前只读，写操作已被禁用。"}, 403)
             return
         try:
+            if path == "/api/home/migrate":
+                # 数据目录迁移：整库复制到新位置 + 写指针文件（重启后生效）
+                target = str(data.get("target") or "").strip()
+                if not target:
+                    self._json({"error": "缺少 target（目标目录绝对路径）"}, 400)
+                    return
+                if brain.READONLY:
+                    self._json({"error": "当前数据目录只读，无法迁移"}, 403)
+                    return
+                try:
+                    self._json(_migrate_home(target))
+                except ValueError as e:
+                    self._json({"error": str(e)}, 400)
+                except OSError as e:
+                    self._json({"error": f"迁移失败：{e}"}, 500)
+                return
+
             if path == "/api/remember":
                 text = (data.get("text") or "").strip()
                 if not text:

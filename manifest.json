@@ -1,13 +1,13 @@
 {
-  "version": "2.63",
+  "version": "2.64",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "763fb0e0b2b45508c8ab87140bda89b5ef37b36685923f5eada8f0089b37867b",
-      "size": 113023
+      "sha256": "7bdc0e765441a779170b9faffce2497d699d806b748850b29263ae481e6101c1",
+      "size": 113994
     },
     "README.md": {
-      "sha256": "d2621c422c752d2a7a6642ffb94ae1fadf046e505412941a4e16d045a8c09fb1",
-      "size": 50533
+      "sha256": "9eb5b847c227b6325eb1312f33a12cb60046352416dcc2518bdb2e963608c80f",
+      "size": 50813
     },
     "SKILL-lite.md": {
       "sha256": "055fa7bc54f273e5fa16517c38b2a7d25f0726ece43428b68fbf60d276f197a3",
@@ -18,12 +18,12 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "898a6579700d9e99a5052395378d54d1228638da0b55a27e53c7639d313e7379",
-      "size": 19503
+      "sha256": "1c2b24ac8378ffd96bd050e02a9e9e67c85dd08556510e6e259bd79cc4ac5097",
+      "size": 20139
     },
     "assets/panel.html": {
-      "sha256": "2a266ecb66d9b4b2da23d2923fdbb2e32f11314fda3cb8cc01801fed319c0d72",
-      "size": 229379
+      "sha256": "11a509962c8a65dccee0df7a81e574c99c23b15d774073e47f1fb1115990b801",
+      "size": 232442
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
@@ -102,8 +102,8 @@
       "size": 134547
     },
     "scripts/core.py": {
-      "sha256": "13114b7b30d09ee7c937a8a2689fba8d36dac2daa1b62e0215e11c8415a7f645",
-      "size": 46147
+      "sha256": "accf292f3c83e32b553f9690f9083f9aed81a242a7b30b4805ecf5766da25af9",
+      "size": 46800
     },
     "scripts/dream.py": {
       "sha256": "266d989036e0ff4d1cb03fd671418695958a69f4849bd78370cea9e8dabf6976",
@@ -134,8 +134,8 @@
       "size": 25845
     },
     "scripts/panel_server.py": {
-      "sha256": "5d6d80f19ab510e4acbf58ce03113bfb6006d2ed4e4fcc5ef72748fcf77d41fa",
-      "size": 77853
+      "sha256": "a2fc5ffe8afb48b03d123f05954f268f2218967108b00cc866253aeb251e234b",
+      "size": 81730
     },
     "scripts/panels.py": {
       "sha256": "36e048f9aa4825cf6da26a70a7df60b067d3865609601189a16c4dccc07e14bc",

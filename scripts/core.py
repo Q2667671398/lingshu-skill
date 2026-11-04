@@ -43,7 +43,27 @@ for _s in (sys.stdout, sys.stderr):
 
 # ---------------------------------------------------------------- 基础环境
 
-HOME = Path(os.environ.get("BRAIN_MEMORY_HOME") or (Path.home() / ".brain-memory"))
+def _default_home() -> Path:
+    """数据目录三级解析：环境变量 > 指针文件 ~/.brain-memory/.home > 默认位置。
+
+    指针文件让"改数据目录"不依赖系统环境变量（面板设置一次即永久生效，
+    跨终端/跨面板都认）。环境变量优先级更高，可随时覆盖指针。
+    """
+    env = os.environ.get("BRAIN_MEMORY_HOME")
+    if env:
+        return Path(env)
+    try:
+        ptr = Path.home() / ".brain-memory" / ".home"
+        if ptr.is_file():
+            target = ptr.read_text(encoding="utf-8").strip()
+            if target:
+                return Path(target).expanduser()
+    except OSError:
+        pass
+    return Path.home() / ".brain-memory"
+
+
+HOME = _default_home()
 
 # 只读降级：能读不能写（沙箱写盘被拒、或迁移前临时挂载已有库时用）。
 # 触发方式：环境变量 BRAIN_MEMORY_READONLY=1、命令行 --ro，或运行前自动探测到 HOME 不可写。

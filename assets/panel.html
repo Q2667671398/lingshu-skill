@@ -829,6 +829,23 @@
         <div id="diag-summary" style="margin-top:12px"></div>
         <div id="diag-body" style="margin-top:10px"><div class="empty">加载中…</div></div>
       </div>
+
+      <!-- 数据目录（查看 / 迁移） -->
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">数据目录</h2>
+            <div class="sub">记忆、人格、知识库都存在这里。想挪到别的盘：填一个空目录的绝对路径，点「迁移」——整库复制过去并记住新位置，旧目录原样保留，重启面板/新会话后生效。</div>
+          </div>
+          <button class="ghost" id="btn-home-refresh" style="margin-left:auto">刷新</button>
+        </div>
+        <div id="home-info" style="margin-top:12px"><div class="empty">加载中…</div></div>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap">
+          <input type="text" id="home-target" placeholder="例如 E:\灵枢记忆" style="flex:1;min-width:220px">
+          <button class="btn" id="btn-home-migrate">迁移到此处</button>
+        </div>
+        <div class="sub" id="home-msg" style="margin-top:8px"></div>
+      </div>
     </section>
 
     <!-- 运行日志 -->
@@ -3116,6 +3133,42 @@ async function loadDiagnostics(){
   }
 }
 $("btn-diag-refresh") && $("btn-diag-refresh").addEventListener("click", loadDiagnostics);
+
+// ---- 数据目录（查看 / 迁移）
+const _fmtBytes = (b) => b > 1073741824 ? (b/1073741824).toFixed(2) + " GB"
+  : b > 1048576 ? (b/1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b/1024)) + " KB";
+async function loadHomeInfo(){
+  const box = $("home-info"); if (!box) return;
+  try {
+    const h = await api("/api/home");
+    const src = h.via_env ? "环境变量指定（优先级最高，需到系统里改）"
+      : h.via_pointer ? "指针文件指定（可在此迁移到新位置）" : "默认位置（可在此迁移到新位置）";
+    box.innerHTML = `<div class="sub">当前位置 <code>${esc(h.home)}</code>（${esc(src)}，体积 ${_fmtBytes(h.size_bytes)}）
+      ${h.readonly ? ' · <span class="chip bad">当前只读</span>' : ''}</div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+async function migrateHome(){
+  const target = ($("home-target").value || "").trim();
+  const msg = $("home-msg");
+  if (!target) { msg.innerHTML = `<span class="chip bad">请先填目标目录的绝对路径（空目录）</span>`; return; }
+  if (!confirm(`把整个记忆库复制到 ${target} ？\n\n旧目录原样保留，迁移后需重启面板/新会话才生效。`)) return;
+  msg.innerHTML = `<span class="chip">迁移中…（数据量大时会稍慢）</span>`;
+  try {
+    const r = await api("/api/home/migrate", { target });
+    msg.innerHTML = `<span class="chip good">✔ ${esc(r.note)}</span>`;
+    loadHomeInfo();
+  } catch (e) {
+    msg.innerHTML = `<span class="chip bad">✘ ${esc(e.message)}</span>`;
+  }
+}
+$("btn-home-refresh") && $("btn-home-refresh").addEventListener("click", loadHomeInfo);
+$("btn-home-migrate") && $("btn-home-migrate").addEventListener("click", migrateHome);
+// 进诊断页时顺带刷新数据目录卡
+if ($("view-diag")) new MutationObserver(() => {
+  if ($("view-diag").classList.contains("on")) loadHomeInfo();
+}).observe($("view-diag"), { attributes: true, attributeFilter: ["class"] });
 
 // ---- 淡忘可逆（fold / unfold / revive）：事件委托到记忆卡片按钮
 document.addEventListener("click", async e => {
