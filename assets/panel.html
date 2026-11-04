@@ -1162,8 +1162,10 @@ function renderOverview(){
   if ($("chk-alerts")) renderChkAlerts(ov.emotion_alerts || []);
 
   const traits = p.traits || {};
+  // v2.57 traits 带溯源（{value,evidence,why} 或旧纯数字），统一取数值展示
+  const tval = (t) => (t && typeof t === "object") ? Number(t.value || 0) : Number(t || 0);
   $("p-traits").innerHTML = Object.keys(traits).length
-    ? Object.entries(traits).map(([k, v]) => `<div class="trait"><span>${esc(k)}</span><div class="bar"><i style="width:${esc(v)}%"></i></div><b>${esc(v)}</b></div>`).join("")
+    ? Object.entries(traits).map(([k, v]) => `<div class="trait" title="${esc((v && typeof v === "object" && v.why) || "")}"><span>${esc(k)}</span><div class="bar"><i style="width:${tval(v)}%"></i></div><b>${tval(v)}</b></div>`).join("")
     : `<div class="sub">还没有性格设定：等初识，或由它自己决定。</div>`;
 
   const evo = p.evolved || {};
@@ -1226,7 +1228,7 @@ function renderPersonaEditor(p){
   $("pf-name").value = ident["名字"] || "";
   $("pf-role").value = ident["身份"] || "";
   $("pf-callme").value = ident["称呼你"] || "";
-  $("pf-traits").value = Object.entries(p.traits || {}).map(([k, v]) => `${k}:${v}`).join("\n");
+  $("pf-traits").value = Object.entries(p.traits || {}).map(([k, v]) => `${k}:${tval(v)}`).join("\n");
   $("pf-likes").value = (p.likes || []).join(", ");
   $("pf-dislikes").value = (p.dislikes || []).join(", ");
   $("pf-cur").value = dr.curiosity ?? "";
@@ -2204,7 +2206,7 @@ function renderOnboarding(){
   if (ob.completed) {
     box.innerHTML = `<div class="chips">
         <span class="chip good">名字 ${esc(ob.name || "还没有")}</span>
-        ${Object.entries(ob.traits || {}).slice(0, 6).map(([k, v]) => `<span class="chip">${esc(k)} ${esc(v)}</span>`).join("")}
+        ${Object.entries(ob.traits || {}).slice(0, 6).map(([k, v]) => `<span class="chip">${esc(k)} ${esc(tval(v))}</span>`).join("")}
         ${(ob.likes || []).slice(0, 6).map(x => `<span class="chip good">喜欢 ${esc(x)}</span>`).join("")}
       </div>
       <div class="sub" style="margin-top:10px">初识已完成。想改名字或性格，去「人格」里改；每次改动都会留下历史。</div>

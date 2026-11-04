@@ -2,6 +2,14 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.58 — 面板兼容 traits 溯源结构
+
+- **panel.html 前端适配 v2.57 traits 新结构**：人格页特质进度条、编辑表单
+  回填、onboarding 初识卡片三处渲染此前把 traits 当纯数字直出，新 dict
+  结构会显示成 `[object Object]`、进度条失效。统一走 `tval()` 取数值，
+  进度条 hover 显示 `why` 行为依据；后端 edit_persona 已验证裸数字 dict
+  输入可正确升级为溯源结构（EMA 0.6 兑现），全量回归（46+5+6）通过。
+
 ## v2.57 — 成长型人格 P0：mistake 记忆 / 特质溯源 / 第一人称注入
 
 - **`--kind mistake` 错误记忆类型（memory/core/cli）**：KINDS 枚举新增

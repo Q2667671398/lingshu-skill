@@ -1,12 +1,12 @@
 {
-  "version": "2.57",
+  "version": "2.58",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "458f796e55ee02cba758940ac32a578b097088b19a220d9679304da0cad64d7c",
-      "size": 107616
+      "sha256": "2e9894385883cdd2ecfe1164810d8034a636b7113d8f1294e56b41ffcfaf80a8",
+      "size": 108128
     },
     "README.md": {
-      "sha256": "bd0d46d63110204420aa24807d5d9ba82e499c855fe673ae53e4252d4a8a5e27",
+      "sha256": "adc33581bf7621b76bab672a747134accb6ab90436f296dc380eb8bc046f85a3",
       "size": 50533
     },
     "SKILL-lite.md": {
@@ -18,12 +18,12 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "03adbeabcfcbc56b8740adc82c79f9ba13d75a447548ec5860b337832f724035",
+      "sha256": "da42876ad190446b4729c577f59bbd161be1e923e9f4523eaf3e0ed1f6132828",
       "size": 18996
     },
     "assets/panel.html": {
-      "sha256": "9fd4556e4dc8180c7d99e8d4121de82bed585d727d1937aca78d7a7d858a8c06",
-      "size": 228922
+      "sha256": "1602e5616d2f2690f984dc39f324ab3e0719103084bec4f5fd2b744680fb1f2e",
+      "size": 229182
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
