@@ -1,12 +1,12 @@
 {
-  "version": "2.61",
+  "version": "2.62",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "6506d1f44dca3aa945e98276b5d82242e797a0c1c01972840c7ecc117000b58b",
-      "size": 112031
+      "sha256": "f10c987ab6b8d72486d8d78b24fe8a0ff97321975ff9378d3421056cdcc0aaab",
+      "size": 112540
     },
     "README.md": {
-      "sha256": "d3e41b800525c3f7fa3ea01466b4a7c362a0c691ce5c9a7dd21ef5a1ec12b5fc",
+      "sha256": "febb005de580a3764db2ec6243e5b4dbcb96c705c4027900e3d7ec9163c9887f",
       "size": 50533
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "6f9ac704324d167f004f59dcf1c33211101a7be24ba27f99dbed24654fb3f1fb",
+      "sha256": "7d19b53f0c92bf842df424ce4786762d03768722ea0f46d82f3ed237313ba14c",
       "size": 19503
     },
     "assets/panel.html": {
@@ -142,8 +142,8 @@
       "size": 25806
     },
     "scripts/persona.py": {
-      "sha256": "5681f05a5ddb11ae2a04dc901862f288830ef54ea34a6fbf04e53a296b6ec1dd",
-      "size": 56287
+      "sha256": "3a3498e027ddf3aa14462a5fee0b374886f751e729577e1f7c5c55cb346c53c7",
+      "size": 57086
     },
     "start-panel.bat": {
       "sha256": "48dc3d2957b17216788870e7aa1d3afd9ddf304692d8d001682d990e1b90022d",

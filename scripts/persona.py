@@ -134,6 +134,21 @@ def load_persona() -> dict:
     if "drives" not in p or not isinstance(p.get("drives"), dict):
         p["drives"] = {}
         changed = True
+    # v2.62 迁移：旧结构 traits（裸数字）→ 溯源结构；history 缺 source 的补记。
+    # 纯读路径（check/注入）不该每次都报警，升级一次即静默；只读模式不动盘。
+    tr = p.get("traits")
+    if isinstance(tr, dict):
+        for name, t in tr.items():
+            if not isinstance(t, dict):
+                tr[name] = {"value": t, "why": "数值沿用初识时的设定（旧档案迁移，暂无逐条溯源）",
+                            "evidence": []}
+                changed = True
+    hist = p.get("history")
+    if isinstance(hist, list):
+        for h in hist:
+            if isinstance(h, dict) and not h.get("source"):
+                h["source"] = "补记：v2.57 前的旧变更，原始来源未记录"
+                changed = True
     if changed and not READONLY:
         save_persona(p)
     return p

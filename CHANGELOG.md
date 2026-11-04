@@ -2,6 +2,14 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.62 — 人格旧结构自动迁移
+
+- **load_persona 迁移层（persona.py）**：读取人格时自动把 v2.57 前的裸数字
+  traits 升级为溯源结构（why="数值沿用初识时的设定（旧档案迁移，暂无逐条
+  溯源）"、evidence=[]），history 缺 source 的旧变更补记来源——`persona
+  check` 对老档案不再每次报 WARN，升级一次即静默。只读模式不动盘。
+  数值原样保留，后续该 trait 被更新时仍走 set_trait 补真实溯源。
+
 ## v2.61 — 注入性能与健壮性微修
 
 - **注入包一次读盘（memory.py）**：startup 注入时 mistake / relationship 区块
