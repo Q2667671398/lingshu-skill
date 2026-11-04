@@ -1,0 +1,30 @@
+{
+  "name": "app-lingshu-cron",
+  "version": "0.1.0",
+  "description": "灵枢例行维护调度插件：把做梦/每日整理/备份/冲突检测/技能自检从'模型自觉'搬进插件定时静默执行，模型只负责内容。",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "plugin.js",
+    "cordis.patch.yml"
+  ],
+  "app": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "config": {
+    "brainPy": "brain.py 绝对路径；留空自动探测（技能 catalog / LINGSHU_SKILL_DIR / 常见安装位置）",
+    "python": "python.exe 绝对路径；留空自动探测（spawn 不解析 PATHEXT，PATH 只有 python.cmd 时必须写 exe 全路径）",
+    "timeoutMs": "后台任务子进程超时毫秒数，默认 120000（做梦/备份可能慢）；超时静默放弃，不阻塞回合",
+    "dreamTurns": "每 N 轮静默运行 dream --auto，默认 8",
+    "checkContextTurns": "每 N 轮注入一次 check-context 建议，默认 5；0 关闭",
+    "selfReviewDays": "每 N 天静默运行 skill self-review，默认 3",
+    "runUsage": "每轮 turn-stopping 静默运行 usage --reply，默认 true",
+    "injectReview": "review 有待确认记忆时注入提醒，默认 true；关掉后 AI 自主性完全不受影响",
+    "injectCheckContext": "check-context 产生建议时注入提醒，默认 true",
+    "reviewCacheMs": "review --json 结果缓存毫秒数，默认 30000（pre-step 每步都查，走缓存避免真跑）"
+  },
+  "zeroDeps": "刻意零外部依赖（同 lingshu-startup）：不 import @deepseek-ai/schemastery。所有任务 fire-and-forget，失败静默；状态文件存 APP profile 目录（lingshu-cron-state.json），不碰 ~/.brain-memory。"
+}

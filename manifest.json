@@ -1,5 +1,5 @@
 {
-  "version": "2.50",
+  "version": "2.51",
   "files": {
     "CHANGELOG.md": {
       "sha256": "25a4b7671e179f9dc1ed60e2c7abf7174e83ef5d20ac7a9c3e898ffca6fd23fb",
@@ -18,12 +18,28 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "a7e59147e49d0aa809087d23f13129ef438878540e52d38f551993e7d69d7c8a",
+      "sha256": "e80780d210dfc6671063bea3f671cdf73facdea9d63b317b38c830e93413c509",
       "size": 19266
     },
     "assets/panel.html": {
       "sha256": "9fd4556e4dc8180c7d99e8d4121de82bed585d727d1937aca78d7a7d858a8c06",
       "size": 228922
+    },
+    "cordis-plugin/lingshu-cron/cordis.patch.yml": {
+      "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
+      "size": 58
+    },
+    "cordis-plugin/lingshu-cron/index.js": {
+      "sha256": "f10373bbd1fee62caf53ba40946996f9fa0df57755a1e24fbb1de56d03abbb40",
+      "size": 311
+    },
+    "cordis-plugin/lingshu-cron/package.json": {
+      "sha256": "5d66aa212b7a9512de97974aa571d066bf80ce91a5aa2bbc77368bd142c1e013",
+      "size": 1742
+    },
+    "cordis-plugin/lingshu-cron/plugin.js": {
+      "sha256": "8ae4d191e91a38031267e4a6d0904c9ddf94db92009789862f583522a200d866",
+      "size": 17608
     },
     "cordis-plugin/lingshu-startup/README.md": {
       "sha256": "e62016afb05dd910cd1b99fd547b1b5eead2afea43e0b90b96df2d2782c0b386",
@@ -82,8 +98,8 @@
       "size": 7230
     },
     "scripts/cli.py": {
-      "sha256": "304df48b26d9aa8f5ab3297d0d7850ddcfb7136f7271194f7742602647a11892",
-      "size": 127599
+      "sha256": "47833f727eb822150a88202d637363fc45d4daf63550d3e57deadecfb6f8fcac",
+      "size": 135949
     },
     "scripts/core.py": {
       "sha256": "e45e773e9794805cf80dd1eb57d2386111f3ac89347207c5bf1f0d6160babf1f",
@@ -110,8 +126,8 @@
       "size": 6289
     },
     "scripts/memory.py": {
-      "sha256": "f106d7292fac692545ea38f753f2793b6fb06539613fd3a30975b020e5af6dc4",
-      "size": 103478
+      "sha256": "604c9049d82b99aa6260abfcef1c550d314502c85be24b5d2c2a3762f9fd6939",
+      "size": 112303
     },
     "scripts/panel_cloud.py": {
       "sha256": "d2c7295a0e1fcdfa5131bbd97437ab6149706b21edeeb74a69025384f1f3985d",
@@ -126,8 +142,8 @@
       "size": 26256
     },
     "scripts/persona.py": {
-      "sha256": "3a490f446b2f83b9a3ea571d0927d90f91d26abf81a71ba35f909a4cdeb26ab6",
-      "size": 45749
+      "sha256": "1e401883b0156eeeefcb33053d54a757444b4c69640553100c3a01d7abcd6c3f",
+      "size": 50751
     },
     "start-panel.bat": {
       "sha256": "b6393e9f345cf5ad54d861ae803d2107dcd7c8636631b44b5691b0d63321d452",

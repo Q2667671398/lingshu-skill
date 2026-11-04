@@ -605,6 +605,98 @@ def persona_drift(days: int = 7) -> dict:
     }
 
 
+# ---------------------------------------------------------------- 每日静默漂移
+# 情感词表（自建小型中文四维）：按最近 N 天记忆文本的情感倾向微调 state.mood_note
+# 与性格标签权重。每日静默进行——真正的 AI 改动走 update_persona(source="drift")
+# 记账，ai_persona_changes 能看到；没过门限不落盘、不写 history（避免被当成
+# "没生效的记账"——那些行 field 带 "(" 或 to 写"未过门限"会被过滤）。
+_DRIFT_EMOTION_LEXICON = {
+    "愉悦": ("开心", "高兴", "快乐", "喜欢", "满意", "幸福", "太好了", "顺利",
+             "成功", "感谢", "棒", "不错", "惊喜", "有趣", "放松", "舒服"),
+    "愤怒": ("生气", "愤怒", "烦", "恼火", "可恶", "气死", "讨厌", "愤怒",
+             "离谱", "受不了", "火大", "不满"),
+    "悲伤": ("难过", "伤心", "沮丧", "失望", "遗憾", "可惜", "低落", "寂寞",
+             "孤独", "疲惫", "无奈", "心累", "后悔"),
+    "恐惧": ("害怕", "担心", "焦虑", "紧张", "不安", "恐慌", "畏惧", "压力",
+             "心慌", "危险", "出问题", "完蛋"),
+}
+_DRIFT_MAX_STEP = 2          # 每次调整最多 ±2
+_DRIFT_GATE = 2              # 四维倾向累计 |倾向|≥2 才真正写 mood_note
+
+
+def daily_drift(days: int = 1) -> dict:
+    """每日静默 persona drift：扫最近 N 天记忆文本的情感倾向 + 高频 tags 微调人格。
+
+    四维（愉悦/愤怒/悲伤/恐惧）各 0~100：初始 50，按记忆情感词出现次数换算
+    倾向后每次最多动 ±2、夹取边界。真正改动走 update_persona(source="drift")
+    写 history；没过门限不落盘也不写 history。另把当天高频 tags 报告出来
+    （性格标签权重的微调同样走 update_persona 的 traits 门限，不存在的 trait
+    会被拒收留痕，不瞎建字段）。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法执行每日漂移。")
+    import memory as _mem
+    ensure_home()
+    now = now_ts()
+    cutoff = now - max(1, int(days)) * 86400
+    recent = [m for m in _mem.load_all()
+              if float(m.get("created") or 0) >= cutoff]
+    texts = [str(m.get("text") or "") for m in recent]
+    tags_count: dict = {}
+    for m in recent:
+        for t in (m.get("tags") or []):
+            t = str(t).strip()
+            if t:
+                tags_count[t] = tags_count.get(t, 0) + 1
+    top_tags = sorted(tags_count.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # 四维倾向：按情感词命中次数（简单计数，维度间互减得净倾向）
+    hits = {k: 0 for k in _DRIFT_EMOTION_LEXICON}
+    for t in texts:
+        for dim, words in _DRIFT_EMOTION_LEXICON.items():
+            for w in words:
+                hits[dim] += t.count(w)
+    # 愉悦为正向，愤怒/悲伤/恐惧为负向体验：净倾向决定动多少
+    positive = hits["愉悦"]
+    negative = hits["愤怒"] + hits["悲伤"] + hits["恐惧"]
+
+    with _locked(HOME / "persona.json"):
+        p = load_persona()
+        st = p.setdefault("state", {})
+        # state.mood_score 不存在则从 50 起步：0=阴郁，100=明快
+        cur = st.get("mood_score")
+        if not isinstance(cur, (int, float)) or isinstance(cur, bool):
+            cur = 50
+        net = positive - negative
+        applied = False
+        if net != 0:
+            step = max(-_DRIFT_MAX_STEP, min(_DRIFT_MAX_STEP, net))
+            new = max(0, min(100, int(round(cur + step))))
+            if new != int(cur):
+                # 直接在锁内的当前档案上改（_update_persona_inner 只认 mood/mood_note，
+                # 不认 mood_score）：history 记账格式与 update_persona 的 log() 一致，
+                # source="drift" —— 真实 AI 改动，ai_persona_changes 能看到。
+                st["mood_score"] = new
+                st["updated"] = now
+                p.setdefault("history", []).append({
+                    "ts": now, "field": "state.mood_score",
+                    "from": int(cur), "to": new,
+                    "why": f"每日静默漂移：近{days}天 {len(recent)} 条记忆情感倾向 net={net}"
+                           f"（愉悦{hits['愉悦']}/愤怒{hits['愤怒']}/悲伤{hits['悲伤']}/恐惧{hits['恐惧']}）",
+                    "source": "drift"})
+                save_persona(p)
+                applied = True
+        return {
+            "days": days, "memories": len(recent),
+            "emotion_hits": hits, "positive": positive, "negative": negative,
+            "mood_score_before": int(cur), "mood_score_after": st.get("mood_score"),
+            "applied": applied,
+            "top_tags": [t for t, _ in top_tags],
+            "note": ("已按情感倾向微调 mood_score" if applied
+                     else "倾向未过门限，本次不落盘"),
+        }
+
+
 def persona_diff() -> dict:
     """人格漂移 diff 视图：最早一张快照 vs 当前人格的逐字段对比。
 

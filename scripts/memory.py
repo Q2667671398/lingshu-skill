@@ -895,6 +895,11 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
             else:
                 rec["superseded"] = superseded    # 给调用方展示"这次取代了哪些旧说法"
         records.append(rec)
+        # 联想建链：与历史里词面最相近的几条互挂 links（锁内、传已 load 的快照）
+        try:
+            relink(rec, records)
+        except Exception:
+            pass          # 建链是锦上添花，绝不能让记事本身失败
         save_all(records)
         _remember_desire_nudge(rec, rec.get("importance"))
         return rec, ("superseded" if superseded else ("conflict" if conflicts else "created"))
@@ -1059,6 +1064,9 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             h = _hay(m)
             if any(t in h for t in q_terms):
                 cand.append(m)
+        # 扩散一跳要用全量索引：预筛只保证直接命中的召回，邻居多半不含查询词，
+        # 若 id_map 只从候选集建，links 指向的邻居会被误判成"不存在"。
+        full_index = {m["id"]: m for m in records}
         records = cand
         if not records:
             return []
@@ -1140,6 +1148,32 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
 
     scored.sort(key=lambda x: x[1], reverse=True)
     result = scored[: max(k, 1)]
+
+    # 沿 links 显式联想扩散一跳：命中的记忆通过 relink/裁决挂上的关联边，
+    # 把直接邻居追加成"关联记忆"（linked: true），上限 5 条。
+    # 只追加展示、不参与侧抑制/strengthen 写回——它们不是本次检索的命中，
+    # 只是顺藤摸瓜带出来的邻居。
+    if result:
+        direct_ids = {m["id"] for m, _, _ in result}
+        linked_out, seen = [], set(direct_ids)
+        id_map = full_index if (q_terms and full_index) else {m["id"]: m for m in records}
+        for m, _, _ in result:
+            for nid in (m.get("links") or []):
+                if nid in seen:
+                    continue
+                nb = id_map.get(nid)
+                if nb is None:
+                    continue
+                seen.add(nid)
+                nb = dict(nb)
+                nb["linked"] = True
+                linked_out.append(nb)
+                if len(linked_out) >= 5:
+                    break
+            if len(linked_out) >= 5:
+                break
+        if linked_out:
+            result = result + [(m, 0.0, {"linked": True}) for m in linked_out]
 
     # 侧抑制去冗余（lateral inhibition）：近似重复的痕迹只留最强一条。
     # 大脑不会同时点亮两份"同一件事"，弱的那份被压下去。
@@ -1579,6 +1613,12 @@ def capture(payload: str, tag: str = "", kind: str = "episode",
             existing.append(t)
             saved.append(rec)
         if saved:
+            # 封存段也建联想链：capture 是原文搬运，段落之间/与历史记忆的关联照挂
+            for rec in saved:
+                try:
+                    relink(rec, records)
+                except Exception:
+                    pass
             save_all(records)
     return {"saved": saved, "skipped": skipped, "archive": archive, "chars": len(payload)}
 
@@ -1609,6 +1649,149 @@ def load_assoc() -> list:
 
 def save_assoc(rows: list) -> None:
     write_jsonl(_assoc_file(), rows)
+
+
+# ---------------------------------------------------------------- relink 联想建链
+# 联想不只是 recall 时的隐性扩散，还该显式落到记录上：新记忆写进来时，与历史里
+# 词面最相近的几条互挂 links——之后 recall 命中任意一条都能顺藤摸瓜带出邻居。
+
+def relink(record: dict, records: list | None = None,
+           max_links: int = 5, min_score: float = 1.0) -> list:
+    """给一条记忆找最相关的若干条历史记忆，双向写 links。
+
+    用现成的 terms()/jaccard() 词面相似度打分（text+tags+entities 合并算），
+    得分 >= min_score 的历史记忆按分数取前 max_links 条。
+    records 传入调用方已 load 的整库快照（remember/capture 均在锁内调用，
+    传入锁内快照避免重复读盘）；缺省时自行 load_all()。
+    返回实际建链的邻居 id 列表。只追加不去重已有链接之外的内容，
+    合并写法与 set_memory_review 一致（list(dict.fromkeys(...))）。
+    """
+    text = str(record.get("text") or "").strip()
+    if not text:
+        return []
+    my_terms = terms(_hay(record))
+    if not my_terms:
+        return []
+    rid = record.get("id")
+    if records is None:
+        records = load_all()
+    scored = []
+    for other in records:
+        if not isinstance(other, dict) or other.get("id") == rid:
+            continue
+        if other.get("layer") in ("dust", ARCHIVE_LAYER):
+            continue
+        ot = terms(_hay(other))
+        if not ot:
+            continue
+        sim = jaccard(my_terms, ot)
+        # 分数 = 相似度×10 取整刻度，min_score=1 即 jaccard≥0.1 才值得建链
+        score = round(sim * 10, 2)
+        if score >= min_score:
+            scored.append((score, other["id"]))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    neighbors = [oid for _, oid in scored[:max(0, max_links)]]
+    if not neighbors:
+        return []
+    changed = False
+    old_links = list(record.get("links") or [])
+    merged = list(dict.fromkeys(old_links + neighbors))
+    if merged != old_links:
+        record["links"] = merged
+        changed = True
+    for other in records:
+        if other.get("id") in neighbors and rid and rid not in (other.get("links") or []):
+            other["links"] = list(dict.fromkeys(list(other.get("links") or []) + [rid]))
+            changed = True
+    return neighbors if changed else []
+
+
+# ---------------------------------------------------------------- 每日自动归档
+# pending 记忆自动整理：事实型沉淀进 growth 知识库（add_knowledge，AI 来源按其
+# 审核机制默认 pending，走 knowledge review 转正）；事件型写进笔记/日记
+# （growth.write_note 的 journal）。原记忆绝不删：打 archived_at 标记留档。
+# 拿不准分类的保持 pending 原样不动；pinned 不动。
+
+_AUTO_ARCHIVE_FACT_CUES = ("是", "有", "能", "用", "在", "会", "需要", "属于", "等于",
+                           "吃", "喝", "喜欢", "爱", "叫", "姓", "住", "说", "知道",
+                           "觉得", "认为", "已经", "可能", "一定", "必须", "开始", "结束")
+_AUTO_ARCHIVE_TIME_CUES = ("今天", "昨天", "明天", "刚才", "刚刚", "早上", "上午",
+                           "下午", "晚上", "上周", "这周", "上次", "当时", "后来",
+                           "然后", "接着", "于是", "聊到", "他说", "她说", "我提到",
+                           "对话", "群里", "会议")
+_AUTO_ARCHIVE_FACT_MAX_LEN = 120     # 事实型通常是短结论；长文本多半是叙事
+
+
+def _classify_pending(text: str) -> str:
+    """pending 记忆分类：fact（事实型）/ episode（事件型）/ unknown（拿不准，不动）。"""
+    t = text.strip()
+    if not t:
+        return "unknown"
+    has_time = any(c in t for c in _AUTO_ARCHIVE_TIME_CUES)
+    has_fact = any(c in t for c in _AUTO_ARCHIVE_FACT_CUES)
+    if has_time and not has_fact:
+        return "episode"
+    if has_fact and not has_time and len(t) <= _AUTO_ARCHIVE_FACT_MAX_LEN:
+        return "fact"
+    # 既有时间叙述又像陈述句：时间性叙述优先按事件处理（对话叙事抄进日记不丢）
+    if has_time and has_fact:
+        return "episode"
+    return "unknown"
+
+
+def auto_archive() -> dict:
+    """pending 记忆自动归档：事实型→知识库，事件型→日记笔记；原记忆标记 archived_at。"""
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法自动归档。")
+    import growth as _growth
+    ensure_home()
+    now = now_ts()
+    moved = {"knowledge": 0, "notes": 0, "skipped": 0}
+    details = []
+    # 读-改-写整体加锁：与 remember/dream 一样走整库快照覆写，必须锁内完成
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        changed = False
+        for m in records:
+            if m.get("review") != "pending" or m.get("pinned"):
+                continue
+            if m.get("layer") in ("dust", ARCHIVE_LAYER) or m.get("archived_at"):
+                continue
+            text = str(m.get("text") or "").strip()
+            cls = _classify_pending(text)
+            if cls == "unknown":
+                moved["skipped"] += 1
+                continue
+            try:
+                if cls == "fact":
+                    _growth.add_knowledge(title=_mem_gist_fallback(m), body=text,
+                                          topic="", tags=list(m.get("tags") or []),
+                                          source_ids=[m.get("id")], source="ai")
+                    moved["knowledge"] += 1
+                else:
+                    _growth.write_note("journal", title=_mem_gist_fallback(m), body=text,
+                                       tags=["归档"] + list(m.get("tags") or []),
+                                       memory_ids=[m.get("id")])
+                    moved["notes"] += 1
+            except Exception as exc:
+                # 单条失败不拖垮整批：留痕并按"拿不准"跳过
+                log_event("auto-archive", f"归档记忆 {m.get('id')} 失败：{exc}", level="warning")
+                moved["skipped"] += 1
+                continue
+            # 只标记、不删不改层：原记忆留在原层，archived_at 表示已整理过
+            m["archived_at"] = now
+            changed = True
+            details.append({"id": m.get("id"), "class": cls,
+                            "text": text[:40]})
+        if changed:
+            save_all(records)
+    return {"moved": moved, "details": details}
+
+
+def _mem_gist_fallback(m: dict) -> str:
+    """给知识/笔记取标题：优先现成 gist，缺省用 heuristic_gist。"""
+    t = str(m.get("gist") or "").strip()
+    return t or heuristic_gist(str(m.get("text") or ""))
 
 
 def _norm_edge(a: str, b: str) -> tuple:

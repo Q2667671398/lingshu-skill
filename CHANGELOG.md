@@ -2,6 +2,22 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.51 — 五步全自动化（即记即存/上下文清理/联想建链/每日漂移/自动归档）
+
+- **即记即存**：`brain.py extract` 子命令 + lingshu-cron 插件每 4 轮把攒下的
+  对话文本静默提取进海马体（惊异门控在 Python 侧，fire-and-forget，模型零感知）。
+- **无感知上下文清理**：pre-step 把灵枢自己注入过的旧提醒从消息流里清掉
+  （`source.name === 'lingshu'` 精确识别），原文已被 extract 封存，清掉不丢信息。
+- **联想建链**：`memory.relink` A-Mem 卡片盒式双向 links——capture/remember
+  写入即建链，recall 沿链接扩散一跳补捞相关记忆；插件只管写入路径，全库
+  补链保留手动 `brain.py relink`。
+- **每日静默漂移**：`persona.daily_drift` 扫描近 1 天记忆的情感倾向（愉/怒/哀/惧
+  四维词表），微调 `state.mood_score`（0=阴郁 100=明快），真实变化才落盘并记账。
+- **自动归档**：`memory.auto_archive` 每日把审核通过的 pending 记忆按
+  事实型→知识库 / 事件型→日记分类转正，原记忆只加 `archived_at` 标记绝不删。
+- lingshu-cron：drift / auto-archive 接入每日任务表（天驱动、按天去重、
+  fire-and-forget，与 daily/backup 同一模式）。
+
 ## v2.50 — 云端发布 commit 作者可配置
 
 - **修复「我的 commit 成了别人的」**：云端面板/拓展发布走 Gitee/GitHub

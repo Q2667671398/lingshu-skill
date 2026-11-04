@@ -314,6 +314,67 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
 
 # ---------------------------------------------------------------- home（数据目录）
 
+def cmd_relink(limit: int = 0, min_score: float = 1.0, max_links: int = 5) -> int:
+    """全库联想建链：给历史记忆按词面相似度补挂 links（双向）。
+
+    与 cold/archive 分层无关——建链是给"还在热查询集里的记忆"补关联网。
+    整体一把写锁、一次快照内完成（全库也只是一次 load + 一次 save，
+    与 dream 的整库遍历同量级，分批反而要反复读盘）。
+    """
+    import memory as _mem
+    if READONLY:
+        print("[只读] 记忆库当前不可写，relink 需要写盘。", file=sys.stderr)
+        return 3
+    ensure_home()
+    # 记忆上万后全库 jaccard 两两比对是 O(n²)，但与 recall/dream 现有全量扫描
+    # 同量级；先按创建时间倒序截 limit，保证"最近的最先补到"。
+    rows = _mem.load_all()
+    hot = [m for m in rows if m.get("layer") not in ("dust", _mem.ARCHIVE_LAYER)]
+    hot.sort(key=lambda m: float(m.get("created") or 0), reverse=True)
+    targets = hot[:max(0, limit)] if limit > 0 else hot
+    id_set = {m.get("id") for m in rows}
+    by_id = {m.get("id"): m for m in rows}
+    done = 0
+    linked_total = 0
+    for rec in targets:
+        rid = rec.get("id")
+        if not rid:
+            continue
+        my_terms = _mem.terms(_mem._hay(rec))
+        if not my_terms:
+            continue
+        scored = []
+        for other in rows:
+            oid = other.get("id")
+            if oid == rid or oid not in id_set:
+                continue
+            if other.get("layer") in ("dust", _mem.ARCHIVE_LAYER):
+                continue
+            ot = _mem.terms(_mem._hay(other))
+            if not ot:
+                continue
+            s = round(_mem.jaccard(my_terms, ot) * 10, 2)
+            if s >= min_score:
+                scored.append((s, oid))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        neighbors = [oid for _, oid in scored[:max(0, max_links)]]
+        if not neighbors:
+            continue
+        old = list(rec.get("links") or [])
+        if list(dict.fromkeys(old + neighbors)) != old:
+            rec["links"] = list(dict.fromkeys(old + neighbors))
+            done += 1
+        for oid in neighbors:
+            ob = by_id.get(oid)
+            if ob and rid not in (ob.get("links") or []):
+                ob["links"] = list(dict.fromkeys(list(ob.get("links") or []) + [rid]))
+                linked_total += 1
+    save_all(rows)
+    print(f"relink 完成：处理 {len(targets)} 条，{done} 条更新了自己的 links，"
+          f"反向新挂 {linked_total} 处（阈值 {min_score}，每条上限 {max_links}）。")
+    return 0
+
+
 def cmd_home(action: str = "show", dest: str = "") -> int:
     if action in ("show", ""):
         print(f"记忆库目录：{HOME}")
@@ -989,6 +1050,14 @@ def _main(argv=None) -> int:
     p_cap.add_argument("--importance", type=float, default=None)
     p_cap.add_argument("--raw-only", action="store_true", help="只归档原文，不逐段进记忆库")
 
+    p_ext = sub.add_parser("extract",
+                           help="即记即存（静默）：从文件读最近几轮对话文本，惊异门控过滤后原样封存。"
+                                "供调度插件后台调用，输出一行摘要，失败不吵人")
+    p_ext.add_argument("--file", required=True, help="对话文本文件路径（UTF-8）")
+    p_ext.add_argument("--tag", default="即记", help="自动封存的标签")
+    p_ext.add_argument("--min-chars", type=int, default=80,
+                       help="惊异门控下限：文本短于该值视为无新信息，直接跳过")
+
     p_serve = sub.add_parser("serve", help="启动可视化面板")
     p_serve.add_argument("--port", type=int, default=None)
     p_serve.add_argument("--no-browser", action="store_true")
@@ -1008,6 +1077,20 @@ def _main(argv=None) -> int:
     p_arch.add_argument("arg", nargs="?", default="", help="search：关键词 / restore：记忆 id")
     p_arch.add_argument("--limit", type=int, default=20)
     p_arch.add_argument("--dry-run", action="store_true", help="run：只预览可归档的，不落盘")
+
+    p_rel = sub.add_parser("relink", help="联想建链：给全库记忆按词面相似度补挂 links（双向）")
+    p_rel.add_argument("--limit", type=int, default=0,
+                       help="只处理最近 N 条（0=全库）；已有 links 的也会补挂新邻居")
+    p_rel.add_argument("--min-score", type=float, default=1.0,
+                       help="建链门槛（相似度×10，默认 1 即 jaccard≥0.1）")
+    p_rel.add_argument("--max-links", type=int, default=5, help="每条最多挂几个邻居")
+
+    p_drift = sub.add_parser("drift", help="每日静默漂移：按最近 N 天记忆情感倾向微调 mood_score")
+    p_drift.add_argument("--days", type=int, default=1, help="回看最近 N 天记忆（默认 1）")
+
+    p_aar = sub.add_parser("auto-archive",
+                           help="每日自动归档：pending 记忆按事实/事件分类沉淀进知识库或日记，原记忆标记 archived_at")
+    p_aar.add_argument("--dry-run", action="store_true", help="只预览会归档哪些，不落盘")
 
     p_mem = sub.add_parser("memory", help="记忆操作：dust fold/unfold/revive（淡忘可逆）、diagnose（自诊断）")
     mem_sub = p_mem.add_subparsers(dest="mem_cmd", parser_class=_BrainParser)
@@ -1110,7 +1193,7 @@ def _main(argv=None) -> int:
     if READONLY:
         action = getattr(args, "action", None)
         writing = (
-            args.cmd in ("remember", "init", "restore", "forget", "capture")
+            args.cmd in ("remember", "init", "restore", "forget", "capture", "extract")
             or (args.cmd == "dream" and not args.dry_run)
             or (args.cmd == "work" and action in ("add", "done", "flush", "clear"))
             or (args.cmd == "persona" and action not in ("show", "path", "onboarding",
@@ -1139,6 +1222,9 @@ def _main(argv=None) -> int:
             or (args.cmd == "channel" and getattr(args, "channel_cmd", None) == "privacy"
                 and getattr(args, "action", "") in ("grant", "revoke"))
             or (args.cmd == "memory" and getattr(args, "mem_cmd", None) == "dust")
+            or (args.cmd == "relink")                                  # 建链写盘，全量都算写
+            or (args.cmd == "drift")                                   # 漂移走 persona.json 写盘
+            or (args.cmd == "auto-archive" and not args.dry_run)
         )
         if writing:
             print(f"[只读] 记忆库当前不可写，{args.cmd} 需要写盘。"
@@ -1206,6 +1292,33 @@ def _main(argv=None) -> int:
             print("  （--raw-only：只归档，未逐段进记忆库）")
         print("  这些是原文快照，做梦会压缩它们但不会淡化或丢弃。")
         return 0
+
+    if args.cmd == "extract":
+        # 即记即存（静默自动化）：调度插件把最近几轮对话文本写成临时文件，
+        # 这里惊异门控过滤后复用 capture（原文归档 + 海马体逐段 + 去重）。
+        # 任何失败都只打 stderr 一行、退出码非零——调用方 fire-and-forget，不吵人。
+        try:
+            fp = Path(args.file).expanduser()
+            text = fp.read_text(encoding="utf-8", errors="replace").strip() if fp.exists() else ""
+            try:
+                fp.unlink(missing_ok=True)  # 用完即删，临时文件不留痕
+            except Exception:
+                pass
+            if len(text) < args.min_chars:
+                # 太短/空：没有值得记的，静默成功退出（不是错误，别惊动任何人）
+                return 0
+            res = capture(text, tag=args.tag, kind="episode", importance=None)
+            saved = len(res.get("saved", []))
+            skipped = res.get("skipped", 0)
+            if saved or skipped:
+                print(f"即记：封存 {saved} 段" + (f"，跳过重复 {skipped} 段" if skipped else ""))
+            return 0
+        except PermissionError:
+            print("[只读] 记忆库不可写，extract 跳过", file=sys.stderr)
+            return 3
+        except Exception as exc:
+            print(f"[extract] 静默失败：{exc}", file=sys.stderr)
+            return 2
 
     if args.cmd == "recall":
         query = " ".join(args.query)
@@ -2260,6 +2373,46 @@ def _main(argv=None) -> int:
 
     if args.cmd == "archive":
         return cmd_archive(args.action, args.arg, args.limit, args.dry_run)
+
+    if args.cmd == "relink":
+        return cmd_relink(args.limit, args.min_score, args.max_links)
+
+    if args.cmd == "drift":
+        import persona as _persona
+        d = _persona.daily_drift(args.days)
+        if d.get("applied"):
+            print(f"漂移已落盘：mood_score {d['mood_score_before']} → {d['mood_score_after']}"
+                  f"（近{d['days']}天 {d['memories']} 条记忆，愉{d['emotion_hits']['愉悦']}"
+                  f"/怒{d['emotion_hits']['愤怒']}/哀{d['emotion_hits']['悲伤']}/惧{d['emotion_hits']['恐惧']}）")
+        else:
+            print(f"倾向未过门限，本次不落盘（近{d['days']}天 {d['memories']} 条记忆，"
+                  f"正 {d['positive']} / 负 {d['negative']}）")
+        if d.get("top_tags"):
+            print(f"  高频话题：{'、'.join(d['top_tags'])}")
+        return 0
+
+    if args.cmd == "auto-archive":
+        if args.dry_run:
+            import memory as _mem
+            preview = [m for m in _mem.load_all()
+                       if m.get("review") == "pending" and not m.get("pinned")
+                       and m.get("layer") not in ("dust", _mem.ARCHIVE_LAYER)
+                       and not m.get("archived_at")]
+            fact = [m for m in preview if _mem._classify_pending(str(m.get("text") or "")) == "fact"]
+            ep = [m for m in preview if _mem._classify_pending(str(m.get("text") or "")) == "episode"]
+            print(f"[预览] pending {len(preview)} 条可整理：事实型 {len(fact)} → 知识库，"
+                  f"事件型 {len(ep)} → 日记，拿不准 {len(preview) - len(fact) - len(ep)} 条不动")
+            for m in preview[:20]:
+                print(f"  - [{_mem._classify_pending(str(m.get('text') or ''))}] {m.get('id')} {_mem.display_text(m)[:60]}")
+            return 0
+        import memory as _mem
+        r = _mem.auto_archive()
+        mv = r["moved"]
+        print(f"已归档：知识库 {mv['knowledge']} 条，日记 {mv['notes']} 条，"
+              f"拿不准/失败跳过 {mv['skipped']} 条（原记忆均标记 archived_at 保留）")
+        for d in r["details"][:20]:
+            print(f"  - [{d['class']}] {d['id']} {d['text']}")
+        return 0
 
     if args.cmd == "memory":
         mem_cmd = getattr(args, "mem_cmd", None)
