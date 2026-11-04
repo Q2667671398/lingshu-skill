@@ -2,6 +2,26 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.59 — 修复更新 SHA256 校验失败与"鸡生蛋"更新死锁
+
+- **根因定位**：用户面板「执行更新」报 `SHA256 校验失败：README.md, SKILL.md`。
+  执行校验的是**已装旧版 growth.py**，而 SHA 归一化修复（v2.52~v2.54）是随新版
+  发布的——旧运行时不认识新文件形态，修复代码永远装不下去，典型的鸡生蛋死锁。
+- **鸡生蛋防线（growth.py）**：灵枢本体更新时，若源目录里的 `scripts/growth.py`
+  与当前进程加载的不是同一份文件，改用**源里的新版起干净子进程**执行安装
+  （`_install_via_source_module`），保证校验代码永远和被安装内容同代；子进程
+  失败带 stderr 抛错，绝不静默退化成旧逻辑。
+- **跨块边界哈希漂移修复（growth.py / make_manifest.py）**：规范化哈希按 64KB
+  分块逐块做 CRLF→LF 替换，`\r` 恰好落在块尾时会被切成 `\r|\n` 两段各自漏掉，
+  大文件（README/SKILL.md）哈希对不上。两侧统一改为 `\r` 暂存到下一块拼回再
+  替换，并新增回归测试 `tests/test_sha_boundary.py`。
+- **git clone 源禁用 autocrlf**：克隆远程更新源时加
+  `-c core.autocrlf=false -c core.eol=lf`，Windows 全局 autocrlf 配置不再污染
+  更新源文件的字节形态。
+- **端到端验证**：dev 源 → 已装副本（跨目录触发子进程分支）安装成功、37 个
+  文件哈希逐一比对一致；既有回归（apply_update 10 + panels 46 + channel 5 +
+  privacy 6 + panel_cloud 13）全绿。
+
 ## v2.58 — 面板兼容 traits 溯源结构
 
 - **panel.html 前端适配 v2.57 traits 新结构**：人格页特质进度条、编辑表单

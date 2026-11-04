@@ -1,9 +1,9 @@
 {
-  "version": "2.58",
+  "version": "2.59",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "2e9894385883cdd2ecfe1164810d8034a636b7113d8f1294e56b41ffcfaf80a8",
-      "size": 108128
+      "sha256": "352a37a44ee1e94866b2919b10225ee5b702e835a2960fd86a9c0cc4e0ceb21b",
+      "size": 109690
     },
     "README.md": {
       "sha256": "adc33581bf7621b76bab672a747134accb6ab90436f296dc380eb8bc046f85a3",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "da42876ad190446b4729c577f59bbd161be1e923e9f4523eaf3e0ed1f6132828",
+      "sha256": "99b013694495b57bd830b5dddd69fa409ae09331ba4bddc9b0b841b007aff463",
       "size": 18996
     },
     "assets/panel.html": {
@@ -114,16 +114,16 @@
       "size": 41231
     },
     "scripts/growth.py": {
-      "sha256": "8d6c04c9d0df216f016492f961324e6a32330b7e6f2d191f053c26c8a5c2365e",
-      "size": 196466
+      "sha256": "fea2deef3d4fbc4404c28b6b56f71d32ff791921905a8349904d69e93e4d5966",
+      "size": 200351
     },
     "scripts/hooks/pre-commit": {
       "sha256": "14dafabbfd698f7e510411b144ec624affe41023113b1ffd0f1aa8f3e623a275",
       "size": 743
     },
     "scripts/make_manifest.py": {
-      "sha256": "02dd3acc3122d01dc22e88aa6bd96284d074a2f308fe0a9e9ed34cbfdb09fa3b",
-      "size": 7234
+      "sha256": "d88d9051af07b7f6c18e571eab4159de3b9dfb145923e08c1053237da028da61",
+      "size": 7704
     },
     "scripts/memory.py": {
       "sha256": "855e844978170610cc4aa517275e588a924f67015fa6ce50e7409afc421bccc8",

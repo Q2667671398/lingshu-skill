@@ -62,19 +62,30 @@ def sha256_file(p: Path) -> tuple[str, int]:
     LF+无 BOM，逐字节比对永远失败（v2.52 只修了比对侧，没修生成侧）。
     换行符与 BOM 都不改变内容语义，归一化后哈希才与发布内容对齐；
     真正的内容篡改仍拦得住。
+
+    分块注意：\r 若恰好落在 64KB 块尾必须暂存到下一块拼回来再替换——否则
+    边界处的 CRLF 被切成 \r|\n 两段各自漏掉，大文件哈希漂移（与比对侧同一坑）。
     """
     h = hashlib.sha256()
     size = 0
     first = True
+    tail = b""
     with open(p, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 16), b""):
             if first:
                 first = False
                 if chunk.startswith(b"\xef\xbb\xbf"):
                     chunk = chunk[3:]
+            chunk = tail + chunk
+            tail = chunk[-1:] if chunk.endswith(b"\r") else b""
+            if tail:
+                chunk = chunk[:-1]
             chunk = chunk.replace(b"\r\n", b"\n")
             h.update(chunk)
             size += len(chunk)
+    if tail:
+        h.update(tail.replace(b"\r\n", b"\n"))
+        size += len(tail)
     return h.hexdigest(), size
 
 

@@ -18,6 +18,7 @@ import hashlib
 import http.client
 import json
 import os
+import subprocess
 import re
 import shutil
 import sys
@@ -1459,9 +1460,14 @@ def _fetch_git_source(repo_url: str, branch: str, source: str) -> Path:
     staging = cache / f"staging-git-{os.getpid()}-{uuid4().hex[:8]}"
     staging.mkdir(parents=True, exist_ok=True)
     try:
-        # --depth 1 浅克隆最快；--single-branch 只拉目标分支
+        # --depth 1 浅克隆最快；--single-branch 只拉目标分支。
+        # -c core.autocrlf=false：git clone 默认吃全局 autocrlf 配置，Windows 上
+        # 会把工作区文件转成 CRLF——哈希比对依赖的源文件必须是仓库原始字节形态
+        # （规范哈希虽能兜底，但按源头 LF 拉取最稳，也让缓存内容可复现）。
+        # -c core.eol=lf 双保险。
         subprocess.run(
-            [git, "clone", "--depth", "1", "--single-branch",
+            [git, "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+             "clone", "--depth", "1", "--single-branch",
              "--branch", branch, repo_url, str(staging)],
             check=True, capture_output=True, text=True, timeout=REMOTE_TIMEOUT)
         if not (staging / "SKILL.md").is_file():
@@ -1659,15 +1665,24 @@ def apply_update(src_dir: Path, dst_dir: Path,
                 # CRLF→LF 归一化（autocrlf/git clone 的换行符差异）+ 剥 UTF-8 BOM
                 # （raw 下载/记事本保存可能带 BOM）。字节形态不同但内容没变的文件
                 # 放行，内容真被篡改仍然拦得住。
+                # 注意分块方式：\r 必须暂存到下一块拼回来再 replace——否则恰好在
+                # 64KB 边界被切成 \r|\n 的换行符会漏归一化，大文件哈希对不上。
                 h = hashlib.sha256()
                 first = True
+                tail = b""
                 with open(p, "rb") as f:
                     for chunk in iter(lambda: f.read(1 << 16), b""):
                         if first:
                             first = False
                             if chunk.startswith(b"\xef\xbb\xbf"):
                                 chunk = chunk[3:]
+                        chunk = tail + chunk
+                        tail = chunk[-1:] if chunk.endswith(b"\r") else b""
+                        if tail:
+                            chunk = chunk[:-1]
                         h.update(chunk.replace(b"\r\n", b"\n"))
+                if tail:
+                    h.update(tail.replace(b"\r\n", b"\n"))
                 return h.hexdigest()
             bad = []
             for r, sha in staged.items():
@@ -2418,6 +2433,44 @@ def resolve_source(name: str = "lingshu", force_pull: bool = False
     raise KeyError(f"没有这个技能：{name}")
 
 
+def _install_via_source_module(name: str, src_dir: Path, dst_dir: Path,
+                               force: bool, accept_risk: bool) -> dict:
+    """用源目录里的新版 growth.py 起子进程执行安装（鸡生蛋防线）。
+
+    当前进程加载的可能是已装旧版模块，其校验逻辑不认识新版内容形态；子进程
+    从源目录 scripts 运行，校验代码与被安装内容同代。子进程带 --from 指源目录
+    （合法：灵枢本体目录在 --from 白名单里），JSON 输出结果原样返回。
+    失败时带 stderr 抛错，绝不静默退化成旧逻辑——那等于没修。
+    """
+    payload = json.dumps({"name": name, "from_dir": str(src_dir), "force": bool(force),
+                          "accept_risk": bool(accept_risk)}, ensure_ascii=False)
+    code = (
+        "import json,sys\n"
+        "sys.path.insert(0, r'''%s''')\n"
+        "import growth\n"
+        "req=json.loads(sys.argv[1])\n"
+        "print('@@RESULT@@'+json.dumps(growth.install_skill("
+        "req['name'], req['force'], req['from_dir'], req['accept_risk']), ensure_ascii=False))\n"
+    ) % str(src_dir / "scripts")
+    cmd = [sys.executable, "-c", code, payload]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=600, encoding="utf-8", errors="replace",
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8",
+                                "PYTHONPATH": str(src_dir / "scripts")})
+    except subprocess.TimeoutExpired:
+        raise KeyError("更新子进程超时（10 分钟）——源目录可能损坏或磁盘过慢，已终止。")
+    out = (r.stdout or "")
+    marker = out.rfind("@@RESULT@@")
+    if r.returncode == 0 and marker >= 0:
+        try:
+            return json.loads(out[marker + len("@@RESULT@@"):].strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            pass
+    err = ((r.stderr or "")[-600:] or out[-600:] or f"exit={r.returncode}")
+    raise KeyError(f"新版安装器执行失败：{err}")
+
+
 def install_skill(name: str, force: bool = False, from_dir: str | None = None,
                   accept_risk: bool = False) -> dict:
     """把技能整目录装进全局技能目录（不只是 SKILL.md）。
@@ -2527,6 +2580,20 @@ def install_skill(name: str, force: bool = False, from_dir: str | None = None,
     if _is_lingshu(name, meta, from_dir) and not accept_risk and not _risk_accepted(name):
         return {"name": name, "state": "risk_required", "risks": LINGSHU_RISKS,
                 "path": str(dst), "accepted": False}
+
+    # 鸡生蛋防线：跑校验/部署逻辑的是"当前进程加载的 growth.py"（通常是已装旧版），
+    # 而被安装的是源里的新版。旧运行时可能不认识新文件形态（历史上 SHA 归一化
+    # 修复就是这样迟迟落不下去的）。灵枢本体更新时改用源目录里的新版 scripts
+    # 起干净子进程执行安装，保证校验代码永远和被安装内容同代。
+    if _is_lingshu(name, meta, from_dir):
+        src_scripts = src_dir / "scripts" / "growth.py"
+        self_scripts = Path(__file__).resolve()
+        try:
+            same = src_scripts.resolve() == self_scripts.resolve()
+        except OSError:
+            same = str(src_scripts) == str(self_scripts)
+        if src_scripts.is_file() and not same:
+            return _install_via_source_module(name, src_dir, dst_dir, force, accept_risk)
 
     # 别的全局目录里已有同名副本（比如 Trae 那边也装过）：提醒，避免"更新了却没生效"的错觉
     stale = [str(r / name) for r in _global_roots()
