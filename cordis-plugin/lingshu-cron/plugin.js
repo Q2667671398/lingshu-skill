@@ -95,7 +95,7 @@ function findPythonExe(configured) {
   if (configured) return existsSync(configured) ? configured : null
   const home = homedir()
   const candidates = []
-  const appHomes = [process.env.APP_HOME, join(home, '.dsh')].filter(Boolean)
+  const appHomes = [process.env.APP_DSH, join(home, '.dsh')].filter(Boolean)
   for (const app of appHomes) {
     candidates.push(
       join(app, 'app-runtimes', 'app-primary-runtime', 'dependencies', 'python', 'python.exe'),
@@ -117,7 +117,7 @@ function findPythonExe(configured) {
 // ---------------------------------------------------------------- 状态落盘（APP profile 目录，不碰 ~/.brain-memory）
 
 function statePath() {
-  const base = process.env.APP_HOME || join(homedir(), '.dsh')
+  const base = process.env.APP_DSH || join(homedir(), '.dsh')
   return join(base, 'lingshu-cron-state.json')
 }
 
@@ -296,7 +296,7 @@ export function apply(ctx, config) {
         const brainPy = await ensureBrainPy()
         if (!brainPy) return
         // 临时文件放 APP profile 目录（与状态文件同层），用完由 brain.py 删除
-        const base = process.env.APP_HOME || join(homedir(), '.dsh')
+        const base = process.env.APP_DSH || join(homedir(), '.dsh')
         mkdirSync(base, { recursive: true })
         const tmp = join(base, `lingshu-extract-${randomUUID()}.txt`)
         try {

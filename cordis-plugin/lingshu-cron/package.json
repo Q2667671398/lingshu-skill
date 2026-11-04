@@ -9,7 +9,7 @@
     "plugin.js",
     "cordis.patch.yml"
   ],
-  "app": {
+  "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }

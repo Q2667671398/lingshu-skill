@@ -2,6 +2,16 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.56 — cordis 插件 APP 接入收尾（bundle 键 + 环境变量名）
+
+- **package.json 顶层 bundle 键改为 APP 认的写法**（lingshu-cron）：
+  此前顶层键写的是 a-p-p 形式，APP 只认 d-s-h——包名改了、字段没改，
+  APP 不会自动加载。现在 lingshu-cron 与 lingshu-startup 两个 package.json
+  的 bundle 配置块顶层键统一与 `.dsh`（d-s-h）profile 目录名一致。
+- **环境变量名统一**（两个 plugin.js）：技能目录探测用的环境变量统一为
+  `APP_DSH` 风格（与目录名对齐的大写形式），未设置时照旧回退
+  `~/.dsh`（d-s-h），行为不变、语义不再混着。
+
 ## v2.55 — cron 插件四项修复 + auto-archive 审核闸
 
 - **auto-archive 不再绕过审核闸（memory.py）**：`auto_archive()` 原来处理

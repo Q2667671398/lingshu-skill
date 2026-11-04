@@ -1,12 +1,12 @@
 {
-  "version": "2.55",
+  "version": "2.56",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "48741ab02ca732a94ade87d06eb791e475e1a7216e70ff4c8bc39ec2674790ed",
-      "size": 105188
+      "sha256": "971f3ccb7116f71711c4b3daebc6a24c2cad25ee07c9140e73c627faa6752f7c",
+      "size": 105860
     },
     "README.md": {
-      "sha256": "9823b16153a753a62b12382c66cbe695353d1cfd7c3432dca595936dfed01fdc",
+      "sha256": "a809befac11b8ef07301ec9a6b7380d18ac0bed354265e77a0c5e05d8031b65b",
       "size": 50532
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "9c62992136c2eec665ad1f18c9e5ca23a03582d43c37e0099e73b60589b6dfa3",
+      "sha256": "f18fc7fe4c0275673cee47f35f01efc780b0fb4a49e38e7598fb11b55d108488",
       "size": 18996
     },
     "assets/panel.html": {
@@ -34,12 +34,12 @@
       "size": 311
     },
     "cordis-plugin/lingshu-cron/package.json": {
-      "sha256": "629e888931df8336d16d9d403521f7a154dbbc1ebfc826cbbf481ec06e39f419",
+      "sha256": "e353dd7f5f4b0e5e9dbdd0875fc408aff8cdc396547d5cef4c58758093b5b4c3",
       "size": 1742
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "0c59f6360110185c1f40e7f29e473a83d4f88beb04aab5414975554f1b2c33b3",
-      "size": 20439
+      "sha256": "f38fbbfd8f75c6e8995e06d17474eb3815104bc47850b7c74cf50f004e616218",
+      "size": 20436
     },
     "cordis-plugin/lingshu-startup/README.md": {
       "sha256": "e62016afb05dd910cd1b99fd547b1b5eead2afea43e0b90b96df2d2782c0b386",
