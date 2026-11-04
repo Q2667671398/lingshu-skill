@@ -910,7 +910,7 @@ def _main(argv=None) -> int:
     p_per = sub.add_parser("persona", help="人格查看与编辑")
     p_per.add_argument("action", nargs="?", default="show",
                        choices=["show", "set", "sync", "path", "interview", "self", "onboarding",
-                                "lock", "unlock", "history", "rollback",
+                                "lock", "unlock", "history", "rollback", "check",
                                 "snapshot", "snapshots", "restore", "drift"])
     p_per.add_argument("pair", nargs="?", default=None, help="例如 traits.幽默=70 / rollback 的序号")
     p_per.add_argument("--json", action="store_true")
@@ -1511,6 +1511,23 @@ def _main(argv=None) -> int:
             print(f"已从快照恢复人格：{r['label']}（{fmt_time(r['ts'])}）")
             print(persona_brief(load_persona()))
             return 0
+        if args.action == "check":
+            import persona as _persona
+            r = _persona.persona_check()
+            if args.json:
+                print(json.dumps(r, ensure_ascii=False, indent=2))
+            else:
+                for item in r["fails"]:
+                    print(f"  [FAIL] {item}")
+                for item in r["warns"]:
+                    print(f"  [WARN] {item}")
+                for item in r["info"]:
+                    print(f"  [INFO] {item}")
+                if not (r["fails"] or r["warns"] or r["info"]):
+                    print("  一切正常。")
+                verdict = "FAIL" if r["fails"] else ("WARN" if r["warns"] else "PASS")
+                print(f"persona check：{verdict}（FAIL {len(r['fails'])} / WARN {len(r['warns'])}）")
+            return 1 if r["fails"] else 0
         if args.action == "drift":
             d = persona_drift(getattr(args, "days", 7) or 7)
             if args.json:

@@ -2,6 +2,26 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.60 — P1：persona check / 时段语境 / relationship 记忆
+
+- **`persona check` 人格自检（persona.py / cli.py）**：新子命令校验人格档案
+  健康度——traits 溯源结构（value 须 0-100 有限数值、evidence 须数组）、
+  state.energy/closeness/mood_score 与 drives.curiosity/reason 越界/NaN/Inf/
+  非数、history 变更缺 `source` 的溯源断链（WARN）。FAIL → 退出码 1；
+  `--json` 输出纯 JSON（无汇总行）便于脚本消费；初识未完成只记 INFO 不算病。
+- **startup 注入时段语境（memory.py `_time_context`）**：注入包新增
+  「## 现在是什么时候」——当前日期时间 + 时段描述（清晨/午间/下午/夜晚/
+  深夜，深夜提醒别用元气腔调），周末自动标注。修复深夜分支跨行字符串
+  缺括号的 IndentationError（回归：注入包冒烟 + 新增 test_p1_features）。
+- **`--kind relationship` 人际关系记忆（core.py / memory.py）**：KINDS 枚举
+  新增 `relationship`；startup 注入时独立渲染「## 我的人际关系」区块
+  （最近 3 条非 dust），提到这些人时先想起彼此的关系与人情——跨群共享
+  画像的基础。
+- **新增测试**：`scripts/test_p1_features.py`（6 项：kind 写入召回、注入
+  区块、时段格式、check PASS/脏数据/JSON 模式）。全量回归
+  （panels 46 + channel 5 + privacy 6 + apply_update 10 + panel_cloud 13 +
+  p1 6）全绿。
+
 ## v2.59 — 修复更新 SHA256 校验失败与"鸡生蛋"更新死锁
 
 - **根因定位**：用户面板「执行更新」报 `SHA256 校验失败：README.md, SKILL.md`。

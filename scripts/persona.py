@@ -1135,3 +1135,75 @@ def onboarding_state() -> dict:
         "drives": p.get("drives", {}),
         "likes": (p.get("likes") or []) + (p.get("evolved", {}).get("learned_likes") or []),
     }
+
+
+def _check_num(name, val, lo, hi, fails, warns):
+    """数值字段校验：NaN/Inf/越界/非数。越界进 fails，其余按类型分级。"""
+    if val is None:
+        return
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        warns.append(f"{name} 不是数值（{val!r}），行为指引会跳过它")
+        return
+    try:
+        if math.isnan(val) or math.isinf(val):
+            fails.append(f"{name} 是 {'NaN' if math.isnan(val) else 'Inf'}——脏数据，会污染 EMA/决策")
+            return
+    except TypeError:
+        pass
+    if not (lo <= val <= hi):
+        fails.append(f"{name}={val} 越界（合法 {lo}-{hi}）")
+
+
+def persona_check() -> dict:
+    """人格自检：结构校验（traits 溯源结构 / 数值字段 / history 溯源），不写盘。
+
+    返回 {"fails": [...], "warns": [...], "info": [...]}；
+    fails 非空即人格档案有必须修的病，CLI 侧据此退出码 1。
+    """
+    p = load_persona()
+    fails, warns, info = [], [], []
+
+    # 1) traits 结构：dict 的才有溯源，裸数字还能兼容读但该提醒升级
+    traits = p.get("traits") or {}
+    if not isinstance(traits, dict):
+        fails.append(f"traits 不是对象（{type(traits).__name__}），整个溯源层失效")
+    else:
+        for name, t in traits.items():
+            if isinstance(t, dict):
+                v = t.get("value")
+                if not isinstance(v, (int, float)) or isinstance(v, bool) \
+                        or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) \
+                        or not (0 <= v <= 100):
+                    fails.append(f"traits[{name}].value 非法：{v!r}（须 0-100 数值）")
+                ev = t.get("evidence")
+                if not isinstance(ev, list):
+                    fails.append(f"traits[{name}].evidence 不是数组（{type(ev).__name__}）"
+                                 "——规约是 evidence 永远为数组、禁止 null")
+            else:
+                warns.append(f"traits[{name}] 是裸数字（v2.57 前的旧结构），能兼容读，"
+                             "下次该 trait 被更新时会自动升级为溯源结构")
+
+    # 2) 数值状态字段
+    st = p.get("state") or {}
+    for k, lo, hi in (("energy", 0, 100), ("closeness", 0, 100)):
+        _check_num(f"state.{k}", st.get(k), lo, hi, fails, warns)
+    dr = p.get("drives") or {}
+    for k in ("curiosity", "reason"):
+        _check_num(f"drives.{k}", dr.get(k), 0, 100, fails, warns)
+    mood = st.get("mood_score")
+    if mood is not None:
+        _check_num("state.mood_score", mood, 0, 100, fails, warns)
+
+    # 3) history 溯源：人格变更必须带 source（v2.57 规约）
+    hist = p.get("history") or []
+    bad = [h for h in hist if isinstance(h, dict) and not h.get("source")]
+    if bad:
+        warns.append(f"history 里 {len(bad)} 条变更没写 source"
+                     f"（最新一条 ts={bad[-1].get('ts')}）——溯源断链，rollback 后说不清是谁改的")
+
+    # 4) 初识状态提示（不算病）
+    ob = p.get("onboarding") or {}
+    if not ob.get("completed"):
+        info.append("初识还没完成（onboarding.completed=false）——这是正常状态，不是错误")
+
+    return {"fails": fails, "warns": warns, "info": info}

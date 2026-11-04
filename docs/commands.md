@@ -15,7 +15,7 @@
 | 换数据目录 | `--home <目录> ...` / `home move <目录>` / `home verify` |
 | 备份 / 恢复 | `backup [--out 目录] [--keep 20]` / `restore <zip> [--yes]` |
 | 工作记忆 | `work [status\|list]`（看一眼）→ `work add "..."` → `work done <序号>` / `work flush [--skip-done]` / `work clear` |
-| 写入 | `remember "内容" --kind fact --importance 7 --tags a,b` |
+| 写入 | `remember "内容" --kind fact --importance 7 --tags a,b`（kind 可用 mistake=错误教训 / relationship=人际关系，注入时独立成块） |
 | 回忆 | `recall "关键词" --k 8` |
 | 遇到不会的 | `learn ask "问题"` / `learn loop` |
 | 做梦 | `dream` / `dream --apply apply.json` / `dream --auto [--dry-run]` |
@@ -25,6 +25,7 @@
 | 人格 | `persona [show\|sync\|path\|set traits.幽默=70\|lock 名字\|unlock 名字]` |
 | 人格历史/回滚 | `persona history [--limit N]` → 看来源与依据 → `persona rollback <序号>` |
 | 人格快照/漂移 | `persona snapshot --label "基准"` / `persona snapshots` / `persona restore <名字>` / `persona drift [--days 7] [--json]` |
+| 人格自检 | `persona check [--json]`（校验 traits 溯源结构/数值越界/history 溯源；FAIL 退出码 1） |
 | 人格编辑 | `persona set traits.幽默=70`（逐字段改，写进历史可回滚） |
 | 初识 | `persona interview [--name ... --traits ...\|--unsure]` → `persona self [--name ... --traits ... --likes ... --dislikes ... --habits ...]` |
 | 理智/好奇 | `mind [state\|weigh "事" --benefit 7 --cost 3\|tune --curiosity +5 --reason -3 --why "..."]` |

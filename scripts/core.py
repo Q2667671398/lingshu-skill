@@ -62,7 +62,10 @@ TRAIT_DRIFT_GATE = 5     # 账面倾向累计满 ±5 才真正改人格
 TRAIT_DRIFT_EMA = 0.6    # 兑现比例：账面 6 分只改 3.6 分，余款下次接着用
 
 #   "mistake"：错误/失误/判断偏差类记录（成长型人格的地基——注入时独立成块）。
-KINDS = ("episode", "fact", "preference", "emotion", "insight", "identity", "habit", "mistake")
+#   "relationship"：人际关系类记录（A 和我是什么关系、Ta 在意什么、欠了谁/被谁帮过——
+#                   注入时独立成块，跨群共享画像的基础）。
+KINDS = ("episode", "fact", "preference", "emotion", "insight", "identity", "habit",
+         "mistake", "relationship")
 LAYERS = ("hippo", "cortex", "dust")
 
 # 冷热归档层：长期没被想起、保留度极低的沉眠记忆雪藏到这里。

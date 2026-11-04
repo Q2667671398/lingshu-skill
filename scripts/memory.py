@@ -1990,6 +1990,30 @@ def read_user_rules() -> list:
     return [l for l in lines if l.strip()]
 
 
+def _time_context() -> str:
+    """当前时段的一句话语境（注入包用，克制描述、不煽情）。
+
+    5-11 清晨 / 11-14 午间 / 14-18 下午 / 18-23 夜晚 / 23-5 深夜；
+    顺带标注周末，工作日不标（默认即是）。
+    """
+    lt = datetime.now()
+    h = lt.hour
+    if 5 <= h < 11:
+        seg = "清晨，一天刚开始"
+    elif 11 <= h < 14:
+        seg = "午间"
+    elif 14 <= h < 18:
+        seg = "下午，正事多在此时"
+    elif 18 <= h < 23:
+        seg = "夜晚，节奏可以慢下来"
+    else:
+        seg = ("深夜（0 点到凌晨 5 点之间）——若用户此刻还在，多半有事或睡不着，"
+               "别用元气满满的腔调")
+    if lt.weekday() >= 5:
+        seg += "（今天周末）"
+    return f"{lt.strftime('%Y-%m-%d %H:%M')}，{seg}。"
+
+
 def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     ensure_home()
     cfg = load_config()
@@ -2012,6 +2036,24 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             out.append("\n## 我犯过的错（遇到类似情境先想起这些）")
             for m in _mistakes:
                 out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
+    except Exception:
+        pass
+
+    # 「我的人际关系」：kind=relationship 独立成块注入——记得谁是谁、欠了谁、
+    # 被谁帮过，关系才有连续性（群聊场景跨群共享同一份画像）。
+    try:
+        _rels = [m for m in recent(40) if m.get("kind") == "relationship"
+                 and m.get("layer") != "dust"][:3]
+        if _rels:
+            out.append("\n## 我的人际关系（提到这些人时先想起这些）")
+            for m in _rels:
+                out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
+    except Exception:
+        pass
+
+    # 时段语境：一句话给当下时间定性，让语气/行为与真实时间对齐（克制，不煽情）。
+    try:
+        out.append(f"\n## 现在是什么时候\n{_time_context()}")
     except Exception:
         pass
 

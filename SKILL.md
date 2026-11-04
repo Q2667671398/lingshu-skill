@@ -1,7 +1,7 @@
 ﻿---
 name: lingshu
 title: 灵枢
-version: 2.59
+version: 2.60
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -93,6 +93,8 @@ lingshu.user.md 用户附加规则（更新技能永不覆盖，每会话自动�
    - 约定/截止/承诺 → 立刻 `remember --kind fact --importance 8`
    - 情绪高点、关系推进 → `remember --kind emotion --importance 6` + `emotion feel <情绪名> --intensity N --why "..."`
    - 里程碑 → `remember --kind episode --importance 7`
+   - 人际关系（A 和我是什么关系、Ta 在意什么、欠了谁/被谁帮过）→ `remember --kind relationship --importance 6+`（startup 注入时独立成块）
+   - 错误/判断偏差 → `remember --kind mistake --importance 7+`（同样独立成块注入，成长型人格的地基）
    - 绝不能丢的原始对话 → 立刻 `capture "..." --tag 会话`
    - 稳定偏好/身份事实/日期 → `--kind preference|fact` 重要性 0.7+；一次性细节 → `--kind episode` 0.3-0.5；自己想明白的道理 → `--kind insight` 0.7
 
@@ -144,6 +146,7 @@ python scripts/brain.py mode show|work|human|auto|explain "帮我修下这个报
 - 自审：`review` 看全部待审项 → `review confirm <id>` 转正 / `review discard <id>` 废弃（记忆 `m_*` 与知识 `k_*` 通用）；整体自查用 `audit`。
 - 注入包出现 `[待审核]` / `[人格漂移]` 时，先处理再继续，别让幻觉静默沉淀。
 - 人格改错了：`persona history` 看来源 → `persona rollback <序号>` 撤；大改前 `persona snapshot --label "基准"` 拍快照，跑偏了 `persona restore <名字>`。
+- 人格档案自检：`persona check` 校验 traits 溯源结构、数值越界、NaN/Inf、history 溯源断链——FAIL 项必须修，WARN 项（旧结构/缺 source）下次写入会自动升级。
 
 ## 用户附加规则：写一次，更新不覆盖
 
