@@ -1740,7 +1740,10 @@ def _classify_pending(text: str) -> str:
 
 
 def auto_archive() -> dict:
-    """pending 记忆自动归档：事实型→知识库，事件型→日记笔记；原记忆标记 archived_at。"""
+    """已确认（confirmed）记忆自动归档：事实型→知识库，事件型→日记笔记；原记忆标记 archived_at。
+
+    只处理 review == "confirmed" 的记忆（v2.55 修复：不再自动转正 pending——
+    审核闸的设计是"AI 产物先待审，确认后才算事实"，自动归档不能绕过它）。"""
     if READONLY:
         raise PermissionError("记忆库当前只读，无法自动归档。")
     import growth as _growth
@@ -1753,7 +1756,9 @@ def auto_archive() -> dict:
         records = load_all()
         changed = False
         for m in records:
-            if m.get("review") != "pending" or m.get("pinned"):
+            # 审核闸：只转正"已确认"的记忆。pending 意味着未经人工确认——
+            # 每天自动把 AI 幻觉候选写进知识库等于绕过审核闸，这里绝不碰 pending。
+            if m.get("review") != "confirmed" or m.get("pinned"):
                 continue
             if m.get("layer") in ("dust", ARCHIVE_LAYER) or m.get("archived_at"):
                 continue

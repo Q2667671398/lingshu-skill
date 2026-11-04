@@ -22,7 +22,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-export const name = 'app-lingshu-cron'
+export const name = 'dsh-lingshu-cron'
 
 const DEFAULTS = {
   brainPy: '',            // brain.py 绝对路径；留空自动探测（与 lingshu-startup 同一套逻辑）
@@ -82,7 +82,7 @@ async function findBrainPy(configured, ctx) {
   }
   const home = homedir()
   for (const dir of [
-    join(home, '.app', 'skills', 'lingshu'),
+    join(home, '.dsh', 'skills', 'lingshu'),
     join(home, '.trae-cn', 'skills', 'lingshu'),
   ]) {
     const p = join(dir, 'scripts', 'brain.py')
@@ -95,7 +95,7 @@ function findPythonExe(configured) {
   if (configured) return existsSync(configured) ? configured : null
   const home = homedir()
   const candidates = []
-  const appHomes = [process.env.APP_HOME, join(home, '.app')].filter(Boolean)
+  const appHomes = [process.env.APP_HOME, join(home, '.dsh')].filter(Boolean)
   for (const app of appHomes) {
     candidates.push(
       join(app, 'app-runtimes', 'app-primary-runtime', 'dependencies', 'python', 'python.exe'),
@@ -117,7 +117,7 @@ function findPythonExe(configured) {
 // ---------------------------------------------------------------- 状态落盘（APP profile 目录，不碰 ~/.brain-memory）
 
 function statePath() {
-  const base = process.env.APP_HOME || join(homedir(), '.app')
+  const base = process.env.APP_HOME || join(homedir(), '.dsh')
   return join(base, 'lingshu-cron-state.json')
 }
 
@@ -142,6 +142,12 @@ function saveState(path, state) {
 }
 
 const todayStr = () => new Date().toISOString().slice(0, 10)
+
+/** agent 的稳定标识（用于状态落盘）：拿不到稳定 id 就返回 null（仅内存计数）。 */
+function agentKey(agent) {
+  const k = agent?.id ?? agent?.agentId ?? agent?.sessionId ?? agent?.session?.id
+  return typeof k === 'string' && k ? k : null
+}
 
 function dueByDays(task, state) {
   const last = state?.days?.[task.id]
@@ -216,7 +222,8 @@ export function apply(ctx, config) {
 
   const turns = new Map()   // agent -> 本会话轮次
   const running = new Set() // 防并发：同名任务进行中就不重入
-  const convo = new Map()   // agent -> 攒的对话文本（即记即存缓冲，extract 成功后清空）
+  const convo = new Map()   // agent -> { text, seen }（即记即存缓冲 + 已处理消息游标，extract 成功后清空）
+  const lastReply = new Map() // agent -> 最后一条 assistant 文本（给 usage --reply 用）
   let state = loadState(statePath())
   let brainPyCache = null
   let warnedOnce = false
@@ -225,6 +232,15 @@ export function apply(ctx, config) {
   // review --json 缓存（pre-step 每步都问，30s 内复用）
   let reviewCacheAt = 0
   let reviewCacheVal = null
+
+  let turnStateSeed = null // 状态文件里的 {agentKey: n}，turn-stopping 里对号入座
+  // 重启恢复：把上次的累计轮数灌进 seed（turn-stopping 里按 agentKey 对号入座续算）
+  try {
+    const savedTurns = state?.turns
+    if (savedTurns && typeof savedTurns === 'object') {
+      turnStateSeed = savedTurns
+    }
+  } catch {}
 
   const warn = (msg) => { if (!warnedOnce) { warnedOnce = true; try { ctx.logger?.warn?.(msg) } catch {} } }
 
@@ -270,7 +286,8 @@ export function apply(ctx, config) {
    */
   function fireExtract(agent) {
     if (running.has('extract')) return
-    const text = (convo.get(agent) || '').trim()
+    const buf = convo.get(agent)
+    const text = (buf?.text || '').trim()
     if (!text || text.length < cfg.extractMinChars) return // 没攒够有信息量的内容，不跑
     running.add('extract')
     ;(async () => {
@@ -279,7 +296,7 @@ export function apply(ctx, config) {
         const brainPy = await ensureBrainPy()
         if (!brainPy) return
         // 临时文件放 APP profile 目录（与状态文件同层），用完由 brain.py 删除
-        const base = process.env.APP_HOME || join(homedir(), '.app')
+        const base = process.env.APP_HOME || join(homedir(), '.dsh')
         mkdirSync(base, { recursive: true })
         const tmp = join(base, `lingshu-extract-${randomUUID()}.txt`)
         try {
@@ -294,8 +311,8 @@ export function apply(ctx, config) {
         }
       } catch {} // 顶层兜底
       finally {
-        if (ok) convo.set(agent, '') // 清空缓冲（保留 key，避免 Map 无限增长）
-        else if (text.length > 200_000) convo.set(agent, '') // 兜底防爆内存：失败且过大就放弃这批
+        if (ok) convo.set(agent, { text: '', seen: buf?.seen }) // 清空缓冲，但保留游标（防止重复攒旧消息）
+        else if (text.length > 200_000) convo.set(agent, { text: '', seen: buf?.seen }) // 兜底防爆内存
         running.delete('extract')
       }
     })()
@@ -306,8 +323,22 @@ export function apply(ctx, config) {
     try {
       const agent = payload?.agent
       if (!agent) return
-      const n = (turns.get(agent) ?? 0) + 1
+      const ak = agentKey(agent)
+      // 重启恢复：状态文件里有该 agent 的累计轮数就续算，没有才从 0 开始
+      let n = (turns.get(agent) ?? 0) + 1
+      if (!turns.has(agent) && ak && turnStateSeed && Number.isFinite(turnStateSeed[ak])) {
+        n = Number(turnStateSeed[ak]) + 1
+      }
       turns.set(agent, n)
+      // 轮数落盘：重启后按"已累计轮数"续算，避免每次重启都重新数 N 轮才触发
+      // dream / extract（ak 为 null 时拿不到稳定标识，退回纯内存计数）
+      if (ak) {
+        state.turns = state.turns || {}
+        if (state.turns[ak] !== n) {
+          state.turns[ak] = n
+          saveState(statePath(), state)
+        }
+      }
 
       const silentTasks = [
         { id: 'dream', turns: cfg.dreamTurns, argv: ['dream', '--auto'] },
@@ -327,7 +358,11 @@ export function apply(ctx, config) {
         if (t.days && dueByDays(t, state)) fire(t)
       }
       if (cfg.runUsage) {
-        fire({ id: 'usage', argv: ['usage', '--reply', ''] })
+        // usage --reply 用"最后一条 assistant 回复"的真实文本统计记忆是否被用上；
+        // 传空串会导致关键词重叠恒 0、每条记忆都记成"没被用上"，污染使用率统计。
+        // 没有真实回复文本时宁可跳过本轮，也不给假数据。
+        const reply = (lastReply.get(agent) || '').trim()
+        if (reply) fire({ id: 'usage', argv: ['usage', '--reply', reply.slice(0, 4000)] })
       }
       // 即记即存：每 N 轮把攒的对话文本静默封存进海马体
       if (cfg.extractTurns > 0 && n % cfg.extractTurns === 0) fireExtract(agent)
@@ -356,20 +391,40 @@ export function apply(ctx, config) {
           }
         }
       } catch {}
-      // 即记即存缓冲：把本轮 messages 的文本攒起来（先攒再注入，注入消息也一并攒上，
-      // 反正 Python 侧有去重）。只取 text 块，跳过图片/工具结果，单条截断 4000 字。
+      // 即记即存缓冲：只攒"本步新增"的文本——按消息 id 记游标，重复推送的旧消息
+      // 不重复入缓冲（否则缓冲膨胀、extract 内容重复）。同时记录最后一条
+      // assistant 文本给 usage --reply 用（usage 需要真实回复，不能传空串）。
       try {
         const msgs = Array.isArray(decision.messages) ? decision.messages : []
         if (msgs.length) {
-          let buf = convo.get(agent) || ''
+          const buf = convo.get(agent) || { text: '', seen: [] }
+          const seenIds = new Set(Array.isArray(buf.seen) ? buf.seen : [])
+          let text = buf.text
+          let lastAsst = lastReply.get(agent) || ''
+          let batchIds = []
           for (const m of msgs) {
+            const mid = m?.id
+            if (mid != null) {
+              if (seenIds.has(mid)) continue // 上一步已攒过这条，跳过（只加增量）
+              batchIds.push(mid)
+            }
             for (const c of (Array.isArray(m?.content) ? m.content : [])) {
               if (c?.type === 'text' && typeof c.text === 'string' && c.text.trim()) {
-                buf += (buf ? '\n' : '') + m.role + '：' + c.text.trim().slice(0, 4000) + '\n'
+                const t = c.text.trim()
+                if (m.role === 'assistant') lastAsst = t.slice(0, 4000)
+                text += (text ? '\n' : '') + m.role + '：' + t.slice(0, 4000) + '\n'
               }
             }
           }
-          convo.set(agent, buf)
+          // 游标：只保留最近几批的 id（防无限增长），本批新 id 全部记入
+          if (batchIds.length) {
+            seenIds.add(`\0batch:${JSON.stringify(batchIds)}`)
+          }
+          convo.set(agent, {
+            text,
+            seen: [...seenIds].slice(-16), // 最近 16 个批次标记足够覆盖重推场景
+          })
+          if (lastAsst) lastReply.set(agent, lastAsst)
         }
       } catch {}
 

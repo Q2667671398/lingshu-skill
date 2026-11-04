@@ -1,5 +1,5 @@
 {
-  "name": "app-lingshu-cron",
+  "name": "dsh-lingshu-cron",
   "version": "0.1.0",
   "description": "灵枢例行维护调度插件：把做梦/每日整理/备份/冲突检测/技能自检从'模型自觉'搬进插件定时静默执行，模型只负责内容。",
   "type": "module",

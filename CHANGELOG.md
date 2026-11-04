@@ -2,6 +2,28 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.55 — cron 插件四项修复 + auto-archive 审核闸
+
+- **auto-archive 不再绕过审核闸（memory.py）**：`auto_archive()` 原来处理
+  `review == "pending"` 的记忆——pending 定义就是"未经确认"，等于每天自动把
+  AI 幻觉候选转正、按启发式分类写进知识库。现在只处理 `review == "confirmed"`
+  的记忆，审核闸设计（AI 产物先待审，确认后才算事实）不再被例行任务绕过。
+- **usage --reply 假实现修复（lingshu-cron）**：原来每轮 fire `usage --reply ''`，
+  传空串导致关键词重叠恒 0、每条记忆都记成"没被用上"，污染使用率统计。
+  现在 pre-step 缓冲对话时同步捕获最后一条 assistant 回复文本（截 4000 字），
+  turn-stopping 有真实回复才跑 usage，否则跳过本轮——不给假数据。
+- **轮数状态落盘（lingshu-cron）**：`dreamTurns` 等轮驱任务的计数原来是内存
+  Map，重启归零、每次重启都要重新数满 8 轮。现在状态文件新增 `turns` 字段
+  （`{agentKey: 累计轮数}`，agentKey 取 agent.id/agentId/sessionId 等稳定标识，
+  拿不到则退回纯内存计数），重启后按"已累计轮数"续算。
+- **convo 缓冲只加增量（lingshu-cron）**：pre-step 每步收到的是整批 messages，
+  重推的旧消息会重复膨胀缓冲。现在按消息 id 记批次游标（只保留最近 16 批），
+  重复推送直接跳过；extract 成功清空文本但保留游标。
+- **修复 turnStateSeed TDZ**：重启恢复逻辑的变量声明在赋值之后（TDZ 异常被
+  try/catch 吞掉），恢复实际失效——声明已移到赋值之前。
+- **插件名前缀统一**：lingshu-cron / lingshu-startup 两个 package.json 的
+  name 前缀与 plugin.js 对齐（同 APP profile 目录名一致）。
+
 ## v2.54 — 比对侧补齐 BOM 归一化（与生成侧完全对齐）
 
 - **修复 v2.53 仍有一个形态差异没覆盖**：v2.53 生成侧哈希剥了 BOM，
