@@ -2,6 +2,15 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.67 — 根包 bundle 键与 keywords 对齐 profile 目录名
+
+- **根包 `app`（混淆字符）键修复（package.json）**：v2.56 只改了两个子包
+  （lingshu-startup / lingshu-cron），根包的顶层 bundle 键和 keywords 里
+  同名字段还挂着旧写法，与 profile 目录名（混淆 d-s-h 形式）不一致，
+  走 `plugin --profile desktop add` 挂载路径时 APP 不认 bundle 配置。
+  现在根包与子包、目录名三方对齐。
+- **keywords 同步**：keywords 里的同名字段一并替换，保持一致。
+
 ## v2.66 — 商库兼容声明修复
 
 - **补宿主兼容声明（package.json）**：商库 UI 对未声明 `peerDependencies`

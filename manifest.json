@@ -1,9 +1,9 @@
 {
-  "version": "2.66",
+  "version": "2.67",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "04609ad77a405d11d9a1e6d983d5aa8b8868828b122047db32211cf78710224a",
-      "size": 114901
+      "sha256": "6e2ab3a491bc78c95498db3f01ccd2e80dc5783c38ccac89c357050431e7f625",
+      "size": 115457
     },
     "README.md": {
       "sha256": "0da232683c0e8c8f04ec5bbb06a4d7c82c45c926427efd2b15362fc5ceb52cc8",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "fe4b0c9cac8241adc90ec3eb900d5b486fecab4e65cfddfdececa683008258f2",
+      "sha256": "a8ee89f10005d86740463934772151ca24ef67cb8c89cf128e96252cdd6f70aa",
       "size": 20139
     },
     "assets/panel.html": {
@@ -86,7 +86,7 @@
       "size": 1728
     },
     "package.json": {
-      "sha256": "c99bf03b3197535ebf20e62f36c62e19893d8a55c49a979f6eca40303caf41e4",
+      "sha256": "f5dc6fd3c800f292f62e9c1ad05a19b2e4c2a5be0f3a4298bedb66dbbce46b57",
       "size": 663
     },
     "scripts/brain.py": {
