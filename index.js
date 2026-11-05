@@ -6,6 +6,13 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+// 子插件（启动注入 / 例行维护调度）也随根包一起激活。
+// 它们此前是 cordis-plugin/ 下的独立子包，需要单独 tgz 安装进 profile——
+// 插件商店只装根包，子包永远"没按上"。现改为根包 apply 时直接挂载，
+// 商店一次安装全带上。两子包均零外部依赖，plugin.js 可直接 import。
+import * as startupPlugin from './cordis-plugin/lingshu-startup/plugin.js'
+import * as cronPlugin from './cordis-plugin/lingshu-cron/plugin.js'
+
 const here = dirname(fileURLToPath(import.meta.url))
 
 /** 读仓库根 SKILL.md，返回剥离 frontmatter 后的正文；读不到则返回 undefined。 */
@@ -43,4 +50,17 @@ export function apply(ctx) {
     content,
     invocation: { modelInvocable: true, userInvocable: true },
   })
+
+  // 挂载子插件：startup = 会话启动自动注入人格/记忆；cron = 做梦/清点/用量等例行维护。
+  // 各自 try/catch：一个挂载失败不能拖垮另一个和技能注册本身。
+  try {
+    startupPlugin.apply(ctx, {})
+  } catch (e) {
+    ctx.logger?.warn?.('lingshu-skill: startup 子插件挂载失败', e)
+  }
+  try {
+    cronPlugin.apply(ctx, {})
+  } catch (e) {
+    ctx.logger?.warn?.('lingshu-skill: cron 子插件挂载失败', e)
+  }
 }
