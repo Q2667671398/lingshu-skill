@@ -19,6 +19,10 @@ LINGSHU_PANEL_TOKEN
 Thumbs.db
 .DS_Store
 
+# 本地打包产物与依赖锁（不进发布库）
+astrbot.zip
+pnpm-lock.yaml
+
 # 临时文件与本地运行产物（更新源解耦：_* 开头的目录/文件、日志、散落 json 一律不进库）
 _*/
 _*
@@ -31,3 +35,5 @@ _*
 !cordis.patch.yml
 !**/package.json
 !**/package-lock.json
+!**/_conf_schema.json
+!**/CHECKSUMS.json

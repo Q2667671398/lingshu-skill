@@ -2,6 +2,24 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+## v2.68 — AstrBot 适配层：钩子链路与安全修复
+
+- **对话前召回（scripts/astrbot_plugin_lingshu/main.py）**：检索 query 改为
+  只取用户本轮消息 `event.get_message_str()`，不再把宿主 system prompt /
+  人格设定混入检索；跳过 `lingshu` 命令消息。
+- **对话后写回（同在 main.py）**：新增 `@filter.on_llm_response()` 与
+  后台 `_capture_turn`，默认关闭（`auto_capture`）。只写用户消息、不写助手
+  回答；敏感词（密码/密钥/token/银行卡号等）拦截；`capture_min_chars`
+  控制最小长度，`capture_interval` 按 `(平台实例, 群, 用户)` 节流；
+  停用时取消所有后台任务。
+- **人格隔离**：桥接只读检测既有 `persona.json`，绝不调用 `init` / `startup`，
+  不创建、不注入、不改写宿主人格，避免与宿主既有设定冲突。
+- **安全**：延续精确 owners 鉴权、跨平台实例隔离、同群授权召回、
+  隐私查询门控（`--asker/--target`，未授权返回退出码 4）。
+- **配套**：`_conf_schema.json` 新增 `auto_capture` / `capture_min_chars` /
+  `capture_interval`；插件 metadata 升至 v0.2.1 并更新说明；README /
+  PATCH_NOTES 同步；版本链升至 2.68。
+
 ## v2.67 — 根包 bundle 键与 keywords 对齐 profile 目录名
 
 - **根包 `app`（混淆字符）键修复（package.json）**：v2.56 只改了两个子包

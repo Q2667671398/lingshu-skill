@@ -1,0 +1,2352 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""灵枢 —— 灵枢 · 记忆：分层存储、编码/回忆、归档、工作记忆、capture、关联、注入与统计。"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import sys
+import threading
+import time
+import zipfile
+from contextlib import contextmanager, nullcontext
+from datetime import datetime
+from pathlib import Path
+
+from core import *
+
+def detect_conflicts(limit: int = 50) -> list:
+    """启发式扫描"可能矛盾的记忆"（如「我用 Windows」vs「我改用 Linux」）。
+
+    按实体分组，组内两两比较：词面有交集、且一条带改口/否定信号、另一条不带，
+    就列为候选。只做提醒、不下结论——到底矛不矛盾由人来判。
+    """
+    records = load_all()
+    by_entity: dict[str, list] = {}
+    for m in records:
+        for ent in (m.get("entities") or []):
+            by_entity.setdefault(str(ent), []).append(m)
+
+    change_cues = ("改用", "换成", "改成", "改为", "不再", "已经不用", "换了", "现在用",
+                   "现在不用", "不喝", "不吃", "不用", "戒了", "停了", "放弃", "移除", "删了")
+    neg_cues = ("不", "没", "别", "反")
+    found, seen = [], set()
+
+    def flag(a, b, reason):
+        key = tuple(sorted((a["id"], b["id"])))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append({
+            "a": {"id": a["id"], "text": a["text"], "ts": a.get("created")},
+            "b": {"id": b["id"], "text": b["text"], "ts": b.get("created")},
+            "reason": reason,
+        })
+
+    for ent, members in by_entity.items():
+        if len(members) < 2:
+            continue
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                a, b = members[i], members[j]
+                if a["id"] == b["id"]:
+                    continue
+                inter = set(terms(a.get("text", ""))) & set(terms(b.get("text", "")))
+                if len(inter) < 1:
+                    continue
+                ca = any(c in a.get("text", "") for c in change_cues)
+                cb = any(c in b.get("text", "") for c in change_cues)
+                if ca != cb:
+                    flag(a, b, f"关于「{ent}」的两条记忆词面相近，但其中一条带改口信号"
+                               "（改用/不再/换成…），可能已经过时或更新了")
+                    continue
+                na = any(c in a.get("text", "") for c in neg_cues)
+                nb = any(c in b.get("text", "") for c in neg_cues)
+                if na != nb:
+                    flag(a, b, f"关于「{ent}」的两条记忆一条肯定一条否定，可能互相矛盾")
+
+    found.sort(key=lambda x: min(x["a"]["ts"] or 0, x["b"]["ts"] or 0), reverse=True)
+    return found[:limit]
+
+
+# ---------------------------------------------------------------- 审核闸
+
+def pending_memory_reviews() -> list:
+    """AI（做梦等）整理出来、还没人工确认的记忆。"""
+    return [m for m in load_all()
+            if m.get("review") == "pending" and m.get("layer") != "dust"]
+
+
+def ai_persona_changes(days: int = 7) -> list:
+    """最近 N 天里由 AI（非手动）发起的人格变更，用于溯源与漂移告警。
+
+    只返回用户尚未查看过的改动（ts > persona._ai_changes_viewed_at），
+    这样用户点通知查看后通知就会消失，不会挂着烦 7 天。
+    注意：做梦 traits 微调没过漂移门限也会写 history（field 带 "(漂移累积)"
+    后缀、to 写"未过门限/未变"）——那些行什么都没改，不算 AI 改动，
+    否则审核清单和漂移告警会被一堆"没生效的记账"撑得动不动就偏大。
+    """
+    p = load_persona()
+    cutoff = now_ts() - days * 86400
+    viewed = float(p.get("_ai_changes_viewed_at") or 0)
+    out = []
+    for h in p.get("history", []):
+        if float(h.get("ts", 0)) < cutoff:
+            continue
+        if float(h.get("ts", 0)) <= viewed:
+            continue   # 已查看过的 AI 改动不再计入通知
+        src = str(h.get("source", ""))
+        why = str(h.get("why", ""))
+        field = str(h.get("field", ""))
+        to = h.get("to")
+        # 没真正改的记账行：字段带括号注记（如 "traits.幽默(漂移累积)"），
+        # 或 to 是"未过门限/未变/撞在边界上"这类说明文字而非实际新值
+        if "(" in field:
+            continue
+        if isinstance(to, str) and ("未过门限" in to or "未变" in to or "边界" in to):
+            continue
+        # 优先看 source 字段（比 why 可靠）；用户自己说的（初识回答、手动编辑、
+        # 回滚、面板保存）不算 AI 私改
+        if src:
+            if src in ("面板", "用户", "手动编辑", "回滚", "restore", "persona restore"):
+                continue
+            if "初识" in src and "我自己" not in src:
+                continue
+            out.append(h)
+            continue
+        if ("用户" in why) or why in ("手动编辑", "回滚", "persona restore") or "初识" in why:
+            continue
+        out.append(h)
+    return out
+
+
+def mark_persona_changes_viewed() -> dict:
+    """用户查看了 AI 人格改动通知：记下时间戳，之后这些改动不再计入通知。"""
+    if READONLY:
+        return {"ok": True}
+    # 持 persona.json 写锁内"重新读再写"：load_persona() 返回的可能是旧快照，
+    # 直接拿去 save 会把并发期间其他进程写入的人格改动覆盖丢。
+    with _locked(HOME / "persona.json"):
+        p = load_persona()
+        p["_ai_changes_viewed_at"] = now_ts()
+        save_persona(p)
+    return {"ok": True}
+
+
+def set_memory_review(mid: str, status: str) -> dict:
+    """确认 / 废弃一条 AI 整理的记忆（confirm → 转正；discard → 移入淡忘区）。"""
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法审核。")
+    # 读-改-写整体放在写锁里：否则并发的 remember/dream 可能在我们读完之后插入新记忆，
+    # 被这里的 save_all 用旧快照整库覆盖而丢失。
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        target = next((m for m in records if m.get("id") == mid), None)
+        if not target:
+            raise ValueError(f"没有这条记忆：{mid}")
+        if status == "confirm":
+            target["review"] = "confirmed"
+            target["review_at"] = now_ts()
+            # 冲突裁决落地：这条转正了，它 conflicts 里指向的旧说法正式被取代
+            # （superseded_by → 回忆默认跳过旧说法；同时清掉双方的冲突标记）
+            for oid in target.get("conflicts") or []:
+                old = next((m for m in records if m.get("id") == oid), None)
+                if old is not None:
+                    old["superseded_by"] = mid
+                    old["conflict_flag"] = False
+                    old["conflicts"] = [x for x in old.get("conflicts", []) if x != mid]
+                    if not old.get("conflicts"):
+                        old.pop("conflicts", None)
+            if target.get("conflicts"):
+                target.setdefault("links", [])
+                target["links"] = list(dict.fromkeys(target["links"] + target["conflicts"]))
+            target.pop("conflicts", None)
+            target["conflict_flag"] = False
+        elif status == "discard":
+            # pinned 不许 discard：与 apply_dream 的 forget 同一道防线
+            if target.get("pinned"):
+                raise ValueError("这条记忆是用户置顶的，不能 discard，请直接 confirm 或手动处理")
+            target["layer"] = "dust"
+            target["forgotten_at"] = now_ts()
+            target["review"] = "discarded"
+            # 冲突裁决落地：新说法废弃 → 旧说法继续有效，清掉双方冲突标记
+            for oid in target.get("conflicts") or []:
+                old = next((m for m in records if m.get("id") == oid), None)
+                if old is not None:
+                    old["conflict_flag"] = False
+                    old["conflicts"] = [x for x in old.get("conflicts", []) if x != mid]
+            target.pop("conflicts", None)
+        else:
+            raise ValueError("状态只能是 confirm / discard")
+        save_all(records)
+    return target
+
+
+def review_report() -> dict:
+    """待审核清单：AI 记忆 / AI 知识 / AI 人格变更。"""
+    mems = []
+    for m in pending_memory_reviews():
+        mid = m.get("id")
+        if not mid:
+            continue   # 畸形记录（缺 id）没法在报告里给定位，直接跳过
+        mems.append({"id": mid, "text": m.get("text", ""), "created": m.get("created"),
+                     "source": m.get("review_source", "dream")})
+    try:
+        import growth
+        kn = [{"id": k.get("id"), "title": k.get("title", ""), "topic": k.get("topic", "")}
+              for k in growth.knowledge_pending()]
+    except Exception as e:
+        log_event("review", f"待审核知识加载失败（growth 模块）：{e}", level="warn")
+        kn = []
+    return {"memories": mems, "knowledge": kn,
+            "persona": [{"ts": h.get("ts"), "field": h.get("field"),
+                         "from": h.get("from"), "to": h.get("to"), "why": h.get("why")}
+                        for h in ai_persona_changes(7)]}
+
+
+def review_counts() -> dict:
+    rep = review_report()
+    return {"memories": len(rep["memories"]), "knowledge": len(rep["knowledge"]),
+            "persona": len(rep["persona"])}
+
+
+def bulk_memory_action(ids: list, action: str, value=None) -> dict:
+    """面板批量操作：一次写锁内完成，避免 N 条逐条读-改-写整库。
+
+    action:
+      confirm / discard      —— 审核转正 / 废弃（移入淡忘区）
+      importance             —— 批量设置重要性（value: 0-1 或 0-10）
+      add_tags / remove_tags —— 批量加 / 删标签（value: list[str]）
+      pin / unpin            —— 批量置顶 / 取消置顶
+      delete                 —— 批量移入淡忘区（同 forget，不真删，可回捞）
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法批量修改。")
+    ids = [str(x) for x in (ids or []) if str(x).strip()]
+    if not ids:
+        raise ValueError("没有选中任何记忆")
+    if action not in ("confirm", "discard", "importance", "add_tags", "remove_tags",
+                      "pin", "unpin", "delete"):
+        raise ValueError("不支持的批量操作")
+    # 预校验参数：坏值在动库之前就报清楚，别让 float(None) 之类变成 500
+    imp_val = None
+    tag_list = None
+    if action == "importance":
+        try:
+            imp_val = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("重要性必须是数字（1-10）")
+        if imp_val < 0 or imp_val > 10:
+            raise ValueError("重要性要在 0-10 之间")
+    elif action in ("add_tags", "remove_tags"):
+        if isinstance(value, str):
+            tag_list = [t.strip() for t in re.split(r"[,，;；、\n]+", value) if t.strip()]
+        elif isinstance(value, (list, tuple)):
+            tag_list = [str(t).strip() for t in value if str(t).strip()]
+        else:
+            raise ValueError("标签必须是数组，或逗号分隔的文本")
+        if not tag_list:
+            raise ValueError("没有可用的标签")
+    want = set(ids)
+    updated = 0
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        for m in records:
+            if m.get("id") not in want:
+                continue
+            if action == "confirm":
+                m["review"] = "confirmed"
+                m["review_at"] = now_ts()
+            elif action == "discard":
+                m["layer"] = "dust"
+                m["forgotten_at"] = now_ts()
+                m["review"] = "discarded"
+            elif action == "importance":
+                # 刻度约定：>1 视为 10 分制（如 8 → 0.8），≤1 视为 0-1 小数。
+                # 0.1~1 之间是合法小数；正好 1 当作满分 1.0（10 分制不会写 1）
+                m["importance"] = round(max(0.0, min(1.0, imp_val / 10 if imp_val > 1 else imp_val)), 3)
+            elif action == "pin":
+                m["pinned"] = True
+            elif action == "unpin":
+                m["pinned"] = False
+            elif action == "delete":
+                if m.get("layer") != "dust":
+                    m["layer"] = "dust"
+                    m["forgotten_at"] = now_ts()
+                    m["detail"] = round(max(0.15, _num(m.get("detail"), 1.0) * 0.5), 2)
+            elif action == "add_tags":
+                cur = [str(t) for t in (m.get("tags") or [])]
+                for t in tag_list:
+                    if t not in cur:
+                        cur.append(t)
+                m["tags"] = cur
+            elif action == "remove_tags":
+                drop = set(tag_list)
+                m["tags"] = [str(t) for t in (m.get("tags") or []) if str(t) not in drop]
+            updated += 1
+        if updated:
+            save_all(records)
+    return {"updated": updated, "requested": len(ids), "action": action,
+            "review_counts": review_counts()}
+
+
+def audit() -> dict:
+    """一次自查：待审核项 + 冲突记忆 + 该做什么。"""
+    rep = review_report()
+    conf = detect_conflicts(20)
+    tips = []
+    if rep["memories"]:
+        tips.append(f"有 {len(rep['memories'])} 条 AI 整理的记忆待审核："
+                    "`review` 看全文 → `review confirm <id>` 或 `review discard <id>`。")
+    if rep["knowledge"]:
+        tips.append(f"有 {len(rep['knowledge'])} 条知识待审核：`knowledge review` → confirm/discard。")
+    if rep["persona"]:
+        tips.append(f"最近 7 天 AI 改了 {len(rep['persona'])} 次人格："
+                    "`persona history` 看来源，跑偏就 `persona rollback <序号>`。")
+    if conf:
+        tips.append(f"有 {len(conf)} 组疑似冲突记忆：`detect-conflicts` 查看，别让旧记忆继续误导。")
+    n_arch = len(load_archive())
+    if n_arch:
+        tips.append(f"归档层有 {n_arch} 条冷记忆（默认不参与回忆，原文保留）："
+                    "`archive search <词>` 找、`archive restore <id>` 回捞。")
+    if not tips:
+        tips.append("干净：没有待审核项、没有明显冲突。")
+    return {"counts": {"memories": len(rep["memories"]),
+                       "knowledge": len(rep["knowledge"]),
+                       "persona": len(rep["persona"]),
+                       "conflicts": len(conf),
+                       "archive": n_arch},
+            "review": rep, "conflicts": conf, "tips": tips}
+
+
+def diagnose() -> dict:
+    """自诊断（doctor 思路）：不只展示记忆，还归因异常。
+
+    检查项：
+    - dead_links   死链：links/conflicts/superseded_by 指向不存在的 id（多来自手删/迁移丢数据）
+    - open_conflicts 冲突未裁决：conflict_flag=True 的记忆对
+    - bloat        数据膨胀：各层条数/单条超长/总体积异常，给出行数与阈值判断
+    - folded/dust  淡忘区状态：折叠了多少、可还原通道是否健康
+    - origin       来源归属完整率：project/session 字段缺失比例（老数据兼容性）
+    """
+    records = load_all()
+    arch = load_archive()
+    all_ids = {m.get("id") for m in records + arch if m.get("id")}
+
+    # 死链：每条记忆的 links / conflicts / superseded_by 指向的 id 必须存在
+    dead = []
+    for m in records + arch:
+        mid = m.get("id")
+        refs = list(m.get("links") or [])
+        refs += list(m.get("conflicts") or [])
+        if m.get("superseded_by"):
+            refs.append(m["superseded_by"])
+        missing = [r for r in refs if r and r not in all_ids]
+        if missing:
+            dead.append({"id": mid, "missing": missing,
+                         "text": (m.get("gist") or m.get("text", ""))[:60]})
+
+    # 冲突未裁决
+    open_conf = [{"id": m.get("id"), "text": (m.get("gist") or m.get("text", ""))[:60],
+                  "conflicts": list(m.get("conflicts") or [])}
+                 for m in records if m.get("conflict_flag")]
+
+    # 数据膨胀：条数 / 超长条 / 文件体积
+    sizes = {}
+    total_bytes = 0
+    for fname in ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl", "archive.jsonl"):
+        f = HOME / fname
+        if f.exists():
+            b = f.stat().st_size
+            sizes[fname] = b
+            total_bytes += b
+    long_rows = [{"id": m.get("id"), "len": len(m.get("text", ""))}
+                 for m in records if len(str(m.get("text", ""))) > 4000]
+    layer_counts = {"hippo": 0, "cortex": 0, "dust": 0, "archive": 0}
+    for m in records:
+        lc = m.get("layer", "hippo")
+        layer_counts[lc if lc in layer_counts else "hippo"] += 1
+    layer_counts["archive"] = len(arch)
+    bloat_warn = []
+    if layer_counts["dust"] > layer_counts["hippo"] + layer_counts["cortex"] and layer_counts["dust"] > 200:
+        bloat_warn.append(f"淡忘区 {layer_counts['dust']} 条已超过活跃层总和——考虑 fold 折叠或 archive 归档")
+    if total_bytes > 50 * 1024 * 1024:
+        bloat_warn.append(f"数据总体积 {total_bytes // 1024 // 1024}MB 偏大，检查是否有超长记忆条")
+    if long_rows:
+        bloat_warn.append(f"{len(long_rows)} 条记忆正文超过 4000 字，回忆注入会浪费上下文")
+
+    # 淡忘可逆通道
+    dust_rows = [m for m in records if m.get("layer") == "dust"]
+    folded_n = sum(1 for m in dust_rows if m.get("folded"))
+
+    # 来源归属完整率（新写入强制带，老数据可能缺 → 统计提示）
+    with_origin = sum(1 for m in records if m.get("project"))
+    origin_pct = round(with_origin * 100 / len(records), 1) if records else 100.0
+
+    problems = []
+    if dead:
+        problems.append(f"{len(dead)} 条记忆带死链（指向不存在的 id），建议清理 links 或确认数据没丢")
+    if open_conf:
+        problems.append(f"{len(open_conf)} 条冲突未裁决，旧说法仍在生效——去「记忆」页裁决")
+    for w in bloat_warn:
+        problems.append(w)
+
+    return {"ok": not problems,
+            "problems": problems,
+            "dead_links": dead[:50],
+            "open_conflicts": open_conf[:50],
+            "bloat": {"layer_counts": layer_counts, "file_sizes": sizes,
+                      "total_bytes": total_bytes, "long_rows": long_rows[:20]},
+            "dust": {"count": len(dust_rows), "folded": folded_n},
+            "origin": {"with_project": with_origin, "total": len(records), "pct": origin_pct}}
+
+
+def load_all() -> list:
+    """三层热层合并；缺 id 或不是 dict 的畸形记录一律跳过——
+    项目里没有任何调用方想处理畸形记录，在这里统一过滤最省事。"""
+    raw = read_jsonl(HOME / "hippocampus.jsonl") + read_jsonl(HOME / "cortex.jsonl") + read_jsonl(HOME / "dust.jsonl")
+    good, bad = [], 0
+    for r in raw:
+        if isinstance(r, dict) and r.get("id"):
+            good.append(r)
+        else:
+            bad += 1
+    if bad:
+        log_event("load", f"load_all 跳过 {bad} 条畸形记录（缺 id 或类型错）", level="warning")
+    return good
+
+
+def count_recent(layer: str, floor_ts: float, predicate=None) -> int:
+    """只数不取：按时间下界流式统计某层新增记录数，避免全量 load_all 撑爆列表。
+
+    JSONL 本来就要逐行扫（数据结构决定的），但这里逐行解析后只保留计数，
+    不把所有 dict 攒进内存——统计/水位提醒这类只关心数量的场景省掉大对象。
+    """
+    path = HOME / f"{layer}.jsonl"
+    if not path.exists():
+        return 0
+    n = 0
+    for r in read_jsonl(path):
+        if not (isinstance(r, dict) and r.get("id")):
+            continue
+        if _num(r.get("created"), 0) < floor_ts:
+            continue
+        if predicate is None or predicate(r):
+            n += 1
+    return n
+
+
+def load_archive() -> list:
+    """归档层独立读取：load_all 不含 archive，热查询集保持精简。
+
+    所有现有路径（recall/forget/dream/remember…）行为不变；需要全量计数或展示时
+    （stats / 面板 / audit / archive 命令）再显式合并 load_archive()。
+    """
+    raw = read_jsonl(HOME / "archive.jsonl")
+    good, bad = [], 0
+    for r in raw:
+        if isinstance(r, dict) and r.get("id"):
+            good.append(r)
+        else:
+            bad += 1
+    if bad:
+        log_event("load", f"load_archive 跳过 {bad} 条畸形记录", level="warning")
+    return good
+
+
+def _hay(m: dict) -> str:
+    """廉价的"可检索全文"拼接（小写）：text + tags + entities。
+
+    用于 recall/remember/archive search 的第一道预筛（子串包含测试）。数学上不丢召回：
+    relevance/jaccard 非零当且仅当查询 term 与文档 terms 共享，而共享 term 必然是
+    本文档某段文本的连续子串 → `t in hay` 必为真。统一小写，英文词忽略大小写。
+    """
+    parts = [str(m.get("text") or "")]
+    for k in ("tags", "entities"):
+        parts.append(" ".join(str(x) for x in (m.get(k) or [])))
+    return "\n".join(parts).lower()
+
+
+def _is_archivable(m: dict, now: int) -> bool:
+    """单条判断：是否该被雪藏进归档层。archive_candidates / dream 共用同一套条件，避免漂移。"""
+    if not m.get("id"):
+        return False               # 畸形记录（缺 id）不能进候选集——后续的 dict 推导都会 KeyError
+    if m.get("layer") not in ("hippo", "cortex"):
+        return False
+    if m.get("pinned") or m.get("verbatim") or m.get("kind") == "identity":
+        return False
+    if m.get("review") == "pending":
+        return False
+    imp = _num(m.get("importance"), 0.5)
+    age = now - _num(m.get("created"), now)
+    R = retention(m, now)
+    idle = now - _num(m.get("last_access"), _num(m.get("created"), now))
+    if imp > ARCHIVE_MAX_IMPORTANCE or R >= ARCHIVE_RETENTION:
+        return False
+    if age < ARCHIVE_MIN_AGE_DAYS * DAY:
+        return False
+    if int(m.get("access_count", 0) or 0) > 0 and idle < ARCHIVE_IDLE_DAYS * DAY:
+        return False
+    return True
+
+
+def archive_candidates(records: list, now: int | None = None) -> list:
+    """选出符合"沉眠"条件的记忆：保留度极低 + 低重要 + 满月 + 长期没被想起。
+
+    不碰 pinned / 封存原文 / 身份记忆 / 待审核项。返回记录本身（调用方决定是否落盘）。
+    """
+    now = now or now_ts()
+    return [m for m in records if _is_archivable(m, now)]
+
+
+def _append_archive(new_rows: list) -> None:
+    """把记录并入 archive.jsonl，按 id 去重。
+    先写 archive、后从热层删除（顺序上防丢）；若上一次在两步之间被打断，
+    记录会同时留在热层和 archive，重跑时这里按 id 去重，不会越堆越多。"""
+    if not new_rows:
+        return
+    # archive.jsonl 的读-改-写自身加锁：调用方（archive_run/dream）只持热层锁，
+    # 没有互斥保护 archive；restore 那边是两把锁都持，不加这把会互相踩丢行。
+    with _locked(HOME / "archive.jsonl"):
+        existing = load_archive()
+        have = {m.get("id") for m in existing if m.get("id")}
+        add = [m for m in new_rows if m.get("id") not in have]
+        if add:
+            write_jsonl(HOME / "archive.jsonl", existing + add)
+
+
+def archive_run(dry_run: bool = False) -> dict:
+    """手动触发归档：把沉眠记忆雪藏进 archive 层（原文保真，永不删）。
+
+    读-改-写整体放在写锁里（统一锚点 hippocampus.jsonl），与 remember/dream 互斥。
+    """
+    if READONLY and not dry_run:
+        raise PermissionError("记忆库当前只读，无法归档。")
+    now = now_ts()
+    if dry_run:
+        # 预览不写盘，也不抢写锁（只读环境下锁文件也可能建不了）
+        cand = archive_candidates(load_all(), now)
+        return {"count": len(cand),
+                "archived": [{"id": m["id"], "gist": m.get("gist") or heuristic_gist(m.get("text", ""))}
+                             for m in cand],
+                "dry_run": True}
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        cand = archive_candidates(records, now)
+        arch = [{"id": m["id"], "gist": m.get("gist") or heuristic_gist(m.get("text", ""))}
+                for m in cand]
+        if not dry_run and cand:
+            for m in cand:
+                m["layer"] = ARCHIVE_LAYER
+                m["archived_at"] = now
+            keep_ids = {m["id"] for m in cand}
+            # 归档层文件单独维护：只在本次真的新增了归档时才重写，绝不整库覆写清空
+            _append_archive(cand)
+            save_all([m for m in records if m.get("id") not in keep_ids])
+    return {"count": len(arch), "archived": arch, "dry_run": dry_run}
+
+
+def save_all(records: list) -> None:
+    groups = {"hippo": [], "cortex": [], "dust": []}
+    for r in records:
+        layer = r.get("layer", "hippo")
+        # 未知层名（损坏的手改数据）归入海马回，绝不静默丢弃
+        # archive 记录走专用通道（load_archive 维护），不带进整库覆写，避免把归档文件清空
+        if layer != ARCHIVE_LAYER:
+            groups[layer if layer in groups else "hippo"].append(r)
+    # 三文件尽量同步落盘：先把三个临时文件都写好，再依次 replace。
+    # 把"存了一半"的窗口压到最小——只有进程恰好在两次 replace 之间挂掉才可能不一致，
+    # 而不是像原来那样每写一个文件就有一个完整窗口。
+    targets = [("hippocampus.jsonl", groups["hippo"]),
+               ("cortex.jsonl", groups["cortex"]),
+               ("dust.jsonl", groups["dust"])]
+    staged = []
+    try:
+        for fname, rows in targets:
+            p = HOME / fname
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _tmp_path(p)
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                for r in rows:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            staged.append((tmp, p))
+    except Exception:
+        for tmp, _ in staged:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        raise
+    for tmp, p in staged:
+        _replace_retry(tmp, p)
+
+
+# ---------------------------------------------------------------- 文本与相似度
+
+_CJK = re.compile(r"[\u4e00-\u9fff]+")
+# 数字/编号（如 "版本0" vs "版本1"）必须保留为独立 term，否则不同数字的记忆会被误判为重复而合并覆盖
+_WORD = re.compile(r"[a-z0-9]+")
+_PUNCT = re.compile(r"[^\w\u4e00-\u9fff]+")
+
+
+def terms(text: str) -> set:
+    """中文用字符二元组，英文/数字用词。构成模糊匹配的最小单元。"""
+    t = (text or "").lower()
+    out = set()
+    for seg in _CJK.findall(t):
+        if len(seg) == 1:
+            out.add(seg)
+        for i in range(len(seg) - 1):
+            out.add(seg[i:i + 2])
+    out.update(_WORD.findall(t))
+    return out
+
+
+def jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def build_idf(docs: list) -> dict:
+    df = {}
+    for d in docs:
+        for t in d:
+            df[t] = df.get(t, 0) + 1
+    n = max(1, len(docs))
+    return {t: math.log((n + 1) / (c + 0.5)) + 0.5 for t, c in df.items()}
+
+
+def relevance(q_terms: set, d_terms: set, idf: dict) -> float:
+    shared = q_terms & d_terms
+    if not shared:
+        return 0.0
+    num = sum(idf.get(t, 0.5) for t in shared)
+    den = math.sqrt(sum(idf.get(t, 0.5) for t in q_terms) * sum(idf.get(t, 0.5) for t in d_terms))
+    return min(1.0, num / den) if den else 0.0
+
+
+# ---------------------------------------------------------------- 记忆记录
+
+def _num(v, default: float = 0.0) -> float:
+    """把可能是 None / 字符串 / 数字 / bool / NaN 的值安全转成 float；转不了用默认值。
+    记忆库里手改、旧版本、坏字段都可能让数值变成 null 或字符串，硬 float() 会整条崩。"""
+    if v is None or isinstance(v, bool):   # bool 是 int 子类，True 会变 1.0，按坏值回退
+        return float(default)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    # 模型可能产出 NaN/Infinity（JSON 里非法但 Python json 会放行），比较/运算会一路污染
+    if math.isnan(f) or math.isinf(f):
+        return float(default)
+    return f
+
+
+def retention(m: dict, now: int | None = None) -> float:
+    """艾宾浩斯遗忘曲线：R = exp(-Δt / S)"""
+    now = now or now_ts()
+    last = m.get("last_access")
+    if last is None:
+        last = m.get("created", now)
+    dt = max(0.0, now - _num(last, now))
+    stability = max(HOUR, _num(m.get("stability"), DEFAULT_STABILITY))
+    return math.exp(-dt / stability)
+
+
+def heuristic_importance(text: str, kind: str) -> float:
+    base = {
+        "identity": 0.95, "insight": 0.75, "preference": 0.70,
+        "habit": 0.65, "emotion": 0.60, "fact": 0.58, "episode": 0.40,
+        "mistake": 0.70, "relationship": 0.70,
+    }.get(kind, 0.5)
+    hot = ("记住", "重要", "永远", "一定", "绝不", "喜欢", "讨厌", "生日",
+           "名字", "答应", "承诺", "第一次", "决定")
+    if any(w in text for w in hot):
+        base += 0.15
+    if len(text) >= 60:
+        base += 0.05
+    return max(0.05, min(1.0, round(base, 2)))
+
+
+def heuristic_gist(text: str, limit: int = 60) -> str:
+    body = re.sub(r"^【[^】]*】\s*", "", (text or "").strip())
+    first = re.split(r"[。！？\n；;]", body)[0].strip()
+    if not first:
+        return body[:limit]
+    return first[:limit] + ("…" if len(first) > limit else "")
+
+
+def _new_id(text: str, ts: int) -> str:
+    h = hashlib.sha1(f"{text}{ts}{os.urandom(4).hex()}".encode("utf-8")).hexdigest()[:10]
+    return f"m_{ts}_{h}"
+
+
+def make_record(text: str, kind: str = "fact", importance: float | None = None,
+                tags=None, entities=None, source: str = "ai",
+                layer: str = "hippo", links=None,
+                channel: str | None = None, group_id: str | None = None,
+                user: str | None = None,
+                project: str | None = None, session: str | None = None) -> dict:
+    ts = now_ts()
+    text = text.strip()
+    tags = _dedupe([t.strip().lstrip("#") for t in (tags or []) if t.strip()])
+    entities = _dedupe([e.strip() for e in (entities or []) if e.strip()])
+    for tag in re.findall(r"#([\w\u4e00-\u9fff]{1,16})", text):
+        if tag not in tags:
+            tags.append(tag)
+    # importance 可能是模型产出的字符串（如 "0.8"）或 NaN——统一走 _num 强转，坏值回落启发式
+    imp = heuristic_importance(text, kind) if importance is None else _num(importance, heuristic_importance(text, kind))
+    if imp > 1.0:  # 允许 0-10 分制
+        imp = imp / 10.0
+    rec = {
+        "id": _new_id(text, ts),
+        "created": ts,
+        "last_access": ts,
+        "kind": kind if kind in KINDS else "fact",
+        "text": text,
+        "gist": heuristic_gist(text),
+        "detail": 1.0,
+        "importance": round(max(0.0, min(1.0, imp)), 3),
+        "layer": layer,
+        "tags": tags,
+        "entities": entities,
+        "links": links or [],
+        "access_count": 0,
+        "stability": DEFAULT_STABILITY,
+        "source": source,
+        "consolidated": False,
+        "pinned": False,
+    }
+    # 通道三元组（可选）：来自聊天平台的记忆带上来源，用于群间隔离与跨群用户画像。
+    # 缺省不写入字段 = 传统全局记忆，完全向后兼容（旧数据没有这些字段也照常召回）。
+    if channel:
+        rec["channel"] = str(channel)
+    if group_id:
+        rec["group_id"] = str(group_id)
+    if user:
+        rec["user"] = str(user)
+    # —— 来源归属（origin，强制带）：项目/会话 id 让每条记忆都能回答「从哪来的」。
+    # 冲突检测按同源比较（跨项目不误报），做梦/审计按 source 溯源。
+    # 缺省回落到 "default"：老数据没有这两个字段照常工作，新写入一律补全。
+    rec["project"] = str(project).strip()[:64] if project and str(project).strip() else "default"
+    rec["session"] = str(session).strip()[:64] if session and str(session).strip() else "default"
+    return rec
+
+
+def _dedupe(items: list) -> list:
+    seen, out = set(), []
+    for it in items:
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
+
+
+# ---------------------------------------------------------------- 写入 / 检索
+
+def remember(text: str, kind: str = "fact", importance: float | None = None,
+             tags=None, entities=None, source: str = "ai", layer: str = "hippo",
+             emotion: str | None = None,
+             channel: str | None = None, group_id: str | None = None,
+             user: str | None = None,
+             project: str | None = None, session: str | None = None) -> tuple:
+    ensure_home()
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("记忆内容为空")
+    if emotion and emotion not in EMOTIONS:
+        raise ValueError(f"没有这种情绪：{emotion}"
+                         f"（可用：开心/生气/难过/焦虑/感动…共 {len(EMOTIONS)} 种，"
+                         "`brain.py emotion list` 查看全部）")
+    records = None  # 锁内读取：见下方 _locked 作用域
+    new_terms = terms(text)
+    # 入口统一强转：importance 可能是模型给的字符串/NaN，后续比较会抛 TypeError
+    imp = _num(importance if importance is not None else heuristic_importance(text, kind),
+               heuristic_importance(text, kind))
+
+    # 情绪增强编码（杏仁核标记）：情绪激动时经历的事记得更牢。
+    # 显式给了 emotion 就用它；没给时，若此刻正好情绪激动（唤醒≥0.65），
+    # 自动把当时最重的情绪标在这条记忆上——"发生在情绪上头那一刻的事"。
+    emo_name, emo_arousal, boost = "", 0.0, 0.0
+    if emotion:
+        if emotion in EMOTIONS:
+            emo_name, emo_arousal = emotion, _emotion_coord(emotion)[1]
+    else:
+        m = mood_now()
+        if m.get("storm") and m["active"]:
+            emo_name = m["active"][0]["emotion"]
+            emo_arousal = float(m["active"][0].get("arousal", 0))
+    if emo_name and emo_arousal >= 0.45:
+        boost = 0.08 * emo_arousal
+        imp = min(1.0, (imp if imp <= 1 else imp / 10) + boost)
+        stability_boost = 1.0 + 0.9 * emo_arousal
+    else:
+        emo_name, stability_boost = "", 1.0
+
+    # 读-改-写整体加锁：remember 走 save_all 整库快照覆写，若锁外先 load_all，
+    # 并发写的另一个进程 os.replace 覆盖我们正读着的文件会在 Windows 上报 PermissionError。
+    # 放进锁里后，读和写在锁内互斥，顺带杜绝"旧快照覆盖新写入"。
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        # 近重复合并：同一类记忆、文本高度相似 -> 强化旧记忆而不是堆新条
+        # 先做廉价子串预筛（jaccard≥0.86 必共享 term，共享 term 必是旧文本子串，数学上不丢召回），
+        # 上万条记忆时避免对每条都跑正则分词；archive 记录不参与合并（防归档记忆被悄悄复活）
+        for m in records:
+            if tuple(str(m.get(k) or "") for k in ("channel", "group_id", "user")) != (str(channel or ""), str(group_id or ""), str(user or "")):
+                continue  # Do not merge memories from different owners/scopes.
+            if m.get("layer") in ("dust", ARCHIVE_LAYER) or m.get("kind") != kind:
+                continue
+            if new_terms and not any(t in _hay(m) for t in new_terms):
+                continue
+            old_text = m.get("text", "") or ""
+            if jaccard(new_terms, terms(old_text)) >= 0.86:
+                # 保留更长/更完整的文本，别让一句简短的重复把原细节盖掉
+                old, new = m.get("text", ""), text
+                if len(new) > len(old):
+                    m["text"] = new
+                    m["gist"] = heuristic_gist(new)
+                else:
+                    m["gist"] = heuristic_gist(old)
+                m["importance"] = round(max(0.0, min(1.0, max(_num(m.get("importance"), 0.5), float(imp) if imp <= 1 else imp / 10))), 3)
+                m["last_access"] = now_ts()
+                m["access_count"] = int(_num(m.get("access_count"), 0)) + 1
+                m["stability"] = min(MAX_STABILITY, _num(m.get("stability"), DEFAULT_STABILITY) * 1.4 * stability_boost)
+                # 习惯化（享乐适应）：同一件事反复出现，新鲜感递减、重要性不再步步抬升。
+                # 就像警报器一直响就没人再在意——但保留一个下限，别把真重要的磨掉。
+                m["repeat"] = int(_num(m.get("repeat"), 0)) + 1
+                if m["repeat"] >= 3 and m["importance"] > 0.25:
+                    m["importance"] = round(m["importance"] - 0.02, 3)
+                if emo_name and not m.get("emotion"):
+                    m["emotion"] = emo_name
+                m["tags"] = _dedupe(m.get("tags", []) + [t.strip().lstrip("#") for t in (tags or [])])
+                m["entities"] = _dedupe(m.get("entities", []) + (entities or []))
+                save_all(records)
+                _remember_desire_nudge(m, imp)
+                return m, "merged"
+
+        rec = make_record(text, kind, importance, tags, entities, source, layer,
+                          channel=channel, group_id=group_id, user=user,
+                          project=project, session=session)
+        rec["importance"] = round(float(rec.get("importance", 0.5)) + (boost if emo_name else 0), 3)
+        rec["importance"] = max(0.0, min(1.0, rec["importance"]))
+        # 高重要性待审闸：重要性 ≥0.8（10 分制 ≥8）的记忆多半是约定/承诺/重要决定，
+        # 一旦记错就是长期错误，与做梦产出一样先进待审池，用户确认后转正。
+        if rec["importance"] >= 0.8 and source != "user":
+            rec["review"] = "pending"
+            rec["review_source"] = f"high-importance:{source}"
+        rec["stability"] = min(MAX_STABILITY, rec.get("stability", DEFAULT_STABILITY) * stability_boost)
+        if emo_name:
+            rec["emotion"] = emo_name
+            rec["emotional"] = round(emo_arousal, 2)
+        # —— 记忆冲突裁决（Mem0 风格）——
+        # 与某条旧记忆中度相似（jaccard 0.55~0.86）但文本不同 = 同一件事说法变了/事实更新。
+        # 旧的不删：打上 superseded_by 指向新记忆（回忆默认跳过被取代者，仍可沿链回溯旧观念）。
+        # AI 来源的新说法先标"待审核"：防止 AI 改写结论未经用户确认就生效。
+        # 必须在锁内做：remember 走整库快照覆写，锁内读锁内写才不会互相覆盖。
+        rec_id_pending = rec["id"]  # rec 尚未 append，先留 id 给旧记忆反标冲突
+        superseded = []
+        conflicts = []  # AI 来源的矛盾对：双标记待裁决，不立即取代
+        for old in records:
+            if (old is rec or old.get("kind") != kind
+                    or old.get("layer") in ("dust", ARCHIVE_LAYER)
+                    or old.get("superseded_by")):
+                continue
+            # 来源归属：跨项目/跨会话的相似记忆不算冲突——
+            # A 项目「用 MySQL」、B 项目「用 PostgreSQL」是并存事实，不是改口。
+            # 同源（同 project）才做取代/裁决比较；老数据没有 project 字段视为同源（default）。
+            if str(rec.get("project", "default")) != str(old.get("project", "default")):
+                continue
+            if tuple(str(old.get(k) or "") for k in ("channel", "group_id", "user")) != tuple(str(rec.get(k) or "") for k in ("channel", "group_id", "user")):
+                continue  # Conflicts must stay inside their original scope.
+            old_text = str(old.get("text", "")).strip()
+            old_terms = terms(old_text)
+            if not old_terms or old_text == text:
+                continue
+            sim = jaccard(new_terms, old_terms)
+            if 0.55 <= sim < 0.86:
+                # AI 来源：冲突不静默裁决（借鉴 dsh-mneme 矛盾冻结队列）——
+                # 旧说法先不藏（不打 superseded_by，回忆里还能被看到），双方互标
+                # conflict_with 进待审；review confirm 转正时才真正取代。
+                # 用户亲口说的（source=user）维持立即取代：用户自己更新事实，不用等审。
+                if source != "user":
+                    old.setdefault("conflicts", [])
+                    if rec_id_pending not in old["conflicts"]:
+                        old["conflicts"].append(rec_id_pending)
+                    rec.setdefault("conflicts", [])
+                    old["conflict_flag"] = True
+                    conflicts.append(old["id"])
+                    continue
+                old["superseded_by"] = rec["id"]
+                old["updated"] = now_ts()
+                rec.setdefault("links", [])
+                if old["id"] not in rec["links"]:
+                    rec["links"].append(old["id"])
+                superseded.append(old["id"])
+        if superseded or conflicts:
+            if source != "user":
+                rec["review"] = "pending"
+                rec["review_source"] = "conflict"
+            if conflicts:
+                rec["conflicts"] = conflicts      # 对方 id 列表：转正/裁决后由 review 流程落实取代
+                rec["conflict_flag"] = True
+                rec["superseded"] = superseded + conflicts  # 展示"这次牵动/质疑了哪些旧说法"
+            else:
+                rec["superseded"] = superseded    # 给调用方展示"这次取代了哪些旧说法"
+        records.append(rec)
+        # 联想建链：与历史里词面最相近的几条互挂 links（锁内、传已 load 的快照）
+        try:
+            relink(rec, records)
+        except Exception:
+            pass          # 建链是锦上添花，绝不能让记事本身失败
+        save_all(records)
+        _remember_desire_nudge(rec, rec.get("importance"))
+        return rec, ("superseded" if superseded else ("conflict" if conflicts else "created"))
+
+
+def _remember_desire_nudge(rec: dict, imp) -> None:
+    """记事牵动六欲（自动微调）：记东西本身就是表达，重要的事还带着求知/掌控。
+
+    重要度高 → 表达欲/成就欲；探查类（question/insight）→ 求知欲。
+    幅度 1~2 点，冷却节流，避免频繁对话反复写盘。
+    """
+    changes = {"表达欲": 1.0}
+    kind = (rec.get("kind") or "")
+    if kind in ("question", "insight", "curiosity"):
+        changes["求知欲"] = 2.0
+    if _num(imp, 0) >= 0.7:
+        changes["成就欲"] = 1.5
+    try:
+        desire_nudge(changes)
+    except Exception:
+        pass          # 六欲牵动是锦上添花，绝不能让记事本身失败
+
+
+def entity_profile(name: str, limit: int = 20) -> dict:
+    """实体档案卡（Zep 风格）：围绕一个人物/事物把散落的记忆聚成一张画像。
+
+    面板用：点开一个实体就能看到"什么时候第一次出现、最近一次出现、
+    一起出现过的情绪、时间线、以及最重要几条记忆拼出的一句话画像"。
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("实体名不能为空")
+    low = name.lower()
+    hits = []
+    for m in load_all() + load_archive():
+        ents = [str(e).lower() for e in (m.get("entities") or [])]
+        hay = _hay(m)
+        # 优先按 entities 精确匹配；退化到 text/tags 里包含该词也算（实体抽取没跑全的兜底）
+        if low in ents or low in hay:
+            hits.append(m)
+    if not hits:
+        return {"entity": name, "count": 0, "timeline": [], "emotions": {},
+                "summary": "（还没有关于这个实体的记忆）"}
+    createds = [int(_num(m.get("created"), 0)) for m in hits if _num(m.get("created"), 0)]
+    emotions = {}
+    for m in hits:
+        e = str(m.get("emotion") or "").strip()
+        if e:
+            emotions[e] = emotions.get(e, 0) + 1
+    ordered = sorted(hits, key=lambda m: _num(m.get("created"), 0), reverse=True)
+    timeline = [(fmt_time(int(_num(m.get("created"), 0))), str(display_text(m))[:80])
+                for m in ordered[:max(1, limit)]]
+    # 一句话画像：重要性最高的 3 条记忆拼接——实体"最被强调"的侧面
+    top = sorted(hits, key=_imp_key_safe, reverse=True)[:3]
+    summary = "；".join(str(m.get("text") or "") for m in top)[:120]
+    first = min(createds) if createds else 0
+    last = max(createds) if createds else 0
+    return {
+        "entity": name,
+        "first_seen": first, "first_seen_text": fmt_time(first),
+        "last_seen": last, "last_seen_text": fmt_time(last),
+        "count": len(hits),
+        "importance_avg": round(sum(_imp_key_safe(m) for m in hits) / len(hits), 3),
+        "emotions": emotions,
+        "timeline": timeline,
+        "summary": summary or "（这些记忆没有可用正文）",
+    }
+
+
+def _imp_key_safe(m: dict) -> float:
+    """importance 安全取值：坏类型（None/list 等）沉底为 0，不让一条坏记忆炸掉画像。"""
+    return _num(m.get("importance"), 0.0)
+
+
+class PrivacyDenied(Exception):
+    """第三人查询关于某人的记忆、且目标未授权时抛出。
+
+    故意不带目标标识细节进异常消息以外的字段——宿主直接把 message 回给群里即可，
+    不需要（也不应该）在拒绝提示里暴露目标的记忆内容。
+    """
+
+    def __init__(self, target_user: str):
+        self.target_user = str(target_user)
+        super().__init__(
+            f"[隐私保护] 关于 {self.target_user} 的记忆需要 {self.target_user} 本人同意"
+            f"或由其本人查询（对方可用 `lingshu 同意` 授权对外分享）。")
+
+
+def _channel_visible(m: dict, channel, group_id, user) -> bool:
+    """Strict bot visibility; unrestricted local queries remain local-only.
+
+    Group replies never include a user's memories from other groups/private
+    chats. Another user's same-group memories require current consent. Global
+    coding-agent/persona memories are never injected into bot conversations.
+    """
+    if channel is None and group_id is None and user is None:
+        return True
+    if not channel or str(m.get("channel") or "") != str(channel):
+        return False
+    m_user, m_group = str(m.get("user") or ""), str(m.get("group_id") or "")
+    own = bool(user) and m_user == str(user)
+    if not group_id:
+        return own
+    if m_group != str(group_id):
+        return False
+    return own or not m_user or _consented(m_user)
+
+
+def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
+           strengthen: bool = True, include_dust: bool = False,
+           include_archive: bool = False,
+           channel: str | None = None, group_id: str | None = None,
+           user: str | None = None,
+           target_user: str | None = None, asker: str | None = None) -> list:
+    """模糊回忆：相关度 + 近期性 + 重要性 + 联想扩散。返回 [(record, score, parts), ...]
+
+    channel/group_id/user 任一给出即进入通道上下文：
+      只召回「同群记忆 + 全局记忆 + 该用户自己的记忆」，其他群不可见；
+      全部缺省（本机 CLI/面板）保持原行为——所有记忆都可召回。
+
+    隐私保护（可选，向后兼容：target_user/asker 缺省即不启用）：
+      target_user = 「查关于某人的记忆」的目标；asker = 发起查询的人。
+        * asker == target_user        → 本人可查自己的全部记忆；
+        * 目标 _consented(target_user) → 已授权对外分享，放行；
+        * 其余一律拒绝 → 返回 PrivacyDenied 异常。
+      注意：owner/admin 豁免只适用于系统级命令（forget/dream/backup 等），
+      对隐私查询刻意不豁免——主人能删库，但不能替群友决定「我的记忆给谁看」。
+      群级记忆（有 group 无 user）属于群公共话题，不受此规则影响。
+    """
+    if target_user:
+        # asker 缺失 ≠ 本人：无身份的调用一律按"第三人"处理，
+        # 不能因为拿不到身份就静默放行私密记忆（fail closed）。
+        a = str(asker).strip() if asker is not None else ""
+        if a != str(target_user).strip() and not _consented(target_user):
+            raise PrivacyDenied(target_user)
+    ensure_home()
+    cfg = load_config()
+    w = cfg["weights"]
+    records = [m for m in load_all() if m.get("id") and (m.get("layer") in layers or (include_dust and m.get("layer") == "dust"))]
+    # 被取代的记忆默认跳过：观念已更新，回忆里只出现新说法；
+    # 需要"翻旧账"时走 show 单条查，沿 superseded_by 链还能回溯到旧观念。
+    records = [m for m in records if not m.get("superseded_by")]
+    # 通道上下文的群间隔离：先物理过滤，其他群的记忆根本不进打分
+    if channel is not None or group_id is not None or user is not None:
+        records = [m for m in records if _channel_visible(m, channel, group_id, user)]
+    if include_archive:
+        records += [m for m in load_archive() if m.get("id")
+                    and _channel_visible(m, channel, group_id, user)]
+    if target_user:
+        records = [m for m in records if str(m.get("user") or "") == str(target_user)]
+    if not records:
+        return []
+    now = now_ts()
+    q_terms = terms(query)
+    # 第一道预筛：带查询词时先做廉价的子串包含测试，只对可能相关的记忆做正则分词与打分。
+    # 上万条记忆时这一刀把"全量 terms + 全量 idf"砍成"候选集 terms"；数学上不丢召回
+    # （relevance>0 ⇔ 共享 term，而共享 term 必是本文档文本的连续子串）。
+    if q_terms:
+        cand = []
+        for m in records:
+            h = _hay(m)
+            if any(t in h for t in q_terms):
+                cand.append(m)
+        # 扩散一跳要用全量索引：预筛只保证直接命中的召回，邻居多半不含查询词，
+        # 若 id_map 只从候选集建，links 指向的邻居会被误判成"不存在"。
+        full_index = {m["id"]: m for m in records}
+        records = cand
+        if not records:
+            return []
+    # 无查询词（startup 注入等场景）不构建 terms/idf：relevance 恒为 0，省掉上万条的整库分词
+    all_terms = {m["id"]: terms(_hay(m)) for m in records} if q_terms else {}
+    idf = build_idf(list(all_terms.values())) if q_terms else {}
+
+    scored = []
+    # 首因效应：同一片记忆里最早留下的印象占权更高（第一次的印象比后来补的更深）
+    oldest = max((now - _num(m.get("created"), now) for m in records), default=0)
+    for m in records:
+        rel = relevance(q_terms, all_terms[m["id"]], idf) if q_terms else 0.0
+        rec = retention(m, now)
+        imp = _num(m.get("importance"), 0.5)
+        score = w["relevance"] * rel + w["recency"] * rec + w["importance"] * imp
+        # 首因：最早创建的那批（年龄接近最大）给一点额外权重
+        age = now - _num(m.get("created"), now)
+        if oldest > 0 and age >= oldest * 0.85:
+            score += w.get("primacy", 0.03)
+        # 标签/实体精确命中，显著加分
+        hits = 0
+        if query:
+            q_low = query.lower()
+            hits += sum(1 for t in m.get("tags", []) if str(t).lower() in q_low)
+            hits += sum(1 for e in m.get("entities", []) if str(e).lower() in q_low)
+        score += min(0.30, 0.12 * hits)
+        # 时效软加权（借鉴 dsh-prime-memory）：检索排序里再叠一层"相关性随时间半衰"，
+        # 与按 last_access 衰减的 recency 互补——recency 管"多久没被想起"，
+        # 这层管"这件事本身过去多久了"，让旧事实不至于永远霸榜、新事实能浮上来。
+        # 地板 0.5：长期事实（生日、架构决定）不因老而沉底。
+        age_days = (now - _num(m.get("created"), now)) / DAY
+        score *= max(0.5, 0.5 ** (age_days / 30.0))
+        scored.append([m, score, {"relevance": round(rel, 3), "recency": round(rec, 3),
+                                  "importance": imp, "hits": hits,
+                                  "age_boost": round(max(0.5, 0.5 ** (age_days / 30.0)), 2)}])
+
+    # 情绪一致性提取（mood-congruent recall）：心情会偏向勾起同调性的记忆
+    # ——难过时更容易想起难过的事，开心时更容易想起开心的事（Bower 1981）。
+    mv = mood_now().get("valence", 0.0)
+    if abs(mv) >= 0.2:
+        for item in scored:
+            e = item[0].get("emotion")
+            if e and e in EMOTIONS:
+                if _emotion_coord(e)[0] * mv > 0:
+                    item[1] += 0.06
+
+    # 有查询词时，只保留真正沾边的记忆（否则会污染注入包）
+    if q_terms:
+        scored = [x for x in scored if x[2]["relevance"] > 0.02 or x[2]["hits"] > 0]
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = scored[: max(k, 1)]
+
+    # 联想扩散：与已选记忆共享实体/标签的获得小幅加成（像海马回放带动关联）
+    top_ids = {x[0]["id"] for x in top}
+    chosen_entities = set()
+    chosen_tags = set()
+    for m, _, _ in top:
+        chosen_entities.update(m.get("entities", []))
+        chosen_tags.update(m.get("tags", []))
+    for item in scored[len(top):]:
+        m = item[0]
+        overlap = len(set(m.get("entities", [])) & chosen_entities) + 0.5 * len(set(m.get("tags", [])) & chosen_tags)
+        if overlap >= 1:
+            item[1] += min(0.10, 0.04 * overlap)
+    # 显式联想：记忆之间已有的关联边把邻居也带起来（"提到 A 就想起 B"）
+    if not READONLY or _assoc_file().exists():
+        for r in load_assoc():
+            if r["src"] in top_ids and r["dst"] not in top_ids:
+                w = _num(r.get("weight"), 1)
+                for item in scored[len(top):]:
+                    if item[0]["id"] == r["dst"]:
+                        item[1] += min(0.12, 0.04 * w)
+            elif r["dst"] in top_ids and r["src"] not in top_ids:
+                w = _num(r.get("weight"), 1)
+                for item in scored[len(top):]:
+                    if item[0]["id"] == r["src"]:
+                        item[1] += min(0.12, 0.04 * w)
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    result = scored[: max(k, 1)]
+
+    # 沿 links 显式联想扩散一跳：命中的记忆通过 relink/裁决挂上的关联边，
+    # 把直接邻居追加成"关联记忆"（linked: true），上限 5 条。
+    # 只追加展示、不参与侧抑制/strengthen 写回——它们不是本次检索的命中，
+    # 只是顺藤摸瓜带出来的邻居。
+    if result:
+        direct_ids = {m["id"] for m, _, _ in result}
+        linked_out, seen = [], set(direct_ids)
+        id_map = full_index if (q_terms and full_index) else {m["id"]: m for m in records}
+        for m, _, _ in result:
+            for nid in (m.get("links") or []):
+                if nid in seen:
+                    continue
+                nb = id_map.get(nid)
+                if nb is None:
+                    continue
+                seen.add(nid)
+                nb = dict(nb)
+                nb["linked"] = True
+                linked_out.append(nb)
+                if len(linked_out) >= 5:
+                    break
+            if len(linked_out) >= 5:
+                break
+        if linked_out:
+            result = result + [(m, 0.0, {"linked": True}) for m in linked_out]
+
+    # 侧抑制去冗余（lateral inhibition）：近似重复的痕迹只留最强一条。
+    # 大脑不会同时点亮两份"同一件事"，弱的那份被压下去。
+    # 判重两种：字面高度重合，或一句是另一句的子串（同一件事的详略两版）。
+    if len(result) > 1:
+        kept, kept_terms, kept_texts = [], [], []
+        for item in result:
+            m = item[0]
+            t = all_terms.get(m["id"]) or terms(m.get("text", ""))
+            txt = (m.get("text") or "").strip()
+            dup = any(jaccard(t, kt) >= 0.85 for kt in kept_terms)
+            if not dup and txt:
+                for ot in kept_texts:
+                    a, b = (txt, ot) if len(txt) <= len(ot) else (ot, txt)
+                    if a and a in b and len(a) >= 0.6 * len(b):
+                        dup = True
+                        break
+            if dup:
+                continue
+            kept.append(item)
+            kept_terms.append(t)
+            kept_texts.append(txt)
+        result = kept
+
+    if strengthen and not READONLY:
+        touched = [m for m, _, _ in result]
+        for m in touched:
+            ac = int(_num(m.get("access_count"), 0))
+            first = ac == 0
+            m["access_count"] = ac + 1
+            # 首次提取巩固更强：头一回想起来的事，印记打得比反复想起更深
+            # （首因效应 + 首次测试效应：第一次回忆本身就是一次强巩固）
+            mult = 2.6 if first else 1.8
+            m["stability"] = min(MAX_STABILITY, _num(m.get("stability"), DEFAULT_STABILITY) * mult + 4 * HOUR)
+            m["last_access"] = now
+            # detail 的落盘交给 _strengthen_write 在锁内以盘上现值重算巩固
+            # （见 core._strengthen_write），这里只改内存快照供本次展示用。
+            m["detail"] = min(1.0, _num(m.get("detail"), 1.0) * 0.9 + 0.1)
+        # 只写回被"想起"的这条，别把没加载进来的层（如 dust）覆盖清空；没想起就不动盘
+        # 定向写回：只重写命中记忆所在层，避免整库覆写（上万条时省掉大头 I/O）
+        if touched:
+            _strengthen_write(touched)
+
+    # —— 回忆牵动六欲：真想起点什么了，求知欲得到一点满足（自动微调，冷却节流）——
+    # 只在有查询词且确实命中时触发，startup 注入（无 query）不算"回忆"。
+    if q_terms and result and not READONLY:
+        try:
+            desire_nudge({"求知欲": 1.5})
+        except Exception:
+            pass          # 锦上添花，失败不影响回忆本身
+    return [(m, round(s, 4), parts) for m, s, parts in result]
+
+
+def recent(k: int = 6, layers: tuple = ("hippo", "cortex")) -> list:
+    records = [m for m in load_all() if m.get("layer") in layers]
+    records.sort(key=lambda m: _num(m.get("created"), 0), reverse=True)
+    return records[:k]
+
+
+def forget(memory_id: str) -> bool:
+    # 读-改-写整体加锁：forget 用的是 save_all 整库快照覆写，
+    # 不加锁会把锁外并发写入的新记忆一起丢回旧状态。
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        for m in records:
+            if m.get("id") == memory_id and m.get("layer") != "dust":
+                m["layer"] = "dust"
+                m["forgotten_at"] = now_ts()
+                m["detail"] = round(max(0.15, _num(m.get("detail"), 1.0) * 0.5), 2)
+                save_all(records)
+                return True
+    return False
+
+
+# ---------------------------------------------------------------- 淡忘可逆（fold / unfold）
+# 借鉴 billion-context 的区间折叠：淡忘不是「回不来」，只是「收起来了」。
+# fold 把原文压进 folded_text、正文换成 gist（数据还在，随时能解压还原）；
+# unfold 是可逆通道——「想起来」时一条命令把原文、层、细节度原样还原。
+
+def fold(memory_id: str) -> dict:
+    """折叠一条淡忘记忆：原文收进 folded_text，正文只留 gist。
+
+    只有 dust 层可以 fold（还在用/待审的记忆不许压）；已经 fold 过的再 fold 幂等。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法折叠。")
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        target = next((m for m in records if m.get("id") == memory_id), None)
+        if not target:
+            raise ValueError(f"没有这条记忆：{memory_id}")
+        if target.get("layer") != "dust":
+            raise ValueError("只有淡忘区（dust）的记忆可以折叠")
+        if not target.get("folded"):
+            target["folded_text"] = target.get("text", "")
+            target["text"] = target.get("gist") or heuristic_gist(target.get("text", ""))
+            target["folded"] = True
+            target["folded_at"] = now_ts()
+        save_all(records)
+        return dict(target)
+
+
+def unfold(memory_id: str) -> dict:
+    """解压还原：把 fold 收起来的原文放回正文，并给一条「想起来」的巩固。
+
+    unfold 之后记忆仍留在 dust 层（想不想恢复活跃由 strengthen/restore 决定），
+    但原文完整、detail 回升，recall include_dust 时能完整命中。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法解压。")
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        target = next((m for m in records if m.get("id") == memory_id), None)
+        if not target:
+            raise ValueError(f"没有这条记忆：{memory_id}")
+        if not target.get("folded"):
+            return dict(target)   # 幂等：没折过就原样返回
+        target["text"] = target.get("folded_text", target.get("text", ""))
+        target.pop("folded_text", None)
+        target["folded"] = False
+        target["unfolded_at"] = now_ts()
+        # 「想起来」的一次巩固：细节度回升，但层不动（用户要彻底恢复用 revive）
+        target["detail"] = round(min(1.0, _num(target.get("detail"), 0.3) + 0.3), 2)
+        target["last_access"] = now_ts()
+        target["access_count"] = int(_num(target.get("access_count"), 0)) + 1
+        save_all(records)
+        return dict(target)
+
+
+def revive(memory_id: str, layer: str = "cortex") -> dict:
+    """从淡忘区彻底复活：unfold 还原原文 + 回到指定活跃层（cortex/hippo）。
+
+    与 archive restore 对应：archive 是「原文保真的冷库」，dust fold 是
+    「摘要化的半遗忘」，revive 是从半遗忘里正式想起来的通道。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法复活。")
+    if layer not in ("cortex", "hippo"):
+        raise ValueError("复活目标层只能是 cortex 或 hippo")
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        target = next((m for m in records if m.get("id") == memory_id), None)
+        if not target:
+            raise ValueError(f"没有这条记忆：{memory_id}")
+        if target.get("layer") != "dust":
+            raise ValueError("这条记忆不在淡忘区，无需复活")
+        if target.get("folded"):
+            target["text"] = target.get("folded_text", target.get("text", ""))
+            target.pop("folded_text", None)
+            target["folded"] = False
+        target["layer"] = layer
+        target["detail"] = max(_num(target.get("detail"), 0.3), 0.6)
+        target.pop("forgotten_at", None)
+        target["revived_at"] = now_ts()
+        target["last_access"] = now_ts()
+        save_all(records)
+        return dict(target)
+
+
+def display_text(m: dict) -> str:
+    """细节度低时用模糊化的要点代替原文。fold 过的条目提示「已折叠、可展开还原」。"""
+    if m.get("folded"):
+        return f"{m.get('text', '')}（已折叠：原文收起，可 unfold 展开还原）"
+    detail = _num(m.get("detail"), 1.0)
+    if detail < 0.5 and m.get("gist"):
+        return f"{m['gist']}（细节已模糊）"
+    return m.get("text", "")
+
+def _usage_terms(text: str) -> set:
+    return {t for t in terms(text) if t not in _USAGE_STOP}
+
+
+def record_retrieval(query: str, mems, channel: str = "recall") -> None:
+    """记下本轮找回/注入的记忆，供 usage 核对是否真的出现在回复里。
+
+    只存 id + 文本摘要，不存整库；失败静默，绝不影响回忆本身。
+    """
+    if READONLY:
+        return
+    items = []
+    for x in mems or []:
+        m = x[0] if isinstance(x, (tuple, list)) and x else x
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        items.append({"id": m["id"], "layer": m.get("layer"),
+                      "text": display_text(m)[:240]})
+    if not items:
+        return
+    try:
+        atomic_json(RETRIEVAL_FILE, {"ts": now_ts(), "query": query or "",
+                                     "channel": channel, "items": items})
+    except Exception as e:
+        log_event("usage", f"回忆快照写入失败：{e}", level="warn")
+
+
+def evaluate_retrieval_usage(reply: str) -> dict:
+    """粗判上一轮找回的记忆有没有出现在回复里（关键词重叠）。
+
+    不是判定"模型有没有抄记忆"，只是回答"这条记忆对这次输出有没有贡献"。
+    核对过一次就作废，避免同一批记忆被重复计数。
+    """
+    snap = _slurp_json(RETRIEVAL_FILE, {}) or {}
+    if not isinstance(snap, dict) or not snap.get("items"):
+        return {"error": "没有待核对的回忆记录：先 recall 或 startup，再 usage --reply"}
+    if snap.get("evaluated_at"):
+        return {"error": "上一批回忆已经核对过了；先重新 recall，再 usage"}
+    reply_terms = _usage_terms(reply)
+    if not reply_terms:
+        return {"error": "回复文本没有可比较的关键词（太短或全是虚词）"}
+    by_id = {m.get("id"): m for m in load_all() if m.get("id")}
+    now = now_ts()
+    touched, rows, used_ids = [], [], []
+    for it in snap["items"]:
+        mid = it.get("id")
+        mt = _usage_terms(it.get("text", ""))
+        shared = mt & reply_terms
+        ratio = round(len(shared) / max(1, len(mt)), 3)
+        used = len(shared) >= USAGE_MIN_SHARED and ratio >= USAGE_MIN_RATIO
+        # 短记忆只共享一个词也可能是真用上了（如"只让叫阿哲"）
+        if not used and len(shared) == 1 and len(mt) <= 12:
+            used = True
+        rows.append({"id": mid, "used": used, "shared": len(shared), "ratio": ratio,
+                     "hits": sorted(shared)[:8]})
+        m = by_id.get(mid)
+        if used and m:
+            m["used_count"] = int(_num(m.get("used_count"), 0)) + 1
+            m["used_at"] = now
+            m["used_hits"] = sorted(shared)[:8]
+            touched.append(m)
+            used_ids.append(mid)
+    if touched:
+        _strengthen_write(touched)
+    if not READONLY:
+        try:
+            with _locked(USAGE_FILE):
+                hist = read_jsonl(USAGE_FILE)
+                hist.append({"ts": now, "query": snap.get("query", ""),
+                             "channel": snap.get("channel", ""),
+                             "recalled": [r["id"] for r in rows],
+                             "used": used_ids, "items": rows})
+                write_jsonl(USAGE_FILE, hist[-1000:])
+            atomic_json(RETRIEVAL_FILE, dict(snap, evaluated_at=now))
+        except Exception as e:
+            log_event("usage", f"使用反馈写入失败：{e}", level="warn")
+    recalled = [it.get("id") for it in snap["items"]]
+    return {"recalled": len(recalled), "used": len(used_ids),
+            "rate": round(len(used_ids) / len(recalled), 3) if recalled else 0.0,
+            "query": snap.get("query", ""), "channel": snap.get("channel", ""),
+            "items": rows}
+
+
+def usage_metrics() -> dict:
+    """历史回忆使用率（只算已经核对过的批次）。"""
+    rows = read_jsonl(USAGE_FILE)
+    recalled = sum(len(r.get("recalled") or []) for r in rows)
+    used = sum(len(r.get("used") or []) for r in rows)
+    return {"events": len(rows), "recalled": recalled, "used": used,
+            "rate": round(used / recalled, 3) if recalled else 0.0}
+
+
+# ---------------------------------------------------------------- 工作记忆
+# 默认工作记忆 = 当前上下文，不进磁盘，也不参与回忆。
+# 这里的函数只服务一种情况：AI 自己判断「这条先别忘，但还不值得成为长期记忆」。
+
+def load_working() -> list:
+    if not WORKING_FILE.exists():
+        return []
+    now = now_ts()
+    rows = []
+    for r in read_jsonl(WORKING_FILE):
+        try:
+            ts = float(r.get("ts") or 0)
+        except (TypeError, ValueError):
+            ts = 0
+        if now - ts < WORKING_TTL:
+            rows.append(r)
+    return rows
+
+
+def work_status() -> dict:
+    rows = load_working()
+    return {"capacity": WORKING_CAPACITY, "count": len(rows),
+            "open_count": sum(1 for r in rows if r.get("open", True)),
+            "ttl_hours": int(WORKING_TTL / HOUR), "items": rows}
+
+
+def work_add(text: str, tag: str = "", why: str = "") -> list:
+    """把一条工作记忆显式落盘为会话暂存。这是 AI 自己的决定，不是自动行为。"""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("工作记忆内容为空")
+    ensure_home()
+    with _locked(WORKING_FILE):
+        rows = load_working()
+        rows.append({"ts": now_ts(), "text": text,
+                     "tag": (tag or "").strip(), "why": (why or "").strip(),
+                     "open": True})
+        rows = rows[-WORKING_CAPACITY:]
+        write_jsonl(WORKING_FILE, rows)
+    return rows
+
+
+def work_done(idx: int) -> list:
+    """把暂存里第 idx 条（从 1 起）标记为已完成。
+
+    蔡格尼克效应：没做完的事会在脑子里反复冒出来；一旦做完，
+    动机满足了，它就迅速退场——"完成"本身就是一种释放。
+    """
+    with _locked(WORKING_FILE):
+        rows = load_working()
+        if 1 <= idx <= len(rows):
+            rows[idx - 1]["open"] = False
+            write_jsonl(WORKING_FILE, rows)
+    return rows
+
+
+def work_clear() -> None:
+    with _locked(WORKING_FILE):
+        if WORKING_FILE.exists():
+            write_jsonl(WORKING_FILE, [])
+
+
+def work_flush(why: str = "会话结束前决定留下", skip_done: bool = False) -> dict:
+    """把暂存里还值得留的条目一次性转成真正的记忆（海马体），然后清空暂存。
+
+    skip_done=True 时，已经 `work done` 标记完成的条目直接丢弃、不落盘——
+    做完的事就该放下，不必再占长期记忆。返回 {"saved": [...], "dropped": n}。
+    """
+    # 读-转-清 一次加锁完成：不加锁的话，两个终端同时 flush / add，
+    # 后 flush 的会拿旧快照把并发新增的暂存条目一起清掉（静默丢失）。
+    with _locked(WORKING_FILE):
+        rows = load_working()
+        saved, dropped = [], 0
+        for r in rows:
+            if skip_done and not r.get("open", True):
+                dropped += 1
+                continue
+            tags = ["工作记忆"] + ([r["tag"]] if r.get("tag") else [])
+            rec, how = remember(r["text"], kind="episode", tags=tags, source="ai")
+            saved.append({"id": rec["id"], "text": rec["text"], "how": how})
+        # 已持锁：直接清空，不能再调 work_clear()（它会重复抢同一把锁→自锁超时）
+        write_jsonl(WORKING_FILE, [])
+    if saved:
+        try:
+            import growth
+            growth.log_evolution("self", "把工作记忆转成长期记忆",
+                                 f"{why}；共 {len(saved)} 条", [s["id"] for s in saved])
+        except Exception:
+            pass
+    return {"saved": saved, "dropped": dropped}
+
+
+# ---------------------------------------------------------------- 上下文封存（capture）
+
+VERBATIM_DIR = HOME / "verbatim"
+CAPTURE_MIN_LEN = 4
+
+
+def _split_segments(text: str) -> list:
+    """把一段会话原文切成可独立成条的片段：空行 / 分隔线 / 说话人切换。"""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # 分隔线（---、***、===）当成硬边界
+    text = re.sub(r"\n\s*(?:-{3,}|\*{3,}|={3,})\s*\n", "\n\n", text)
+    segs, cur = [], []
+    for line in text.split("\n"):
+        s = line.strip()
+        if not s:
+            if cur:
+                segs.append(" ".join(cur))
+                cur = []
+            continue
+        # 说话人切换（"用户：" / "我：" / "AI:"）也断开
+        if cur and re.match(r"^(用户|我|助手|AI|Assistant|User)\s*[:：]", s):
+            segs.append(" ".join(cur))
+            cur = []
+        cur.append(s)
+    if cur:
+        segs.append(" ".join(cur))
+    out = []
+    for s in segs:
+        s = re.sub(r"\s+", " ", s).strip()
+        if len(s) >= CAPTURE_MIN_LEN:
+            out.append(s)
+    return out
+
+
+def capture(payload: str, tag: str = "", kind: str = "episode",
+            importance: float | None = None, raw_only: bool = False,
+            source: str = "ai") -> dict:
+    """把当前上下文原样封存进记忆库，保证 70%→100% 之间的话不会随滚动丢掉。
+
+    与 remember 的区别：remember 是提炼后的结论；capture 是"原文搬运"，
+    允许粗糙、允许啰嗦，目的只有一个——先保住，别丢。之后做梦再压缩。
+    """
+    ensure_home()
+    payload = (payload or "").strip()
+    if not payload:
+        raise ValueError("封存内容为空")
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法封存。用 --home 指向可写目录。")
+
+    ts = now_ts()
+    # 1) 原文归档：无论如何先留一份完整快照，一个字都不改
+    VERBATIM_DIR.mkdir(parents=True, exist_ok=True)
+    archive = VERBATIM_DIR / f"{datetime.fromtimestamp(ts).strftime('%Y%m%d_%H%M%S')}.md"
+    k = 1
+    while archive.exists():
+        archive = VERBATIM_DIR / f"{datetime.fromtimestamp(ts).strftime('%Y%m%d_%H%M%S')}_{k}.md"
+        k += 1
+    head = [f"# 上下文封存 · {fmt_time(ts)}", ""]
+    if tag:
+        head.append(f"标签：{tag}")
+    head.append(f"字符数：{len(payload)}")
+    head.append("")
+    write_text_atomic(archive, "\n".join(head) + payload + "\n")
+
+    # 2) 逐段进海马体（--raw-only 时跳过：只留原文快照，不污染记忆库）
+    if raw_only:
+        return {"saved": [], "skipped": 0, "archive": archive, "chars": len(payload)}
+    # 读-去重-写整体加锁：不加锁时两个并发 capture 会各自拿到同一份旧快照，
+    # 互相看不出对方刚存的段，结果同一句话被存两遍。
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        existing = [terms(m.get("text", "")) for m in records if m.get("layer") != "dust"]
+        tags = ["封存"] + ([tag] if tag else [])
+        saved, skipped = [], 0
+        for seg in _split_segments(payload):
+            t = terms(seg)
+            if any(jaccard(t, e) >= 0.92 for e in existing):
+                skipped += 1
+                continue
+            rec = make_record(seg, kind=kind, importance=importance, tags=tags,
+                              source=source, layer="hippo")
+            rec["verbatim"] = True
+            rec["detail"] = 1.0
+            records.append(rec)
+            existing.append(t)
+            saved.append(rec)
+        if saved:
+            # 封存段也建联想链：capture 是原文搬运，段落之间/与历史记忆的关联照挂
+            for rec in saved:
+                try:
+                    relink(rec, records)
+                except Exception:
+                    pass
+            save_all(records)
+    return {"saved": saved, "skipped": skipped, "archive": archive, "chars": len(payload)}
+
+
+# ---------------------------------------------------------------- 记忆关联（联想能力）
+# 人有联想：一件事会牵出另一件。记忆之间除了"文本像不像"，还有显式的关联边——
+# "A 导致了 B"、"A 和 B 是同一件事的两个侧面"、"提到 A 就会想起 B"。
+# recall 时，命中的记忆会沿关联边把邻居也带起来（联想扩散的显式版）。
+# 注意：ASSOC_FILE 定义在 emotion.py；这里保持调用时动态取 emotion.ASSOC_FILE，
+# 避免 core.ensure_home 切换 HOME 后本模块残留指向旧目录。
+import emotion as _emotion_mod  # noqa: E402
+
+def _assoc_file():
+    return _emotion_mod.ASSOC_FILE
+
+def load_assoc() -> list:
+    raw = read_jsonl(_assoc_file())
+    good, bad = [], 0
+    for r in raw:
+        if isinstance(r, dict) and r.get("src") and r.get("dst"):
+            good.append(r)
+        else:
+            bad += 1
+    if bad:
+        log_event("load", f"load_assoc 跳过 {bad} 条畸形边（缺 src/dst 或类型错）", level="warning")
+    return good
+
+
+def save_assoc(rows: list) -> None:
+    write_jsonl(_assoc_file(), rows)
+
+
+# ---------------------------------------------------------------- relink 联想建链
+# 联想不只是 recall 时的隐性扩散，还该显式落到记录上：新记忆写进来时，与历史里
+# 词面最相近的几条互挂 links——之后 recall 命中任意一条都能顺藤摸瓜带出邻居。
+
+def relink(record: dict, records: list | None = None,
+           max_links: int = 5, min_score: float = 1.0) -> list:
+    """给一条记忆找最相关的若干条历史记忆，双向写 links。
+
+    用现成的 terms()/jaccard() 词面相似度打分（text+tags+entities 合并算），
+    得分 >= min_score 的历史记忆按分数取前 max_links 条。
+    records 传入调用方已 load 的整库快照（remember/capture 均在锁内调用，
+    传入锁内快照避免重复读盘）；缺省时自行 load_all()。
+    返回实际建链的邻居 id 列表。只追加不去重已有链接之外的内容，
+    合并写法与 set_memory_review 一致（list(dict.fromkeys(...))）。
+    """
+    text = str(record.get("text") or "").strip()
+    if not text:
+        return []
+    my_terms = terms(_hay(record))
+    if not my_terms:
+        return []
+    rid = record.get("id")
+    if records is None:
+        records = load_all()
+    scored = []
+    for other in records:
+        if not isinstance(other, dict) or other.get("id") == rid:
+            continue
+        if other.get("layer") in ("dust", ARCHIVE_LAYER):
+            continue
+        ot = terms(_hay(other))
+        if not ot:
+            continue
+        sim = jaccard(my_terms, ot)
+        # 分数 = 相似度×10 取整刻度，min_score=1 即 jaccard≥0.1 才值得建链
+        score = round(sim * 10, 2)
+        if score >= min_score:
+            scored.append((score, other["id"]))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    neighbors = [oid for _, oid in scored[:max(0, max_links)]]
+    if not neighbors:
+        return []
+    changed = False
+    old_links = list(record.get("links") or [])
+    merged = list(dict.fromkeys(old_links + neighbors))
+    if merged != old_links:
+        record["links"] = merged
+        changed = True
+    for other in records:
+        if other.get("id") in neighbors and rid and rid not in (other.get("links") or []):
+            other["links"] = list(dict.fromkeys(list(other.get("links") or []) + [rid]))
+            changed = True
+    return neighbors if changed else []
+
+
+# ---------------------------------------------------------------- 每日自动归档
+# pending 记忆自动整理：事实型沉淀进 growth 知识库（add_knowledge，AI 来源按其
+# 审核机制默认 pending，走 knowledge review 转正）；事件型写进笔记/日记
+# （growth.write_note 的 journal）。原记忆绝不删：打 archived_at 标记留档。
+# 拿不准分类的保持 pending 原样不动；pinned 不动。
+
+_AUTO_ARCHIVE_FACT_CUES = ("是", "有", "能", "用", "在", "会", "需要", "属于", "等于",
+                           "吃", "喝", "喜欢", "爱", "叫", "姓", "住", "说", "知道",
+                           "觉得", "认为", "已经", "可能", "一定", "必须", "开始", "结束")
+_AUTO_ARCHIVE_TIME_CUES = ("今天", "昨天", "明天", "刚才", "刚刚", "早上", "上午",
+                           "下午", "晚上", "上周", "这周", "上次", "当时", "后来",
+                           "然后", "接着", "于是", "聊到", "他说", "她说", "我提到",
+                           "对话", "群里", "会议")
+_AUTO_ARCHIVE_FACT_MAX_LEN = 120     # 事实型通常是短结论；长文本多半是叙事
+
+
+def _classify_pending(text: str) -> str:
+    """pending 记忆分类：fact（事实型）/ episode（事件型）/ unknown（拿不准，不动）。"""
+    t = text.strip()
+    if not t:
+        return "unknown"
+    has_time = any(c in t for c in _AUTO_ARCHIVE_TIME_CUES)
+    has_fact = any(c in t for c in _AUTO_ARCHIVE_FACT_CUES)
+    if has_time and not has_fact:
+        return "episode"
+    if has_fact and not has_time and len(t) <= _AUTO_ARCHIVE_FACT_MAX_LEN:
+        return "fact"
+    # 既有时间叙述又像陈述句：时间性叙述优先按事件处理（对话叙事抄进日记不丢）
+    if has_time and has_fact:
+        return "episode"
+    return "unknown"
+
+
+def auto_archive() -> dict:
+    """已确认（confirmed）记忆自动归档：事实型→知识库，事件型→日记笔记；原记忆标记 archived_at。
+
+    只处理 review == "confirmed" 的记忆（v2.55 修复：不再自动转正 pending——
+    审核闸的设计是"AI 产物先待审，确认后才算事实"，自动归档不能绕过它）。"""
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法自动归档。")
+    import growth as _growth
+    ensure_home()
+    now = now_ts()
+    moved = {"knowledge": 0, "notes": 0, "skipped": 0}
+    details = []
+    # 读-改-写整体加锁：与 remember/dream 一样走整库快照覆写，必须锁内完成
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        changed = False
+        for m in records:
+            # 审核闸：只转正"已确认"的记忆。pending 意味着未经人工确认——
+            # 每天自动把 AI 幻觉候选写进知识库等于绕过审核闸，这里绝不碰 pending。
+            if m.get("review") != "confirmed" or m.get("pinned"):
+                continue
+            if m.get("layer") in ("dust", ARCHIVE_LAYER) or m.get("archived_at"):
+                continue
+            text = str(m.get("text") or "").strip()
+            cls = _classify_pending(text)
+            if cls == "unknown":
+                moved["skipped"] += 1
+                continue
+            try:
+                if cls == "fact":
+                    _growth.add_knowledge(title=_mem_gist_fallback(m), body=text,
+                                          topic="", tags=list(m.get("tags") or []),
+                                          source_ids=[m.get("id")], source="ai")
+                    moved["knowledge"] += 1
+                else:
+                    _growth.write_note("journal", title=_mem_gist_fallback(m), body=text,
+                                       tags=["归档"] + list(m.get("tags") or []),
+                                       memory_ids=[m.get("id")])
+                    moved["notes"] += 1
+            except Exception as exc:
+                # 单条失败不拖垮整批：留痕并按"拿不准"跳过
+                log_event("auto-archive", f"归档记忆 {m.get('id')} 失败：{exc}", level="warning")
+                moved["skipped"] += 1
+                continue
+            # 只标记、不删不改层：原记忆留在原层，archived_at 表示已整理过
+            m["archived_at"] = now
+            changed = True
+            details.append({"id": m.get("id"), "class": cls,
+                            "text": text[:40]})
+        if changed:
+            save_all(records)
+    return {"moved": moved, "details": details}
+
+
+def _mem_gist_fallback(m: dict) -> str:
+    """给知识/笔记取标题：优先现成 gist，缺省用 heuristic_gist。"""
+    t = str(m.get("gist") or "").strip()
+    return t or heuristic_gist(str(m.get("text") or ""))
+
+
+def _norm_edge(a: str, b: str) -> tuple:
+    return (a, b) if (a or "") < (b or "") else (b, a)
+
+
+def link_memory(src: str, dst: str, relation: str = "相关", weight: float = 1.0,
+                why: str = "") -> dict:
+    """把两条记忆连起来（无向边）。同一对记忆反复连会加重。"""
+    ensure_home()
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法修改关联。")
+    if src == dst:
+        raise ValueError("不能自己关联自己。")
+    if not src or not dst:
+        raise ValueError("关联的双方 id 不能为空。")
+    a, b = _norm_edge(str(src), str(dst))
+    with _locked(_assoc_file()):
+        ids = {m["id"] for m in load_all() if m.get("id")}
+        for mid in (src, dst):
+            if mid not in ids:
+                raise KeyError(f"没有这条记忆：{mid}（用 list 或 recall 拿 id）")
+        rows = load_assoc()
+        for r in rows:
+            if r.get("src") == a and r.get("dst") == b:
+                r["weight"] = round(min(3.0, _num(r.get("weight"), 1) + _num(weight, 1)), 2)
+                r["relation"] = relation or r.get("relation", "相关")
+                r["ts"] = now_ts()
+                if why:
+                    r["why"] = why
+                save_assoc(rows)
+                return {"src": src, "dst": dst, "relation": relation, "weight": r["weight"],
+                        "created": False, "updated": True}
+        rows.append({"src": a, "dst": b, "relation": (relation or "相关").strip(),
+                     "weight": round(max(0.1, _num(weight, 1)), 2),
+                     "why": (why or "").strip(), "ts": now_ts()})
+        save_assoc(rows)
+    return {"src": src, "dst": dst, "relation": relation, "weight": _num(weight, 1),
+            "created": True, "updated": False}
+
+
+def unlink_memory(src: str, dst: str) -> bool:
+    a, b = _norm_edge(str(src or ""), str(dst or ""))
+    with _locked(_assoc_file()):
+        rows = load_assoc()
+        keep = [r for r in rows if not (r.get("src") == a and r.get("dst") == b)]
+        if len(keep) == len(rows):
+            return False
+        save_assoc(keep)
+        return True
+
+
+def assoc_of(mid: str) -> list:
+    """一条记忆的邻居（带边信息）。"""
+    if not mid:
+        return []
+    out = []
+    for r in load_assoc():
+        # assoc.jsonl 任一行缺 src/dst 就跳过——否则崩
+        src, dst = r.get("src"), r.get("dst")
+        if src == mid:
+            out.append({"id": dst, "relation": r.get("relation", "相关"),
+                        "weight": _num(r.get("weight"), 1),
+                        "direction": "dst", "why": r.get("why", "")})
+        elif dst == mid:
+            out.append({"id": src, "relation": r.get("relation", "相关"),
+                        "weight": _num(r.get("weight"), 1),
+                        "direction": "src", "why": r.get("why", "")})
+    by_id = {m["id"]: m for m in load_all() if m.get("id")}
+    for n in out:
+        n["gist"] = by_id.get(n["id"], {}).get("gist", "") if n["id"] else ""
+        n["kind"] = by_id.get(n["id"], {}).get("kind", "") if n["id"] else ""
+    out.sort(key=lambda x: -_num(x.get("weight"), 0))
+    return out
+
+
+def assoc_auto(weight: float = 0.8, dry_run: bool = False) -> dict:
+    """自动联想：共享实体或标签的记忆之间补边（这是"触类旁通"的机器版）。"""
+    records = [m for m in load_all() if m.get("id") and m.get("layer") != "dust"]
+    by_ent = {}
+    by_tag = {}
+    for m in records:
+        for e in m.get("entities", []):
+            by_ent.setdefault(e, []).append(m["id"])
+        for t in m.get("tags", []):
+            by_tag.setdefault(t, []).append(m["id"])
+    planned = []
+    seen = set()
+    for bucket in list(by_ent.values()) + list(by_tag.values()):
+        for i, a in enumerate(bucket):
+            for b in bucket[i + 1:]:
+                key, x = _norm_edge(a, b)
+                if key in seen:
+                    continue
+                seen.add(key)
+                planned.append((a, b))
+    existing = {(r["src"], r["dst"]) for r in load_assoc()}
+    added = []
+    for a, b in planned:
+        if (a, b) in existing:
+            continue
+        if dry_run:
+            added.append({"src": a, "dst": b})
+            continue
+        link_memory(a, b, relation="相关", weight=weight, why="共享实体/标签的自动联想")
+        added.append({"src": a, "dst": b})
+    return {"planned": len(planned), "added": len(added),
+            "dry_run": dry_run,
+            "pairs": added[:20]}
+
+
+def assoc_graph(limit: int = 300) -> dict:
+    """联想图谱数据：面板 3D 空间用的节点与关联边。
+
+    v2.32 起两处升级（均为自动，无需手动连线）：
+      * 人格中心：虚构一个 __persona__ 中心节点，与所有非淡忘记忆自动连边——
+        图谱以人格为星核呈放射状，一眼看出"哪些记忆离我最近"。
+      * 自动联想：共享实体/标签的记忆对之间补自动边（复用 assoc_auto 的
+        计划逻辑但只读不落盘），图谱显示的关联远多于手工 link 的存量边。
+
+    节点上限 limit（默认 300，太多画不动）；边只保留两端都在图里的。
+    """
+    records = [m for m in load_all() if m.get("layer") != "dust"]
+    records.sort(key=lambda m: (_num(m.get("importance"), 0.5),
+                                float(retention(m))), reverse=True)
+    nodes = records[:limit]
+    ids = {n["id"] for n in nodes}
+    edges = []
+    for r in load_assoc():
+        if r["src"] in ids and r["dst"] in ids:
+            edges.append({"src": r["src"], "dst": r["dst"],
+                          "relation": r.get("relation", "相关"),
+                          "weight": float(r.get("weight", 1))})
+    seen_edges = {(e["src"], e["dst"]) for e in edges}
+    # 自动联想边（只读计划，不落盘——面板每次刷新重算，落盘交给 assoc_auto）
+    # 倒排索引：实体/标签 -> 记忆 id 集合。两两组合只发生在同一桶内，
+    # 复杂度从 O(P×(E+T)) 降到 Σ(桶内两两)，记忆多了不再卡面板。
+    by_ent, by_tag = {}, {}
+    for m in nodes:
+        for e in m.get("entities", []):
+            by_ent.setdefault(e, set()).add(m["id"])
+        for t in m.get("tags", []):
+            by_tag.setdefault(t, set()).add(m["id"])
+    buckets = list(by_ent.values()) + list(by_tag.values())
+    auto_pairs = set()
+    for bucket in buckets:
+        bl = sorted(bucket)
+        for i, a in enumerate(bl):
+            for b in bl[i + 1:]:
+                key = (a, b) if a < b else (b, a)
+                if key not in seen_edges:
+                    auto_pairs.add(key)
+    for a, b in auto_pairs:
+        # 共享的实体/标签越多边越粗（权重 = 共享桶数，封顶 3）
+        w = sum(1 for bucket in buckets if a in bucket and b in bucket)
+        edges.append({"src": a, "dst": b, "relation": "相关",
+                      "weight": min(3.0, 0.8 * w), "auto": True})
+    # 人格中心节点：星核，连向所有展示的记忆（权重随重要度，重要的连线更亮）
+    persona_id = "__persona__"
+    import persona as _persona_mod  # 延迟导入避免循环依赖
+    p = _persona_mod.load_persona()
+    nodes.insert(0, {"id": persona_id, "gist": "人格 · " + (p.get("name") or "砚"),
+                     "kind": "persona", "layer": "persona",
+                     "importance": 1.0, "emotion": "", "recency": 1.0})
+    for m in nodes[1:]:
+        edges.append({"src": persona_id, "dst": m["id"], "relation": "自我",
+                      "weight": 0.4 + _num(m.get("importance"), 0.5), "auto": True})
+    return {
+        "nodes": [{"id": m["id"], "gist": m.get("gist") or heuristic_gist(m.get("text", "")),
+                   "kind": m.get("kind", ""), "layer": m.get("layer", "hippo"),
+                   "importance": _num(m.get("importance"), 0.5),
+                   "emotion": m.get("emotion", ""),
+                   "recency": round(retention(m), 2)} for m in nodes],
+        "edges": edges,
+        "connected": len({e["src"] for e in edges} - {persona_id}
+                         | {e["dst"] for e in edges} - {persona_id}),
+    }
+
+# ---------------------------------------------------------------- 上下文注入
+
+def read_user_rules() -> list:
+    """读取用户附加规则：数据目录 lingshu.user.md。
+    写在数据目录里，更新技能永远不碰它；每会话注入自动带上。"""
+    p = HOME / "lingshu.user.md"
+    if not p.exists():
+        return []
+    try:
+        lines = [l.rstrip() for l in p.read_text(encoding="utf-8-sig").splitlines()]
+    except OSError:
+        return []
+    return [l for l in lines if l.strip()]
+
+
+def _time_context() -> str:
+    """当前时段的一句话语境（注入包用，克制描述、不煽情）。
+
+    5-11 清晨 / 11-14 午间 / 14-18 下午 / 18-23 夜晚 / 23-5 深夜；
+    顺带标注周末，工作日不标（默认即是）。
+    """
+    lt = datetime.now()
+    h = lt.hour
+    if 5 <= h < 11:
+        seg = "清晨，一天刚开始"
+    elif 11 <= h < 14:
+        seg = "午间"
+    elif 14 <= h < 18:
+        seg = "下午，正事多在此时"
+    elif 18 <= h < 23:
+        seg = "夜晚，节奏可以慢下来"
+    else:
+        seg = ("深夜（23 点到凌晨 5 点之间）——若用户此刻还在，多半有事或睡不着，"
+               "别用元气满满的腔调")
+    if lt.weekday() >= 5:
+        seg += "（今天周末）"
+    return f"{lt.strftime('%Y-%m-%d %H:%M')}，{seg}。"
+
+
+def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
+    ensure_home()
+    cfg = load_config()
+    # budget 0/负数按 1 兜底：`budget_tokens or ...` 会把 0 静默吞掉，负数则算出负 char_budget
+    budget = budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else _cfg_num(cfg, "budget_tokens", 1400, int)
+    char_budget = int(budget * 1.8)
+    p = load_persona()
+    session_mode = resolve_mode(query)
+
+    brief = persona_brief(p, mood=(session_mode != "work"))
+    out = ["===== 长期记忆注入（灵枢）=====",
+           "算力给我思考，人格给我灵魂，记忆给我生命。",
+           "## 我是谁", brief]
+    used = len(brief) + 60
+
+    # mistake / relationship 各取最近 3 条非 dust——一次 recent(40) 全量读盘后分拣
+    try:
+        _recent40 = recent(40)
+        _mistakes = [m for m in _recent40 if m.get("kind") == "mistake"
+                     and m.get("layer") != "dust"][:3]
+        _rels = [m for m in _recent40 if m.get("kind") == "relationship"
+                 and m.get("layer") != "dust"][:3]
+    except Exception:
+        _mistakes, _rels = [], []
+
+    # 「我犯过的错」：成长型人格的地基（kind=mistake，独立成块注入）
+    if _mistakes:
+        out.append("\n## 我犯过的错（遇到类似情境先想起这些）")
+        for m in _mistakes:
+            out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
+
+    # 「我的人际关系」：kind=relationship 独立成块注入——记得谁是谁、欠了谁、
+    # 被谁帮过，关系才有连续性（群聊场景跨群共享同一份画像）。
+    if _rels:
+        out.append("\n## 我的人际关系（提到这些人时先想起这些）")
+        for m in _rels:
+            out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
+
+    # 时段语境：一句话给当下时间定性，让语气/行为与真实时间对齐（克制，不煽情）。
+    try:
+        out.append(f"\n## 现在是什么时候\n{_time_context()}")
+    except Exception:
+        pass
+
+    if model_tier() == "small":
+        out.append("\n## 小模型模式（当前模型档位 = small）")
+        out.append("你的上下文和推理都有限，下面这些高风险自动能力**不要主动做**：")
+        out.append("- 不要自动 `dream --apply` 合并记忆、不要自动 `knowledge tidy` 提炼知识库——"
+                   "这两件事容易把幻觉固化落盘。要做也行，但产出必须 `knowledge review` 人工过目。")
+        out.append("- `emotion evaluate` 自动判读情绪在小模型上很不可靠，改用最朴素的 `emotion feel` 手动记。")
+        out.append("- 只保留硬约束：会话开始 `startup`、值得记的 `remember`、被问起 `recall`、")
+        out.append("  快满了 `check-context` / `capture` 保命。其余的能省则省。")
+
+    if session_mode == "work":
+        # 工程模式：情绪隔离。刚聊完情绪化话题立刻写代码时，旧情绪不许进工作会话。
+        out.append("\n## 工程模式（情绪隔离，mode=work）")
+        out.append("本次是写代码 / 排错 / 项目 / 数据分析这类工程场景，而且可能刚聊过情绪化话题。"
+                   "规则：")
+        out.append("- 情绪状态与拟人语气**不注入本会话**，别看/别背情绪；先给可执行方案，重视正确性与工程契约。")
+        out.append("- 旧情绪的余波（不管刚才多上头）与当前任务无关，当作没有，理性为主。")
+        out.append("- 若已手工打开过情绪闸需要先冷却，用 `emotion cool`。")
+    else:
+        # 拟人模式：内部状态 → 可执行的行为指引（而不是甩裸数值给模型）
+        out.append("\n## 我现在的状态（行为指引）")
+        for line in _behavior_map():
+            out.append(f"- {line}")
+        tone = mood_tone_hint()
+        if tone:
+            out.append(f"- 语气底色（自然流露即可，不表演）：{tone}")
+
+    work = load_working()
+    out.append("\n## 工作记忆（就是你现在能看见的对话）")
+    out.append("它不进磁盘，也不会被回忆或做梦碰到。只有你自己判断值得留一手时，才显式写下来："
+               "这次要一直盯着的 → `work add`（会话暂存，最多 9 条，12 小时后自动丢）；"
+               "值得长期留下的 → 直接 `remember`。")
+    if work:
+        opens = [w for w in work if w.get("open", True)]
+        dones = [w for w in work if not w.get("open", True)]
+        if opens:
+            out.append(f"心里还惦记着 {len(opens)} 件没做完的事"
+                       "（未完成的更占心思，别让它一直悬着）：")
+            # 序号与 `work` / `work done <序号>` 保持一致（含已完成项的全局序号）
+            for i, w in enumerate(work, 1):
+                if not w.get("open", True):
+                    continue
+                tag = f"[{w['tag']}] " if w.get("tag") else ""
+                out.append(f"- {i}. {tag}{w['text']}")
+        if dones:
+            out.append(f"另有 {len(dones)} 件已完成（做完了就该放下，`work flush` 转成记忆或 `work clear` 清掉）。")
+        out.append("做完一件就 `work done <序号>` 标记——完成会释放它占的心思。"
+                   "`work flush` 转成真正的记忆（`--skip-done` 只转没完成的，已做完的直接丢），"
+                   "或 `work clear` 丢掉。")
+
+    ob = p.get("onboarding") or {}
+    if not ob.get("completed"):
+        out.append("\n## 初识还没完成（优先做这件事）")
+        if ob.get("stage") == "awaiting_self":
+            out.append("用户已经回答过了（也可能说了「不知道」）。名字或性格还空着的，由你自己定；"
+                       "然后写下你喜欢什么、讨厌什么、想养成什么习惯：")
+            out.append('`python scripts/brain.py persona self --name "你给自己起的名字" '
+                       '--traits "温和:70,好奇:85" --likes "..." --dislikes "..." --habits "..."`')
+        else:
+            out.append("先自然地问用户两件事（不要一次问太多）：希望你叫什么名字？希望我是什么性格？")
+            out.append("如果用户说「不知道」「你定」，就直接由你自己决定，不用再追问：")
+            out.append('`python scripts/brain.py persona interview --unsure`')
+            out.append('`python scripts/brain.py persona self --name "..." --traits "..." --likes "..."`')
+            out.append("如果用户答了：`persona interview --name \"...\" --traits \"...\"`，再 `persona self` 补完自己那部分。")
+
+    dr = p.get("drives") or {}
+    # 与 mind_state() 同一套兜底：traits 已有数值而 drives 还空时，别在注入里
+    # 一边说「性格：好奇85」一边说「内驱：还没有数值」——自相矛盾每轮都被读。
+    if dr.get("curiosity") is None and dr.get("reason") is None:
+        _traits = p.get("traits") or {}
+        if _traits.get("好奇") is not None or _traits.get("理智") is not None:
+            dr = {"curiosity": trait_value(_traits["好奇"]) if _traits.get("好奇") is not None else None,
+                  "reason": trait_value(_traits["理智"]) if _traits.get("理智") is not None else None}
+    out.append("\n## 我怎么想事情")
+    if dr.get("curiosity") is not None or dr.get("reason") is not None:
+        out.append(f"好奇心 {dr.get('curiosity', '未成形')} / 理智 {dr.get('reason', '未成形')}。"
+                   "理智先过闸：估好处与坏处，判断这件事值不值得深想；值得才让好奇心往里钻。"
+                   "深度思考产出想法，好奇心产出创造力。")
+    else:
+        out.append("好奇心与理智还没有数值——它们不是出厂设定，是从用户的态度里长出来的。"
+                   "用户嫌你想太多/话多 → 理智上调；用户想让你多问、多挖、多试 → 好奇心上调。"
+                   "感受到态度变化时记一笔：")
+        out.append('`python scripts/brain.py mind tune --curiosity +5 --reason -3 --why "用户嫌我啰嗦"`')
+    out.append("拿不准时先算一笔：`python scripts/brain.py mind weigh \"这件事\" --benefit 7 --cost 3 --confidence 0.6`")
+
+    if query:
+        mems = recall(query, k=10, strengthen=not READONLY)
+        header = f"\n## 与「{query[:24]}」相关的记忆"
+        new_mem: list = []
+    else:
+        # 先切出「上次 startup 之后」新写入的记忆 → 专属「刚刚发生」段，
+        # 并从「最近的记忆」里剔除，两段互斥不重复。
+        # >= 而非 >：同秒写入（startup 落盘和 remember 同一秒很常见）也要算进来。
+        _last = (load_config().get("last_startup") or {}).get("ts") or 0
+        new_mem = [m for m in recent(20) if _num(m.get("created"), 0) >= _last][:4]
+        _new_ids = {m.get("id") for m in new_mem}
+        mems = [(m, 0, {}) for m in recent(6 + len(new_mem)) if m.get("id") not in _new_ids][:6]
+        header = "\n## 最近的记忆"
+    lines, kept_mems = [], []
+    for m, score, _ in mems:
+        line = (f"- [{fmt_date(m.get('created', 0))} "
+                f"{'★' * max(1, round(_num(m.get('importance'), 0.5) * 5))}] {display_text(m)}")
+        # append 之后累计再判：append 前判会把"当前这行自身"的长度漏算，实际可超预算一行
+        lines.append(line)
+        if used + lines_join_len(lines) > char_budget * 0.75:
+            lines.pop()   # 超预算：这行不放，留一条整记忆不切半
+            break
+        kept_mems.append(m)
+    if lines:
+        out.append(header)
+        out.extend(lines)
+        used += len("\n".join(lines))
+        record_retrieval(query, kept_mems,
+                         channel="inject" if query else "startup")
+
+    # 「刚刚发生」：上面已按 id 切分（new_mem），这里直接渲染即可。
+    if not query and new_mem:
+        out.append("\n## 刚刚发生（本会话新增）")
+        for m in new_mem:
+            out.append(f"- {display_text(m)}")
+
+    # 上一次梦的结论
+    dream_files = sorted((HOME / "dreams").glob("*.md")) if (HOME / "dreams").exists() else []
+    if dream_files:
+        digest = []
+        for line in dream_files[-1].read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#"):
+                digest.append(s)
+        out.append("\n## 上次睡醒后记得的结论")
+        out.extend(digest[:6])
+
+    # 待整理的梦
+    pending = HOME / "dreams" / "pending.json"
+    if pending.exists():
+        out.append("\n## 待办：有一场梦还没整理完")
+        out.append("运行 `python scripts/brain.py dream --apply <你的整理结果.json>` 把记忆固化下来。")
+
+    out.append("===== 注入结束：请自然地使用这些记忆，不要逐条复述 =====")
+    out.append("")
+    # 每日例行 + 自我总结提醒（保证"每天更新、定期自省"）
+    st = _daily_state()
+    if st.get("last_date") != fmt_date(now_ts()):
+        out.append("[每日例行] 今天还没跑 daily：`python scripts/brain.py daily`"
+                   "（写今日日记、沉淀知识、过期的梦自动做掉）。")
+    else:
+        out.append(f"[每日例行] 今天的日记已写（{st.get('last_date')}）。")
+    cfg2 = load_config()
+    last_review = float(cfg2.get("last_self_review", 0) or 0)
+    if now_ts() - last_review > 2 * DAY:
+        out.append("[自我总结] 超过 2 天没总结自己的灵枢技能了："
+                   "`python scripts/brain.py skill self-review`。")
+    ra = rationality()
+    if session_mode != "work" and (ra["storm"] or ra["suppress"] >= 10):
+        out.append(f"[理智状态] 情绪在起作用：{ra['mood_label']}，理智 {ra['base']} → "
+                   f"{ra['effective']}（被压住 {ra['suppress']}%）。语气自然流露可以，"
+                   "涉及钱/关系/承诺等大事，把决定权交给用户。")
+    cfg = load_config()
+    rv = f"{_cfg_num(cfg, 'review_threshold', 0.60) * 100:.0f}%"
+    dr = f"{_cfg_num(cfg, 'dream_threshold', 0.75) * 100:.0f}%"
+    es = f"{_cfg_num(cfg, 'escape_threshold', 0.90) * 100:.0f}%"
+    out.append(f"[水位守则] 会话中即记即存；{rv} 补记清点，{dr} 做梦压缩，{es} 封存保底。"
+               "用 python scripts/brain.py check-context --used <当前百分比> 逐档检查。")
+    # 水位自动评估（不依赖 AI 自觉）：脚本数不出 AI 的上下文百分比，但能数出
+    # 「上次做梦之后新写入的记忆条数」——攒得多说明上一场会话结束时没人做梦。
+    # 超过 8 条就在 startup 注入包里直接提示，让新会话第一件事先把旧账结了。
+    try:
+        _ld = load_dream_state().get("last_dream") or 0
+        if _ld:
+            _acc = sum(1 for m in load_all()
+                       if m.get("created", 0) >= _ld and m.get("layer") in ("hippo", "cortex"))
+            if _acc >= 8:
+                out.append(f"[睡醒债] 上次做梦之后已积累 {_acc} 条新记忆——上一场会话结束时没做梦。"
+                           "开始干活前先 `dream --auto` 把旧账结了，再继续本轮。")
+    except Exception:
+        pass
+    # 待审核提醒：AI 整理出来的东西不能当事实直接沉淀
+    try:
+        rc = review_counts()
+        if rc["memories"] or rc["knowledge"] or rc["persona"]:
+            parts = []
+            if rc["memories"]:
+                parts.append(f"{rc['memories']} 条 AI 整理的记忆")
+            if rc["knowledge"]:
+                parts.append(f"{rc['knowledge']} 条待审核知识")
+            if rc["persona"]:
+                parts.append(f"AI 改了人格 {rc['persona']} 次")
+            out.append(f"[待审核] 有{'、'.join(parts)}。"
+                       "先 `review` 过一遍：确认的 `review confirm <id>`，编造的 `review discard <id>`，"
+                       "人格来源用 `persona history` 查。别让幻觉沉淀成事实。")
+    except Exception:
+        pass
+    # 人格漂移告警：微小偏移也要让用户看得见，不能等跑偏了才发现
+    try:
+        dr = persona_drift(7)
+        if dr["alert"]:
+            out.append("[人格漂移] 与最近基准快照比有明显变化"
+                       f"（结构 {dr['counts']['diff']} 处、AI 改动 {dr['counts']['ai_changes']} 次）。"
+                       "用 `persona drift` 看细节；不是你要的，`persona restore <快照>` 或 `persona rollback <序号>`。")
+    except Exception:
+        pass
+    # 用户附加规则：写在数据目录 lingshu.user.md（更新技能不碰数据目录，永不覆盖），每会话自动带上
+    user_lines = read_user_rules()
+    if user_lines:
+        out.append("\n## 用户附加规则（来自 ~/.brain-memory/lingshu.user.md，更新技能永不覆盖）")
+        out.extend(user_lines)
+    # 扩展模块：AI 自己写的可执行钩子，inject(ctx) 返回的文本并入注入包（数据目录，更新永不覆盖）
+    try:
+        import growth
+        exts = growth.ext_injections({"query": query, "mode": session_mode})
+        if exts:
+            out.append("\n## 扩展模块（~/.brain-memory/extensions/，更新技能永不覆盖）")
+            for ext_name, ext_text in exts:
+                out.append(f"[{ext_name}] {ext_text}")
+    except Exception:
+        pass
+    # 技能库：告诉 AI 哪里有现成技能、怎么直接用（跨宿主共享，不用先安装）
+    try:
+        import growth
+        avail = [r for r in growth.skill_roots() if r.get("exists") and r.get("count")]
+        if avail:
+            out.append("\n## 技能库（跨宿主，可直接用）")
+            out.append("这些目录里有现成技能，都是本地文件，读出来照做即可，不必先安装：")
+            for r in avail[:8]:
+                out.append(f"- [{r['label']}] {r['path']}（{r['count']} 个）")
+            out.append("列全部：`python scripts/brain.py skill scan`；照做某个：`skill use <名字>`"
+                       "（`--root <宿主名或目录>` 限定来源）；变成自己的版本：`skill borrow <名字>`。")
+    except Exception:
+        pass
+    return "\n".join(out)
+
+
+def lines_join_len(lines: list) -> int:
+    return len("\n".join(lines))
+
+
+# ---------------------------------------------------------------- 统计
+
+def stats() -> dict:
+    records = load_all()
+    active = [m for m in records if m.get("layer") != "dust"]
+    now = now_ts()
+    decays = [retention(m, now) for m in active] or [0]
+    tags = {}
+    for m in active:
+        for t in m.get("tags", []):
+            tags[t] = tags.get(t, 0) + 1
+    p = load_persona()
+    # "存得好不好"两个便宜指标：历史回忆的使用率，以及从没被命中过的记忆占比
+    um = usage_metrics()
+    n_active = len(active) or 1
+    never_recalled = sum(1 for m in active if int(_num(m.get("access_count"), 0)) == 0)
+    never_used = sum(1 for m in active if int(_num(m.get("used_count"), 0)) == 0)
+    old_never = sum(1 for m in active
+                    if int(_num(m.get("access_count"), 0)) == 0
+                    and not m.get("pinned")
+                    and now - _num(m.get("created"), now) >= ARCHIVE_MIN_AGE_DAYS * DAY)
+    return {
+        "total": len(records),
+        "hippo": sum(1 for m in records if m.get("layer") == "hippo"),
+        "cortex": sum(1 for m in records if m.get("layer") == "cortex"),
+        "dust": sum(1 for m in records if m.get("layer") == "dust"),
+        "archive": len(load_archive()),
+        "pinned": sum(1 for m in active if m.get("pinned")),
+        "avg_retention": round(sum(decays) / len(decays), 3),
+        "top_tags": sorted(tags.items(), key=lambda x: -x[1])[:10],
+        "persona_name": p.get("identity", {}).get("名字", ""),
+        # 旧实现读 persona.state.mood（通常没写过，永远是空）；心情是算出来的，不是存出来的
+        "mood": mood_brief() or mood_now()["label"],
+        "working": len(load_working()),
+        "assoc": len(load_assoc()),
+        "last_dream": load_dream_state().get("last_dream", 0),
+        "daily": _daily_state().get("last_date", ""),
+        "rationality": rationality(),
+        "recall_usage": um,
+        "never_recalled": never_recalled,
+        "never_recalled_pct": round(never_recalled / n_active, 3),
+        "never_used_pct": round(never_used / n_active, 3),
+        "archive_hint": old_never,
+        "home": str(HOME),
+    }
+
+
+def list_memories(limit: int = 30, layer: str | None = None) -> list:
+    records = load_all()
+    if layer:
+        records = [m for m in records if m.get("layer") == layer]
+    records.sort(key=lambda m: _num(m.get("created"), 0), reverse=True)
+    return records[:limit]

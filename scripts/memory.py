@@ -799,6 +799,8 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
         # 先做廉价子串预筛（jaccard≥0.86 必共享 term，共享 term 必是旧文本子串，数学上不丢召回），
         # 上万条记忆时避免对每条都跑正则分词；archive 记录不参与合并（防归档记忆被悄悄复活）
         for m in records:
+            if tuple(str(m.get(k) or "") for k in ("channel", "group_id", "user")) != (str(channel or ""), str(group_id or ""), str(user or "")):
+                continue  # Do not merge memories from different owners/scopes.
             if m.get("layer") in ("dust", ARCHIVE_LAYER) or m.get("kind") != kind:
                 continue
             if new_terms and not any(t in _hay(m) for t in new_terms):
@@ -861,6 +863,8 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
             # 同源（同 project）才做取代/裁决比较；老数据没有 project 字段视为同源（default）。
             if str(rec.get("project", "default")) != str(old.get("project", "default")):
                 continue
+            if tuple(str(old.get(k) or "") for k in ("channel", "group_id", "user")) != tuple(str(rec.get(k) or "") for k in ("channel", "group_id", "user")):
+                continue  # Conflicts must stay inside their original scope.
             old_text = str(old.get("text", "")).strip()
             old_terms = terms(old_text)
             if not old_terms or old_text == text:
@@ -990,26 +994,23 @@ class PrivacyDenied(Exception):
 
 
 def _channel_visible(m: dict, channel, group_id, user) -> bool:
-    """通道上下文下的可见性过滤（群间隔离）。
+    """Strict bot visibility; unrestricted local queries remain local-only.
 
-    规则：
-      * 无 channel 字段的记忆 = 全局记忆，所有上下文可见（旧数据向后兼容）；
-      * 同群记忆（group_id 匹配）可见；
-      * 该用户自己的记忆（user 标识匹配）跨群可见——跨群用户画像；
-      * 其他群（group_id 非空且不匹配）的记忆物理不可见。
-    channel=None（本机 CLI/面板）时不做任何过滤，保持旧行为。
+    Group replies never include a user's memories from other groups/private
+    chats. Another user's same-group memories require current consent. Global
+    coding-agent/persona memories are never injected into bot conversations.
     """
     if channel is None and group_id is None and user is None:
         return True
-    m_group = m.get("group_id")
-    m_user = m.get("user")
-    if not m.get("channel") and not m_group and not m_user:
-        return True                     # 全局记忆（含全部旧数据）
-    if group_id and m_group and str(m_group) == str(group_id):
-        return True                     # 同群可见
-    if user and m_user and str(m_user) == str(user):
-        return True                     # 自己的记忆跨群可见
-    return False
+    if not channel or str(m.get("channel") or "") != str(channel):
+        return False
+    m_user, m_group = str(m.get("user") or ""), str(m.get("group_id") or "")
+    own = bool(user) and m_user == str(user)
+    if not group_id:
+        return own
+    if m_group != str(group_id):
+        return False
+    return own or not m_user or _consented(m_user)
 
 
 def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
@@ -1052,6 +1053,8 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     if include_archive:
         records += [m for m in load_archive() if m.get("id")
                     and _channel_visible(m, channel, group_id, user)]
+    if target_user:
+        records = [m for m in records if str(m.get("user") or "") == str(target_user)]
     if not records:
         return []
     now = now_ts()

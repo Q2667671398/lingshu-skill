@@ -1,0 +1,57 @@
+{
+  "lingshu_path": {
+    "description": "核心目录，留空使用随插件内置的 engine；Docker 填容器内路径",
+    "type": "string",
+    "default": ""
+  },
+  "data_home": {
+    "description": "记忆目录，留空存入 AstrBot 的 data/plugin_data；Docker 必须持久化 data",
+    "type": "string",
+    "default": ""
+  },
+  "python": {
+    "description": "Python 解释器路径，留空使用 AstrBot 当前解释器",
+    "type": "string",
+    "default": ""
+  },
+  "timeout": {
+    "description": "单次核心调用超时秒数（1–120）",
+    "type": "int",
+    "default": 15
+  },
+  "max_text": {
+    "description": "记忆或查询的最大字符数",
+    "type": "int",
+    "default": 4000
+  },
+  "reply_limit": {
+    "description": "回复截断字符数，按聊天平台限制调整",
+    "type": "int",
+    "default": 1800
+  },
+  "auto_recall": {
+    "description": "模型对话前自动召回；默认关闭，手动记忆不受影响",
+    "type": "bool",
+    "default": false
+  },
+  "recall_budget": {
+    "description": "每轮追加历史记忆的最大字符数（不是 token 数）",
+    "type": "int",
+    "default": 1400
+  },
+  "auto_capture": {
+    "description": "对话后自动写回用户消息到记忆库；默认关闭，开启前请确认隐私告知",
+    "type": "bool",
+    "default": false
+  },
+  "capture_min_chars": {
+    "description": "自动写回的最小消息长度（2–400），过短消息不写入",
+    "type": "int",
+    "default": 8
+  },
+  "capture_interval": {
+    "description": "同一用户自动写回的最小间隔秒数（10–86400），防止刷屏写入",
+    "type": "int",
+    "default": 300
+  }
+}
