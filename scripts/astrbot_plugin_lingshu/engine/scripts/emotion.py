@@ -14,6 +14,7 @@ import shutil
 import sys
 import threading
 import time
+import random
 import zipfile
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
@@ -216,23 +217,38 @@ def emotion_events(limit: int = 0) -> list:
     return rows[:limit] if limit else rows
 
 
-def emotion_modify(n: int, emotion: str = "", intensity: float | None = None,
+def _locate_event(rows: list, ref) -> dict | None:
+    """按 id 或序号定位事件（序号从最新往前数：1 = 最新一条）。
+
+    id 稳定不随并发追加漂移，是首选；序号仅作向后兼容（老事件无 id）。
+    """
+    if isinstance(ref, str) and ref.startswith("e") and len(ref) > 1:
+        for r in rows:
+            if r.get("id") == ref:
+                return r
+        return None
+    n = int(ref)
+    desc = sorted(rows, key=lambda r: _num(r.get("ts"), 0), reverse=True)
+    return desc[n - 1] if 1 <= n <= len(desc) else None
+
+
+def emotion_modify(ref, emotion: str = "", intensity: float | None = None,
                    why: str | None = None, about: str | None = None,
                    decay_hours: float | None = None) -> dict:
-    """微调一条历史情绪事件（序号从最新往前数：1 = 最新一条）。
+    """微调一条历史情绪事件（ref = 事件 id，如 e1730...；也兼容序号）。
 
     模型把情绪判错时，不用整条删掉重来：直接改强度/情绪名/原因，保留时间线。
-    锁内重读排序：序号定位与修改同一把锁内完成，并发 feel 追加不会错位改错条。
+    锁内重读排序：定位与修改同一把锁内完成，并发 feel 追加不会错位改错条。
     """
     if READONLY:
         raise PermissionError("记忆库当前只读，无法修改情绪事件。")
     path = HOME / "emotions.jsonl"
     with _locked(path):
         rows = read_jsonl(path)
-        desc = sorted(rows, key=lambda r: _num(r.get("ts"), 0), reverse=True)
-        if n < 1 or n > len(desc):
-            raise ValueError(f"序号越界：情绪事件共 {len(rows)} 条，调整写 1..{len(rows)}。")
-        ev = desc[n - 1]
+        ev = _locate_event(rows, ref)
+        if ev is None:
+            raise ValueError(f"找不到该情绪事件：{ref}（先 emotion events 查看事件 id）。")
+        n = int(ref) if not (isinstance(ref, str) and ref.startswith("e")) else -1
         changed = {}
         if emotion:
             if emotion not in EMOTIONS:
@@ -258,17 +274,16 @@ def emotion_modify(n: int, emotion: str = "", intensity: float | None = None,
     return {"index": n, "changed": changed, "event": ev}
 
 
-def emotion_delete(n: int) -> dict:
-    """删除一条历史情绪事件（序号从最新往前数）。"""
+def emotion_delete(ref) -> dict:
+    """删除一条历史情绪事件（ref = 事件 id，也兼容序号）。"""
     if READONLY:
         raise PermissionError("记忆库当前只读，无法删除情绪事件。")
     path = HOME / "emotions.jsonl"
     with _locked(path):
         rows = read_jsonl(path)
-        desc = sorted(rows, key=lambda r: _num(r.get("ts"), 0), reverse=True)
-        if n < 1 or n > len(desc):
-            raise ValueError(f"序号越界：情绪事件共 {len(rows)} 条，删除写 1..{len(rows)}。")
-        ev = desc[n - 1]
+        ev = _locate_event(rows, ref)
+        if ev is None:
+            raise ValueError(f"找不到该情绪事件：{ref}（先 emotion events 查看事件 id）。")
         rows = [r for r in rows if r is not ev]
         write_jsonl(path, rows)
     return {"deleted": ev, "remaining": len(rows)}
@@ -348,6 +363,7 @@ def feel(name: str, intensity: float = 0.6, why: str = "",
             habituation = repeats
 
     ev = {
+        "id": f"e{ts_now:.0f}{random.randint(100, 999)}",
         "ts": ts_now, "emotion": name, "valence": v, "arousal": a,
         "intensity": round(eff, 3),
         "why": _why, "about": _about,

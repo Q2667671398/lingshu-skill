@@ -428,14 +428,37 @@ def save_consent(data: dict) -> None:
     atomic_json(CONSENT_FILE, data)
 
 
-def consent_grant(user: str) -> dict:
-    """用户主动授权：允许 bot 对外分享关于自己的记忆（只能由本人调用）。"""
+def consent_grant(user: str, channel: str = "", group: str = "", expires_days: int = 0) -> dict:
+    """用户主动授权：允许 bot 对外分享关于自己的记忆（只能由本人调用）。
+
+    授权作用域：带 group 时仅授权该群可见；不带 group 记为 "*"（全域，本机默认）。
+    老格式记录（无 groups 字段）视为全域授权，向后兼容。
+    expires_days > 0 时记录过期时间（默认 0 = 永久），过期后 _consented 视为未授权。
+    """
     user = str(user or "").strip()
     if not user:
         raise ValueError("grant 需要用户标识，形如 qq:10001")
     with _locked(CONSENT_FILE):
         data = load_consent()
-        data[user] = {"granted": True, "ts": now_ts()}
+        rec = data.get(user)
+        if not isinstance(rec, dict):
+            rec = {}
+        rec["granted"] = True
+        rec["ts"] = now_ts()
+        try:
+            days = int(expires_days)
+        except (TypeError, ValueError):
+            days = 0
+        if days > 0:
+            rec["expires"] = rec["ts"] + days * 86400
+        else:
+            rec.pop("expires", None)
+        groups = rec.get("groups")
+        if not isinstance(groups, dict):
+            groups = {}
+        groups[str(group).strip() or "*"] = rec["ts"]
+        rec["groups"] = groups
+        data[user] = rec
         save_consent(data)
     return data[user]
 
@@ -451,12 +474,56 @@ def consent_revoke(user: str) -> dict | None:
     return rec
 
 
-def _consented(user) -> bool:
-    """user 是否已授权对外分享关于自己的记忆。"""
+def _consented(user, group: str | None = None) -> bool:
+    """user 是否已授权对外分享关于自己的记忆。
+
+    group 给出时按群作用域校验：记录带 groups 字段则要求当前群在列
+    或有 "*" 全域授权；无 groups 字段的老记录视为全域（向后兼容）。
+    """
     if not user:
         return False
     rec = load_consent().get(str(user).strip())
-    return bool(rec and rec.get("granted"))
+    if not (rec and rec.get("granted")):
+        return False
+    # 过期字段：带 expires 的授权到期后视为未授权（过期即失效，fail-closed）
+    try:
+        exp = float(rec.get("expires") or 0)
+    except (TypeError, ValueError):
+        exp = 0
+    if exp > 0 and now_ts() >= exp:
+        return False
+    groups = rec.get("groups")
+    if group is None or not isinstance(groups, dict) or not groups:
+        return True
+    return "*" in groups or str(group) in groups
+
+
+def consent_capture_set(user: str, on: bool) -> dict:
+    """自动写回授权（与分享授权分离）：on=True 允许宿主自动记录本人发言。
+
+    只改 capture 字段，不动分享授权；revoke（整条删除）会一并撤掉 capture。
+    """
+    user = str(user or "").strip()
+    if not user:
+        raise ValueError("capture 授权需要用户标识，形如 qq:10001")
+    with _locked(CONSENT_FILE):
+        data = load_consent()
+        rec = data.get(user)
+        if not isinstance(rec, dict):
+            rec = {"granted": False, "ts": now_ts()}
+        rec["capture"] = bool(on)
+        rec["capture_ts"] = now_ts()
+        data[user] = rec
+        save_consent(data)
+    return data[user]
+
+
+def consent_capture_allowed(user) -> bool:
+    """自动写回是否被本人显式允许（默认不允许：未表态 ≠ 同意被记录）。"""
+    if not user:
+        return False
+    rec = load_consent().get(str(user).strip())
+    return bool(rec and rec.get("capture"))
 
 
 def is_admin(user) -> bool:

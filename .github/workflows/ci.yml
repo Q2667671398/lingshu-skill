@@ -1,0 +1,41 @@
+# 灵枢 CI：发布一致性 + 隐私单测（零依赖，纯标准库，无需装包）
+# 触发：push 到 main / 任何 PR
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 版本硬检查：SKILL.md / package.json / 插件 metadata.yaml 次版本一致
+      - name: check_version
+        run: python scripts/check_version.py
+
+      # 根 manifest 覆盖面自检：磁盘文件 vs 清单双向比对
+      - name: manifest --check
+        run: python scripts/make_manifest.py --check
+
+      # 引擎副本同步检查：scripts/ vs engine/（CRLF 归一化）
+      - name: sync --check
+        run: python scripts/sync_engine.py --check
+
+      # 插件 checksum 自检
+      - name: checksums --check
+        run: python scripts/astrbot_plugin_lingshu/make_checksums.py --check
+
+      # 隐私作用域单测（consent 群作用域/过期/跨群隔离/隐私消息/source=user 取代）
+      - name: privacy tests
+        run: python tests/test_privacy_scope.py
+
+      # 语法全量编译检查
+      - name: py_compile
+        run: python -m compileall -q scripts tests

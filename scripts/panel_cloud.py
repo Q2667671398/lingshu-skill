@@ -24,12 +24,24 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 import brain
+
+
+def _resolve_token(value: str) -> str:
+    """token 支持 "env:变量名" 引用：不落盘明文，运行时从环境变量读取。
+
+    直接填的明文 token 仍兼容（不推荐；备份时会脱敏剥离，见 cli._sanitize_config_json）。
+    """
+    v = str(value or "").strip()
+    if v.lower().startswith("env:"):
+        return os.environ.get(v[4:].strip(), "").strip()
+    return v
 
 # 截图白名单扩展名与大小上限（≤2MB），zip 上限沿用 panels.ZIP_MAX_TOTAL
 SHOT_WHITELIST = {".png", ".jpg", ".jpeg", ".webp"}
@@ -45,9 +57,10 @@ DEFAULT_BRANCH = "main"
 
 # ---------------------------------------------------------------- 配置
 
-def _cfg() -> dict:
+def _cfg(resolve_tokens: bool = True) -> dict:
     """读云端配置：panel.cloud.{gitee_repo,gitee_token,github_repo,github_token,branch}
-    未配置时回退官方商店源（gitee_repo / branch；GitHub 同理）。"""
+    未配置时回退官方商店源（gitee_repo / branch；GitHub 同理）。
+    resolve_tokens=False 时保留 "env:VAR" 原样（set_config 回写用，防明文落盘）。"""
     try:
         c = brain.load_config().get("panel.cloud") or {}
     except Exception:
@@ -57,14 +70,20 @@ def _cfg() -> dict:
         c.setdefault("gitee_repo", DEFAULT_GITEE_REPO)
         c.setdefault("github_repo", DEFAULT_GITHUB_REPO)
         c.setdefault("branch", DEFAULT_BRANCH)
+    # token 环境变量引用在读取侧解析，落盘的可以是 "env:VAR" 而非明文
+    if resolve_tokens:
+        for _k in ("gitee_token", "github_token"):
+            if c.get(_k):
+                c[_k] = _resolve_token(c[_k])
     return c
 
 
 def set_config(gitee_repo: str = "", gitee_token: str = "",
                github_repo: str = "", github_token: str = "",
                branch: str = "") -> dict:
-    """保存云端配置（空串=清除该项）。token 属敏感信息：写 config.json 前校验格式。"""
-    c = _cfg()
+    """保存云端配置（空串=清除该项）。token 属敏感信息：写 config.json 前校验格式；
+    填 "env:变量名" 则不落盘明文，运行时从环境变量读取。"""
+    c = _cfg(resolve_tokens=False)
     if gitee_repo:
         if gitee_repo.count("/") != 1:
             raise ValueError("Gitee 仓库要填 owner/repo 形式，例如 yourname/lingshu-panels")
@@ -102,13 +121,16 @@ def status() -> dict:
     user_repo = bool(user_cloud.get("gitee_repo"))
 
     def mask(t: str) -> str:
+        t = str(t or "")
+        if t.lower().startswith("env:"):
+            return t          # 环境变量引用不含密文，原样展示便于辨认
         return (t[:4] + "****") if t else ""
 
     return {
         "gitee_repo": c.get("gitee_repo", ""),
-        "gitee_token_mask": mask(c.get("gitee_token", "")),
+        "gitee_token_mask": mask(user_cloud.get("gitee_token", "")),
         "github_repo": c.get("github_repo", ""),
-        "github_token_mask": mask(c.get("github_token", "")),
+        "github_token_mask": mask(user_cloud.get("github_token", "")),
         "branch": c.get("branch", "master"),
         "gitee_ready": user_repo,                # 用户显式配置了自己的 Gitee 仓库
         "browse_ready": bool(c.get("gitee_repo") or c.get("github_repo")),  # 能逛商店（含官方兜底源）
@@ -320,17 +342,20 @@ def cloud_download(name: str) -> dict:
 
 
 def _verify_sha256(name: str, raw: bytes) -> None:
-    """下载的 zip 与云端 index.json 清单里的 sha256 比对（防下载损坏/被篡改）。
+    """下载的 zip 必须与云端 index.json 清单里的 sha256 比对，否则拒绝安装。
 
-    清单没带 sha256 字段时跳过（向后兼容旧商店）；清单里没有该面板条目也跳过。
+    fail-closed：清单拉取失败、清单无此面板、条目缺 sha256，一律拒绝。
+    自建源也要提供带 sha256 的 index.json（见 docs/panel-api.md）。
     """
     try:
         items = cloud_list(force=False).get("panels", [])
-        entry = next((p for p in items if p.get("name") == name), None)
-    except Exception:  # noqa: BLE001 —— 清单拉不到就跳过校验，不拦安装
-        return
-    if not entry or not entry.get("sha256"):
-        return
+    except Exception as exc:  # noqa: BLE001 —— 统一转成拒绝安装的 ValueError
+        raise ValueError(f"面板 {name} 的云端校验清单获取失败（{exc}），已拒绝安装") from exc
+    entry = next((p for p in items if p.get("name") == name), None)
+    if not entry:
+        raise ValueError(f"面板 {name} 不在云端清单中，已拒绝安装")
+    if not entry.get("sha256"):
+        raise ValueError(f"面板 {name} 的清单条目缺少 sha256，已拒绝安装")
     if hashlib.sha256(raw).hexdigest().lower() != str(entry["sha256"]).lower():
         raise ValueError(f"面板 {name} 下载校验失败（sha256 不匹配），已拒绝安装")
 
@@ -361,9 +386,12 @@ def cloud_extension_download(ext_id: str) -> dict:
         total = sum(i.file_size for i in z.infolist())
         if total > panels.ZIP_MAX_TOTAL:
             raise ValueError("拓展包超过 50MB")
-        for n in names:  # 防 zip 路径逃逸（../ 绝对路径）
+        dst_real = dst.resolve()
+        for n in names:  # 防 zip 路径逃逸（../ 绝对路径 + 解析后必须仍在目标目录内）
             if n.startswith("/") or ".." in Path(n).parts:
                 raise ValueError("拓展包含非法路径")
+            if not (dst_real / n).resolve().is_relative_to(dst_real):
+                raise ValueError(f"拓展包路径逃逸：{n!r}")
         z.extractall(dst)
     brain.log_event("panel", f"云端下载拓展 {ext_id} → {dst}")
     return {"ok": True, "id": ext_id, "dir": str(dst)}

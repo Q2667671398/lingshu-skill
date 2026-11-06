@@ -40,7 +40,7 @@
     "default": 1400
   },
   "auto_capture": {
-    "description": "对话后自动写回用户消息到记忆库；默认关闭，开启前请确认隐私告知",
+    "description": "对话后自动写回用户消息到记忆库；默认关闭。开启后仅记录已显式 opt-in 的用户（用户发送「lingshu 允许记录」授权，「拒绝记录」撤回）；未授权用户的消息不落盘",
     "type": "bool",
     "default": false
   },

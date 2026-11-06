@@ -325,14 +325,24 @@ def _install_zip(zpath: Path) -> dict:
 
 
 def _extract_zip_safe(data: bytes, dest: Path) -> None:
-    """安全解压 zip：总量/文件数/路径三重防护（zip bomb 与路径逃逸）。"""
+    """安全解压 zip：总量/文件数/路径/扩展名四重防护（zip bomb 与路径逃逸）。"""
+    # 面板是纯静态资源，不允许 zip 内带可执行内容（防整目录移动后 .js/.exe 冒充面板）
+    allowed_ext = {".json", ".html", ".htm", ".css", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".txt", ".md"}
     total = 0
     count = 0
     with zipfile.ZipFile(io.BytesIO(data)) as z:
+        dest_real = dest.resolve()
         for info in z.infolist():
             nm = info.filename
             if nm.startswith("/") or ".." in Path(nm).parts or (len(nm) > 1 and nm[1] == ":"):
                 raise ValueError(f"zip 内含非法路径：{nm!r}")
+            # 白名单校验：解析后的绝对路径必须仍在目标目录内（双写绕过/链接条目兜底）
+            if not (dest_real / nm).resolve().is_relative_to(dest_real):
+                raise ValueError(f"zip 内路径逃逸：{nm!r}")
+            if not nm.endswith("/"):
+                ext = Path(nm).suffix.lower()
+                if ext not in allowed_ext:
+                    raise ValueError(f"zip 内含不允许的文件类型：{nm!r}（仅允许静态资源）")
             total += info.file_size
             if total > ZIP_MAX_TOTAL:
                 raise ValueError("zip 解压后超过 50MB 上限")

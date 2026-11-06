@@ -243,6 +243,8 @@ python scripts/brain.py assoc unlink m_3f2a... m_9c1d...
 
 **安全**：面板自带随机 token 鉴权（页面加载时注入，所有 API 请求必须携带），并校验 Host/Origin，挡住 DNS rebinding 与无来源直连偷读记忆。
 
+> **token 威胁模型声明（#60）**：面板 token 的防线目标是**远程攻击者**（跨机请求、恶意网页 DNS rebinding、无 Host/Origin 的直连）。它**不防本机进程**——token 随首页 HTML 下发，本机任意进程（恶意脚本、恶意面板）都能 `GET /` 提取后调全部记忆 API。这是本地面板架构的已知边界；如需更强的进程级隔离，请在受信环境运行面板，或用操作系统权限限制本机其他用户/进程对记忆目录的访问。
+
 ### 自定义面板与面板市场
 
 **自定义面板系统**——默认面板之外，可整套换皮而不动引擎：
@@ -293,15 +295,27 @@ python scripts/brain.py assoc unlink m_3f2a... m_9c1d...
 - **本机单人环境**下风险可接受：能登录这台机器的人本来就能直接改记忆库文件，`--user` 伪造没有额外收益；
 - **多用户共享机器或宿主暴露命令执行面**（如把 shell 交给群友、宿主插件有命令注入漏洞）时，`--user` 可被冒充，owner 门控形同虚设——此时请自行保证宿主不被越权调用（收紧宿主权限、不把 shell 暴露给不可信方），或在宿主侧加共享密钥/签名校验后再传给灵枢。
 
-## AstrBot 插件（v2.35）
+## AstrBot 插件（bridge v0.2.2）
 
-除 DSH / Trae 之外，灵枢还提供了一个 **AstrBot 插件**（`scripts/astrbot_plugin_lingshu/`），把灵枢接进 AstrBot 的 QQ/微信等群聊场景：
+除 DSH / Trae 之外，灵枢还提供了一个 **AstrBot 插件**（`scripts/astrbot_plugin_lingshu/`，详见[插件 README](scripts/astrbot_plugin_lingshu/README.md)），把灵枢接进 AstrBot 的 QQ/微信等群聊场景：
 
 - 以 **subprocess 进程隔离**方式调用 `brain.py`，灵枢崩溃不影响 AstrBot 主进程；
-- 自动携带**通道三元组**（群 id + 用户 id），群记忆隔离与隐私保护开箱即用；
-- 支持以 AstrBot 指令直接触发 `remember` / `recall` / `startup` 等命令。
+- 自动携带**通道三元组**（channel + 群 id + 用户 id），群记忆隔离与隐私保护开箱即用；
+- **人格只读**：桥接刻意不调用 init/startup，不注入人格；人格初始化请在**本机 CLI** 执行；
+- 支持以 AstrBot 指令直接触发 `remember` / `recall` / `同意` / `拒绝` 等命令；
+- 可选 `auto_recall`（召回注入）与 `auto_capture`（自动写回，**默认关闭**）。
+
+**安全默认值与开启风险**：
+
+| 配置项 | 默认 | 开启前须知 |
+|---|---|---|
+| `auto_recall` | 关 | 只读召回，按同群分享授权过滤，风险低 |
+| `auto_capture` | 关 | 会把群友聊天原话长期落盘；写回前检查用户 `consent`，敏感词拦截 + 节流；请先完成群内隐私告知 |
+| 隐私查询门控 | 恒开 | `recall --asker/--target`：未授权返回退出码 4，消息不回显目标标识 |
 
 安装：把 `scripts/astrbot_plugin_lingshu/` 整个目录放进 AstrBot 的插件目录，重载插件即可；配置里指定 Python 路径与灵枢技能目录（含 `scripts/brain.py`）。
+
+> **桥接同步提醒（#6）**：插件目录带自校验（`CHECKSUMS.json`，可用 `make_checksums.py --check` 验证），但它**不包含**在根 manifest 的 `apply_update` 自动更新范围内。技能本体升级后，桥接目录可能仍是旧版——请手动重新复制 `scripts/astrbot_plugin_lingshu/` 到 AstrBot 插件目录，或在 CI/发布流程中同步两边的版本号（`check_version.py` 会校验插件 `metadata.yaml` 与根 `package.json` 的次版本一致）。
 
 ## 可靠性设计
 

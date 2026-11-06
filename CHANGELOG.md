@@ -2,6 +2,37 @@
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
+> **版本体系说明（#79）**：本仓库有两条独立版本线——
+> ① **技能本体**：`SKILL.md` frontmatter + `package.json`（如 2.69，次版本对齐 X.Y）；
+> ② **AstrBot 桥接插件**：`scripts/astrbot_plugin_lingshu/metadata.yaml`（如 0.2.2）。
+> 两者**独立演进**：桥接修复只升桥接版本，本体修复只升本体版本，发版时各自标注。
+> `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
+> 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
+
+## v2.69 — 全量质量修复（79 项问题清单）
+
+- **记忆核心**：写锁内重读再写（防并发覆盖丢）；通道召回物理过滤
+  跨群/跨 channel；冲突裁决落地（source=user 立即取代，AI 冲突双标待审）；
+  `_channel_visible` 同群语义修正；detect-conflicts 限定同 (channel, user) 作用域。
+- **AstrBot 桥接（v0.2.2）**：召回注入结构化隔离块；敏感词表扩充（密钥/
+  身份证/住址等）；写回排队串行化 + 节流；初始化失败时禁用全部命令并提示；
+  Cordis 子插件临时文件 24h 清理、状态节流刷盘（stateSaver）、turn-stopping
+  以 state.turns 为唯一事实源；技能注册探测异常 logger.warn 兜底；根 index.js
+  挂载失败显式报错；插件 CHECKSUMS 校验脚本（make_checksums.py）；README
+  补 auto_capture 安全声明与双宿主写回去重说明。
+- **发布一致性**：check_version 增补 index.js/cordis.patch.yml/SKILL.md 代码
+  属性判定与 package.json 次版本映射校验；make_manifest 逐文件双向比对
+  （missing/extra）；新建 sync_engine.py（scripts/ ↔ engine/ 同步检查）与
+  make_plugin_zip.py；删除孤儿脚本；.gitignore 改为已知运行数据精确忽略；
+  新建 tests/test_privacy_scope.py（6 项隐私单测）与 .github/workflows/ci.yml。
+- **CLI/面板**：privacy grant 支持 `--expires-days`（到期 fail-closed）；
+  emotion 事件 id 化（adjust/del 支持 id 或序号）；面板 zip 提取扩展名白名单；
+  panel token 威胁模型在 README 声明（防远程、不防本机进程）。
+- **文档**：README AstrBot 章节更新至 v0.2.2 + 桥接同步提醒；docs/commands.md
+  补 channel/privacy/owner 命令、退出码表；docs/mechanics.md 补三元组与隐私裁决。
+- **误报澄清**：startup 宣称、panel token 明文、threading 混用等 7 项核实为
+  误报或已接受风险（详见问题清单标注）。
+
 ## v2.68 — AstrBot 适配层：钩子链路与安全修复
 
 - **对话前召回（scripts/astrbot_plugin_lingshu/main.py）**：检索 query 改为

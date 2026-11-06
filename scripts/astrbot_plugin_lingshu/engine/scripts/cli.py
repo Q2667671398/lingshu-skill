@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
+import io
 import json
 import math
 import os
@@ -75,7 +77,62 @@ def _sanitize_config_json(data: bytes) -> bytes:
         return b""  # 解析失败宁可跳过也不把可能含密的原文写进备份
 
 
-def cmd_backup(target: str | None = None, keep: int = 20) -> int:
+# ---------------------------------------------------------------- 备份加密（口令派生，纯 stdlib）
+# 方案：PBKDF2-HMAC-SHA256 派生加密/完整性双密钥；HMAC-SHA256 计数器密钥流 XOR 加密；
+# Encrypt-then-MAC，口令错误或被篡改在解压前即被拦下。格式：magic+salt+nonce+密文+tag。
+_VAULT_MAGIC = b"LSVAULT1"
+_VAULT_KDF_ROUNDS = 200_000
+
+
+def _vault_keys(password: str, salt: bytes) -> tuple:
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt,
+                              _VAULT_KDF_ROUNDS, dklen=64)
+    return key[:32], key[32:]
+
+
+def _vault_crypt(key_enc: bytes, nonce: bytes, data: bytes) -> bytes:
+    out = bytearray(len(data))
+    pos = counter = 0
+    while pos < len(data):
+        stream = hmac.new(key_enc, nonce + counter.to_bytes(8, "big"),
+                          hashlib.sha256).digest()
+        chunk = data[pos:pos + 32]
+        out[pos:pos + len(chunk)] = bytes(a ^ b for a, b in zip(chunk, stream))
+        pos += len(chunk)
+        counter += 1
+    return bytes(out)
+
+
+def _vault_encrypt(data: bytes, password: str) -> bytes:
+    salt, nonce = os.urandom(16), os.urandom(16)
+    key_enc, key_mac = _vault_keys(password, salt)
+    ct = _vault_crypt(key_enc, nonce, data)
+    header = _VAULT_MAGIC + salt + nonce
+    return header + ct + hmac.new(key_mac, header + ct, hashlib.sha256).digest()
+
+
+def _vault_decrypt(blob: bytes, password: str) -> bytes:
+    if not blob.startswith(_VAULT_MAGIC) or len(blob) < 8 + 32 + 32:
+        raise ValueError("不是灵枢加密备份（或文件已损坏）")
+    salt, nonce = blob[8:24], blob[24:40]
+    key_enc, key_mac = _vault_keys(password, salt)
+    expect = hmac.new(key_mac, blob[:-32], hashlib.sha256).digest()
+    if not hmac.compare_digest(expect, blob[-32:]):
+        raise ValueError("口令错误或备份已被篡改")
+    return _vault_crypt(key_enc, nonce, blob[40:-32])
+
+
+def _open_backup_zip(zp: Path, password: str | None):
+    """打开备份 zip：加密备份（magic 头或 .enc 后缀）先用口令解密到内存再开。"""
+    blob_head = zp.read_bytes()[:len(_VAULT_MAGIC)]
+    if blob_head == _VAULT_MAGIC or zp.name.endswith(".enc"):
+        if not password:
+            raise ValueError("这是加密备份，恢复需加 --password")
+        return zipfile.ZipFile(io.BytesIO(_vault_decrypt(zp.read_bytes(), password)))
+    return zipfile.ZipFile(zp)
+
+
+def cmd_backup(target: str | None = None, keep: int = 20, password: str | None = None) -> int:
     """把整个记忆库打成 zip。保留最近 keep 份，旧的自动修剪。"""
     if not HOME.exists():
         print(f"[错误] 记忆库还不存在：{HOME}（先运行 init）", file=sys.stderr)
@@ -124,10 +181,20 @@ def cmd_backup(target: str | None = None, keep: int = 20) -> int:
         return 2
     if skipped:
         print(f"跳过 {skipped} 个敏感文件（密钥/凭据不进备份）")
+    if password:
+        # 加密：zip 字节 → 口令派生密钥加密 → .zip.enc，明文 zip 不留盘
+        try:
+            enc_path = zip_path.with_name(zip_path.name + ".enc")
+            enc_path.write_bytes(_vault_encrypt(zip_path.read_bytes(), password))
+            zip_path.unlink()
+            zip_path = enc_path
+        except Exception as exc:
+            print(f"[错误] 备份加密失败：{exc}", file=sys.stderr)
+            return 2
     removed = 0
     if keep and keep > 0:
         # 按修改时间排序而不是文件名：跨日期时文件名字典序可能乱掉新旧关系
-        existing = sorted(out_dir.glob("brain-memory_*.zip"),
+        existing = sorted(out_dir.glob("brain-memory_*.zip*"),
                           key=lambda p: p.stat().st_mtime, reverse=True)
         for p in existing[keep:]:
             try:
@@ -136,7 +203,9 @@ def cmd_backup(target: str | None = None, keep: int = 20) -> int:
             except Exception:
                 pass
     size_mb = zip_path.stat().st_size / 1024 / 1024
-    print(f"已备份 {n} 个文件 → {zip_path}（{size_mb:.1f} MB）")
+    print(f"已备份 {n} 个文件 → {zip_path}（{size_mb:.1f} MB）{'（口令加密）' if password else ''}")
+    if not password:
+        print("[提示] 备份未加密，含全部记忆原文；加 --password 可生成加密备份。", file=sys.stderr)
     if removed:
         print(f"修剪旧备份 {removed} 个（保留最近 {keep} 个）")
     return 0
@@ -146,14 +215,22 @@ MAX_RESTORE_ENTRIES = 200
 MAX_RESTORE_BYTES = 512 * 1024 * 1024  # 512 MB，防 zip 炸弹
 
 
-def cmd_restore(zip_path: str, yes: bool = False) -> int:
-    """从备份恢复记忆库。恢复前自动给现状打一份备份。"""
+def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
+                exact: bool = False) -> int:
+    """从备份恢复记忆库。恢复前自动给现状打一份备份。
+
+    默认合并语义：只覆盖 zip 内同名文件，备份之后新增的文件保留。
+    exact=True 时先清空受管目录（backups/ 除外）再解包，真正回到备份时点。
+    """
     zp = Path(zip_path).expanduser()
     if not zp.exists():
         print(f"[错误] 找不到备份文件：{zp}", file=sys.stderr)
         return 2
     try:
-        zf = zipfile.ZipFile(zp)
+        zf = _open_backup_zip(zp, password)
+    except ValueError as exc:
+        print(f"[错误] {exc}", file=sys.stderr)
+        return 2
     except zipfile.BadZipFile:
         print("[错误] 不是有效的 zip 文件", file=sys.stderr)
         return 2
@@ -183,7 +260,9 @@ def cmd_restore(zip_path: str, yes: bool = False) -> int:
                 print("[错误] 非交互环境下恢复会覆盖现有数据，必须显式加 --yes 确认。", file=sys.stderr)
                 return 2
             try:
-                ans = input(f"恢复会把备份内容写回 {HOME}（备份之后新增的文件不会被删除）。继续？[y/N] ")
+                mode = "【--exact】先删除现有受管文件、再" if exact else ""
+                extra = "（备份之后新增的文件会被删除）" if exact else "（备份之后新增的文件不会被删除）"
+                ans = input(f"恢复会{mode}把备份内容写回 {HOME}{extra}。继续？[y/N] ")
                 if ans.strip().lower() not in ("y", "yes"):
                     print("已取消。")
                     return 0
@@ -192,11 +271,13 @@ def cmd_restore(zip_path: str, yes: bool = False) -> int:
     if HOME.exists():
         cmd_backup(target=str(HOME / "backups"), keep=10)  # 恢复前先留现状
     # 解压到临时目录，然后整包用 os.replace 原子替换——避免中途失败把目标文件写成半截。
-    # 整个恢复过程持锁，防止与正在跑的面板/CLI 并发互相踩写。
-    tmp_dir = HOME / f".restore-tmp-{int(now_ts())}"
+    # 目录名带随机后缀：同秒并发恢复不会互撞；替换时逐文件持锁，
+    # 防止与正在跑的面板/CLI 并发互相踩写（不再只锁 hippocampus/persona 两个文件）。
+    tmp_dir = HOME / f".restore-tmp-{int(now_ts())}-{os.urandom(4).hex()}"
     try:
-        with zipfile.ZipFile(zp) as zf:
+        with _open_backup_zip(zp, password) as zf:
             tmp_dir.mkdir(parents=True, exist_ok=False)
+            tmp_dir = tmp_dir.resolve()  # 8.3 短路径 HOME 下 resolve 会展开，逃逸判定两边必须同基准
             for info in zf.infolist():
                 if info.is_dir():
                     continue
@@ -209,15 +290,29 @@ def cmd_restore(zip_path: str, yes: bool = False) -> int:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-            # 解压完成，原子替换：每个目标文件 os.replace（已存在覆盖，不存在新建）
-            # 只覆盖 zip 里有的文件——备份之后新增的文件不会被删除
-            with _locked(HOME / "hippocampus.jsonl"), _locked(HOME / "persona.json"):
-                for extracted in tmp_dir.rglob("*"):
-                    if extracted.is_dir():
+            if exact:
+                # 先清空受管文件（保留 backups/ 与本次临时目录），再整包落回
+                for f in sorted(HOME.rglob("*"), reverse=True):
+                    if f.is_dir():
                         continue
-                    rel = extracted.relative_to(tmp_dir)
-                    final = (HOME / rel).resolve()
-                    final.parent.mkdir(parents=True, exist_ok=True)
+                    if "backups" in f.parts or f.resolve().is_relative_to(tmp_dir):
+                        continue
+                    if f.suffix == ".lock" or f.name == ".write-probe":
+                        continue
+                    with _locked(f):
+                        try:
+                            f.unlink()
+                        except OSError:
+                            pass
+            # 原子替换：每个目标文件 os.replace（已存在覆盖，不存在新建）
+            # 逐文件持锁：恢复期间面板/CLI 对同一文件的并发写入被挡在锁外
+            for extracted in tmp_dir.rglob("*"):
+                if extracted.is_dir():
+                    continue
+                rel = extracted.relative_to(tmp_dir)
+                final = (HOME / rel).resolve()
+                final.parent.mkdir(parents=True, exist_ok=True)
+                with _locked(final):
                     os.replace(str(extracted), str(final))
     except ValueError as exc:
         print(f"[错误] {exc}", file=sys.stderr)
@@ -232,7 +327,7 @@ def cmd_restore(zip_path: str, yes: bool = False) -> int:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
         except Exception:
             pass
-    print(f"已从 {zp.name} 恢复记忆库 → {HOME}")
+    print(f"已从 {zp.name} 恢复记忆库 → {HOME}{'（exact：已回到备份时点）' if exact else ''}")
     return 0
 
 
@@ -764,7 +859,8 @@ def daily(dry_run: bool = False, force: bool = False, feel_specs: list | None = 
             try:
                 auto_dream("daily")
                 dreamed = True
-            except Exception:
+            except Exception as exc:
+                print(f"[警告] 每日做梦中止：{exc}", file=sys.stderr)
                 dreamed = False
 
     if not dry_run:
@@ -887,7 +983,8 @@ def _main(argv=None) -> int:
     p_rem.add_argument("--emotion", default="", help="同时记下此刻的情绪（杏仁核标记，情绪强的记得更牢）")
     p_rem.add_argument("--tags", default="")
     p_rem.add_argument("--entities", default="")
-    p_rem.add_argument("--source", default="ai", choices=["ai", "user", "dream"])
+    p_rem.add_argument("--source", default="user", choices=["ai", "user", "dream"],
+                       help="来源标记：本机亲手记录默认 user；AI 提炼/做梦请显式传 ai/dream")
     p_rem.add_argument("--layer", default="hippo", choices=["hippo", "cortex"])
 
     p_rec = sub.add_parser("recall", help="模糊回忆")
@@ -1006,8 +1103,8 @@ def _main(argv=None) -> int:
 
     p_rev = sub.add_parser("review", help="审核 AI 整理出来的记忆 / 知识 / 人格变更（防幻觉沉淀成事实）")
     p_rev.add_argument("action", nargs="?", default="list",
-                       choices=["list", "confirm", "discard"])
-    p_rev.add_argument("id", nargs="?", default="", help="confirm/discard：那条的 id（m_ 开头的记忆 / k_ 开头的知识）")
+                       choices=["list", "confirm", "discard", "approve", "deny"])
+    p_rev.add_argument("id", nargs="?", default="", help="confirm/discard/approve/deny：那条的 id（m_ 开头的记忆 / k_ 开头的知识）")
     p_rev.add_argument("--json", action="store_true")
 
     p_audit = sub.add_parser("audit", help="整体自查：待审核项 + 冲突记忆 + 该做什么")
@@ -1070,6 +1167,7 @@ def _main(argv=None) -> int:
     p_bak = sub.add_parser("backup", help="打包备份整个记忆库")
     p_bak.add_argument("--out", default=None, help="目标目录或 zip 路径（默认 D:/brain-memory-backups 或桌面）")
     p_bak.add_argument("--keep", type=int, default=20, help="保留最近 N 份，删除更旧的（0=不修剪）")
+    p_bak.add_argument("--password", default=None, help="备份口令：给出则生成加密备份（.zip.enc），恢复时需同一口令")
 
     p_arch = sub.add_parser("archive", help="冷热归档：把沉眠记忆雪藏出热查询集（原文保留，可随时回捞）")
     p_arch.add_argument("action", nargs="?", default="show",
@@ -1103,8 +1201,11 @@ def _main(argv=None) -> int:
     mem_sub.add_parser("diagnose", help="数据自诊断：死链、冲突未裁决、数据膨胀、来源归属完整率、折叠状态")
 
     p_res = sub.add_parser("restore", help="从备份恢复记忆库（恢复前自动留现状备份）")
-    p_res.add_argument("archive", help="备份 zip 路径")
+    p_res.add_argument("archive", help="备份 zip 路径（加密备份为 .zip.enc）")
     p_res.add_argument("--yes", action="store_true", help="跳过确认")
+    p_res.add_argument("--password", default=None, help="加密备份的口令")
+    p_res.add_argument("--exact", action="store_true",
+                       help="严格回到备份时点：先删除现有受管文件再解包（默认只覆盖同名文件）")
 
     p_st = sub.add_parser("startup", help="会话开始钩子：注入记忆。返回码 0=正常 10=只读降级 2=未初始化")
     p_st.add_argument("--query", default="", help="本次会话主题关键词")
@@ -1128,7 +1229,8 @@ def _main(argv=None) -> int:
     p_ch_remember.add_argument("--kind", default="fact", choices=KINDS)
     p_ch_remember.add_argument("--importance", type=float, default=None, help="0-1 或 0-10")
     p_ch_remember.add_argument("--tags", default="")
-    p_ch_remember.add_argument("--source", default="ai", choices=["ai", "user", "dream"])
+    p_ch_remember.add_argument("--source", default="user", choices=["ai", "user", "dream"],
+                               help="来源标记：通道里用户亲口内容传 user；AI 提炼传 ai")
     p_ch_remember.add_argument("--layer", default="hippo", choices=["hippo", "cortex"])
 
     p_ch_recall = ch_sub.add_parser("recall", help="按群隔离规则召回：同群 + 全局 + 该用户自己的记忆")
@@ -1154,10 +1256,13 @@ def _main(argv=None) -> int:
 
     # 群友隐私保护：授权操作的是「调用者自己」的授权，不能替别人 grant/revoke。
     # 通道上下文里调用时 --user 即调用者本人身份；纯本机可查 status。
-    p_ch_priv = ch_sub.add_parser("privacy", help="群友隐私：grant / revoke / status（只能操作自己的授权）")
-    p_ch_priv.add_argument("action", choices=["grant", "revoke", "status"])
+    p_ch_priv = ch_sub.add_parser("privacy", help="群友隐私：grant / revoke / capture-on / capture-off / status（只能操作自己的授权）")
+    p_ch_priv.add_argument("action", choices=["grant", "revoke", "status", "capture-on", "capture-off"])
     p_ch_priv.add_argument("--user", default="", help='调用者身份，形如 "qq:10001"（来自聊天平台时由宿主填）')
     p_ch_priv.add_argument("--channel", default="", help=argparse.SUPPRESS)
+    p_ch_priv.add_argument("--group", default="", help=argparse.SUPPRESS)  # grant 作用域：在群内授权则只对该群可见
+    p_ch_priv.add_argument("--expires-days", type=int, default=0,
+                           help="grant 授权有效期（天），0 或不填为永久；到期自动视为未授权")
 
     p_ch_owner = ch_sub.add_parser("owner", help="主人白名单：add / remove / list")
     p_ch_owner.add_argument("action", choices=["add", "remove", "list"])
@@ -1187,6 +1292,21 @@ def _main(argv=None) -> int:
     if args.cmd in ("forget", "dream", "backup", "restore", "sync"):
         if not _require_privileged(getattr(args, "user", "") or "",
                                    getattr(args, "channel", "") or "", args.cmd):
+            return 3
+
+    # channel owner add/remove：owner 管理是 owner 专属（admin 也不行，防通道内自封 owner）。
+    # 通道上下文（--caller / --caller-channel 任一给出）必须显式携带合法 owner 身份；
+    # 纯本机（两者皆空）按本机信任边界放行，与 _require_privileged 的无 --user 口径一致。
+    if (args.cmd == "channel" and getattr(args, "channel_cmd", None) == "owner"
+            and getattr(args, "action", "") in ("add", "remove")):
+        _ou = (getattr(args, "caller", "") or "").strip()
+        _oc = (getattr(args, "caller_channel", "") or "").strip()
+        if _oc and not _ou:
+            print("[拒绝] 通道上下文执行 owner 管理必须显式携带 --caller 身份。", file=sys.stderr)
+            return 3
+        if _ou and not is_owner(_ou):
+            print(f"[拒绝] owner 管理仅限本机或已有 owner 执行"
+                  f"（当前身份 {(_oc + ':') if _oc else ''}{_ou} 不是 owner）。", file=sys.stderr)
             return 3
 
     # ---- 只读降级：需要写盘的命令挡下来，读命令放行 ----
@@ -1221,7 +1341,7 @@ def _main(argv=None) -> int:
             or (args.cmd == "channel" and getattr(args, "channel_cmd", None) == "owner"
                 and getattr(args, "action", "") in ("add", "remove"))
             or (args.cmd == "channel" and getattr(args, "channel_cmd", None) == "privacy"
-                and getattr(args, "action", "") in ("grant", "revoke"))
+                and getattr(args, "action", "") in ("grant", "revoke", "capture-on", "capture-off"))
             or (args.cmd == "memory" and getattr(args, "mem_cmd", None) == "dust")
             or (args.cmd == "relink")                                  # 建链写盘，全量都算写
             or (args.cmd == "drift")                                   # 漂移走 persona.json 写盘
@@ -1359,7 +1479,11 @@ def _main(argv=None) -> int:
 
     if args.cmd == "dream":
         if args.auto:
-            res = auto_dream(args.trigger, args.dry_run)
+            try:
+                res = auto_dream(args.trigger, args.dry_run)
+            except RuntimeError as exc:
+                print(f"[中止] {exc}", file=sys.stderr)
+                return 2
             if res.get("applied"):
                 print(f"自动做梦完成：新增长期记忆 {res['memories']} 条，遗忘 {res['forgotten']} 条，"
                       f"{res.get('clusters', 0)} 组碎片已合并。")
@@ -1392,7 +1516,11 @@ def _main(argv=None) -> int:
             if applied["rejected"]:
                 print(f"被拒绝的人格修改：{'、'.join(applied['rejected'])}")
             return 0
-        report = dream(args.trigger, args.dry_run)
+        try:
+            report = dream(args.trigger, args.dry_run)
+        except RuntimeError as exc:
+            print(f"[中止] {exc}", file=sys.stderr)
+            return 2
         print(f"做梦完成（{args.trigger}）")
         print(f"  重放 {sum(len(c['texts']) for c in report['clusters'])} 条 / {len(report['clusters'])} 组")
         print(f"  巩固 {len(report['promoted'])} 条，遗忘 {len(report['forgotten'])} 条，模糊化 {report['faded']} 条")
@@ -1767,30 +1895,33 @@ def _main(argv=None) -> int:
             if not rows:
                 print("还没有情绪事件。")
                 return 0
-            print(f"情绪事件流（最新在前，共 {len(rows)} 条；序号用于 adjust / del）：")
+            print(f"情绪事件流（最新在前，共 {len(rows)} 条；id 用于 adjust / del，防并发错位）：")
             for i, ev in enumerate(rows[:30], 1):
                 why = f"，因为{ev['why']}" if ev.get("why") else ""
                 about = f"（关于{ev['about']}）" if ev.get("about") else ""
                 mark = " ·已微调" if ev.get("adjusted") else (" ·已冷却" if ev.get("cooled_at") else "")
+                eid = f" [id={ev['id']}]" if ev.get("id") else ""
                 print(f"  {i}. {fmt_time(ev.get('ts', 0))}  {ev.get('emotion')}"
-                      f"（强度 {float(ev.get('intensity', 0)):.0%}）{why}{about}{mark}")
-            print("\n判错了不用整条删：emotion adjust <序号> --intensity 0.3 --emotion-name 委屈 --why \"其实还好\"")
+                      f"（强度 {float(ev.get('intensity', 0)):.0%}）{why}{about}{mark}{eid}")
+            print("\n判错了不用整条删：emotion adjust e1730… --intensity 0.3 --emotion-name 委屈 --why \"其实还好\"（id 稳定，推荐；序号仍兼容）")
             return 0
         if args.action == "adjust":
             if not args.emotion:
-                print("用法：emotion adjust <序号> [--intensity 0.3] [--emotion-name 委屈] [--why \"其实还好\"]", file=sys.stderr)
+                print("用法：emotion adjust <事件id或序号> [--intensity 0.3] [--emotion-name 委屈] [--why \"其实还好\"]", file=sys.stderr)
                 return 2
-            try:
-                n = int(args.emotion.strip())
-            except ValueError:
-                print("序号得是数字：emotion adjust <序号>（先 emotion events 看序号）", file=sys.stderr)
-                return 2
+            ref = args.emotion.strip()
+            if not (ref.startswith("e") and len(ref) > 1):
+                try:
+                    ref = int(ref)
+                except ValueError:
+                    print("事件定位得是 id（e 开头）或序号（数字）：emotion adjust <id|序号>", file=sys.stderr)
+                    return 2
             if (args.intensity is None and not args.emotion_name and not args.why
                     and not args.about and args.decay_hours is None):
                 print("至少要改一项：--intensity / --emotion-name / --why / --about / --decay-hours", file=sys.stderr)
                 return 2
             try:
-                r = emotion_modify(n, emotion=args.emotion_name,
+                r = emotion_modify(ref, emotion=args.emotion_name,
                                    intensity=args.intensity,
                                    why=args.why or None, about=args.about or None,
                                    decay_hours=args.decay_hours)
@@ -1798,25 +1929,29 @@ def _main(argv=None) -> int:
                 print(str(exc), file=sys.stderr)
                 return 2
             ev = r["event"]
-            print(f"已微调第 {n} 条：{ev.get('emotion')}（强度 {float(ev.get('intensity', 0)):.0%}）")
+            label = ev.get("id") or f"第 {ref} 条"
+            print(f"已微调 {label}：{ev.get('emotion')}（强度 {float(ev.get('intensity', 0)):.0%}）")
             if r["changed"]:
                 print("  改了：" + "、".join(r["changed"].keys()))
             return 0
         if args.action == "del":
             if not args.emotion:
-                print("用法：emotion del <序号>（先 emotion events 看序号）", file=sys.stderr)
+                print("用法：emotion del <事件id或序号>（先 emotion events 看事件 id）", file=sys.stderr)
                 return 2
+            ref = args.emotion.strip()
+            if not (ref.startswith("e") and len(ref) > 1):
+                try:
+                    ref = int(ref)
+                except ValueError:
+                    print("事件定位得是 id（e 开头）或序号（数字）：emotion del <id|序号>", file=sys.stderr)
+                    return 2
             try:
-                n = int(args.emotion.strip())
-            except ValueError:
-                print("序号得是数字：emotion del <序号>", file=sys.stderr)
-                return 2
-            try:
-                r = emotion_delete(n)
+                r = emotion_delete(ref)
             except (ValueError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
-            print(f"已删除第 {n} 条：{r['deleted'].get('emotion')}；还剩 {r['remaining']} 条。")
+            label = r["deleted"].get("id") or "该条"
+            print(f"已删除 {label}：{r['deleted'].get('emotion')}；还剩 {r['remaining']} 条。")
             return 0
         if args.action == "cool":
             try:
@@ -2093,6 +2228,11 @@ def _main(argv=None) -> int:
         return 0
 
     if args.cmd == "review":
+        # 别名兼容：approve = confirm；deny = discard
+        if args.action in ("approve", "confirm"):
+            args.action = "confirm"
+        elif args.action in ("deny", "discard"):
+            args.action = "discard"
         if args.action in ("confirm", "discard"):
             if not args.id:
                 print("用法：review confirm <id> / review discard <id>（先 review 看清单）", file=sys.stderr)
@@ -2103,13 +2243,19 @@ def _main(argv=None) -> int:
                 status = "confirmed" if args.action == "confirm" else "discarded"
                 r = growth.set_knowledge_status(target, status)
                 if not r:
-                    print(f"没有这条知识：{target}", file=sys.stderr)
+                    print(f"[未命中] 没有这条知识：{target}", file=sys.stderr)
                     return 1
                 print(f"知识「{r.get('title', target)}」已{'确认' if args.action == 'confirm' else '废弃'}。")
                 return 0
             try:
                 r = set_memory_review(target, args.action)
-            except (ValueError, PermissionError) as exc:
+            except ValueError as exc:
+                if "没有这条记忆" in str(exc):
+                    print(f"[未命中] {exc}", file=sys.stderr)
+                    return 1
+                print(str(exc), file=sys.stderr)
+                return 2
+            except PermissionError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
             print(f"记忆已{'确认' if args.action == 'confirm' else '废弃'}："
@@ -2311,29 +2457,53 @@ def _main(argv=None) -> int:
             # 只能操作「调用者自己」的授权。带 --user 即以该身份操作（宿主从消息事件
             # 提取 sender 填进来）；纯本机查 status 可以不带（本机默认信任）。
             u = (args.user or "").strip()
-            if args.action in ("grant", "revoke") and not u:
+            if args.action in ("grant", "revoke", "capture-on", "capture-off") and not u:
                 print(f"用法：channel privacy {args.action} --user <user>。"
-                      "授权只能由本人执行，不能替别人 grant/revoke。", file=sys.stderr)
+                      "授权只能由本人执行，不能替别人操作。", file=sys.stderr)
                 return 64
             if args.action == "grant":
-                rec = consent_grant(u)
-                print(f"已授权对外分享关于 {u} 的记忆（ts={rec['ts']}）。")
-                print("第三人现在可以查询关于你的记忆；用 `channel privacy revoke` 可随时撤回。")
+                g = (getattr(args, "group", "") or "").strip()
+                rec = consent_grant(u, getattr(args, "channel", "") or "", g,
+                                    getattr(args, "expires_days", 0) or 0)
+                scope = f"仅群 {g}" if g else "全部群/私聊（全域）"
+                exp = rec.get("expires")
+                when = f"，有效期至 ts={exp}" if exp else "，永久有效"
+                print(f"已授权对外分享关于 {u} 的记忆（范围：{scope}{when}，ts={rec['ts']}）。")
+                print("第三人现在可以在授权范围内查询关于你的记忆；用 `channel privacy revoke` 可随时撤回。")
                 return 0
             if args.action == "revoke":
                 rec = consent_revoke(u)
                 if rec is None:
                     print(f"{u} 本来就没有授权记录。")
                 else:
-                    print(f"已撤回 {u} 的授权：第三人再查关于你的记忆会被拒绝。")
+                    print(f"已撤回 {u} 的授权（分享与自动写回一并撤回）：第三人再查关于你的记忆会被拒绝。")
+                return 0
+            if args.action in ("capture-on", "capture-off"):
+                on = args.action == "capture-on"
+                consent_capture_set(u, on)
+                if on:
+                    print(f"已允许宿主自动记录 {u} 的发言（聊天原话将写入长期记忆，随时可用 capture-off 关闭）。")
+                else:
+                    print(f"已禁止自动记录 {u} 的发言：已开启的自动写回不再写入你的消息。")
                 return 0
             # status：带 --user 查自己的；纯本机不带 --user 则列出整张授权表
             if u:
-                print(f"{u} 的授权状态：{'已授权' if _consented(u) else '未授权'}")
+                rec = load_consent().get(u) or {}
+                groups = rec.get("groups")
+                if rec.get("granted"):
+                    scope = ("、".join(sorted(str(k) for k in groups))
+                             if isinstance(groups, dict) and groups else "全域")
+                    share = f"已授权（范围：{scope}）"
+                else:
+                    share = "未授权"
+                capture = "允许" if rec.get("capture") else "未允许（默认不记录）"
+                print(f"{u}：分享授权={share}；自动写回={capture}")
             else:
                 data = load_consent()
                 granted = [k for k, v in data.items() if v.get("granted")]
+                capturing = [k for k, v in data.items() if v.get("capture")]
                 print(f"已授权对外分享记忆的用户：{'、'.join(granted) if granted else '（无）'}")
+                print(f"已允许自动写回的用户：{'、'.join(capturing) if capturing else '（无）'}")
             return 0
 
         if args.channel_cmd == "owner":
@@ -2387,7 +2557,7 @@ def _main(argv=None) -> int:
         return cmd_home(args.action, args.dest)
 
     if args.cmd == "backup":
-        return cmd_backup(args.out, args.keep)
+        return cmd_backup(args.out, args.keep, password=getattr(args, "password", None))
 
     if args.cmd == "archive":
         return cmd_archive(args.action, args.arg, args.limit, args.dry_run)
@@ -2456,7 +2626,9 @@ def _main(argv=None) -> int:
         return 64
 
     if args.cmd == "restore":
-        return cmd_restore(args.archive, args.yes)
+        return cmd_restore(args.archive, args.yes,
+                           password=getattr(args, "password", None),
+                           exact=getattr(args, "exact", False))
 
     if args.cmd == "startup":
         return cmd_startup(args.query, args.budget)

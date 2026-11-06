@@ -142,18 +142,26 @@ def check(root: Path = ROOT) -> int:
         print(f"[manifest] manifest.json 与工作区不一致（如 {drift}）。"
               "重新运行 python scripts/make_manifest.py。", file=sys.stderr)
         return 1
-    # 覆盖面自检：发布目录里只要还有该发布的文件，就必须有人进清单。
-    # 只比对「清单 vs 工作区」发现不了整个目录漏扫（如 cordis-plugin）——那种情况下
-    # 两边都没有该目录的文件，校验照样通过，但插件永远装不到用户机器。
+    # 覆盖面自检（#73：逐文件比对）：发布目录里每个"应发布"的磁盘文件都必须在
+    # 清单里；反向清单里也不该有磁盘上不存在的 key。整目录漏扫（如 cordis-plugin
+    # 没进 SCAN_DIRS）会让该目录全部文件报"漏"，部分漏（10 进 1）也能检出。
     for d in SCAN_DIRS:
         base = root / d
         if not base.is_dir():
             continue
-        inside = [f for f in base.rglob("*") if f.is_file()
-                  and not _excluded(f.relative_to(root).as_posix(), f.name)]
-        if inside and not any(k.startswith(d + "/") for k in cur["files"]):
-            print(f"[manifest] 拒绝：{d}/ 存在但没有文件进清单，检查 SCAN_DIRS 与排除规则",
-                  file=sys.stderr)
+        disk = {f.relative_to(root).as_posix()
+                for f in base.rglob("*") if f.is_file()
+                and not _excluded(f.relative_to(root).as_posix(), f.name)}
+        keys = {k for k in cur["files"] if k.startswith(d + "/")}
+        missing = sorted(disk - keys)
+        extra = sorted(keys - disk)
+        if missing or extra:
+            if missing:
+                print(f"[manifest] 拒绝：{d}/ 下 {len(missing)} 个磁盘文件不在清单（如 {missing[:3]}），"
+                      "检查 SCAN_DIRS 与排除规则", file=sys.stderr)
+            if extra:
+                print(f"[manifest] 拒绝：{d}/ 清单里有 {len(extra)} 个磁盘上不存在的文件（如 {extra[:3]}）",
+                      file=sys.stderr)
             return 1
     print(f"[manifest] OK：v{cur['version']}，{len(cur['files'])} 个文件哈希全部一致")
     return 0

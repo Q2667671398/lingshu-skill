@@ -1,13 +1,13 @@
 {
-  "version": "2.68",
+  "version": "2.69",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "c5c2d34e6d5aacf2b616ec62ec153732370b7d98fc9879f8e7cbc462a274edd2",
-      "size": 116711
+      "sha256": "51dd232c335cd387e35ab8759ead1c797704427e054e0ddfe5071bca50360681",
+      "size": 119283
     },
     "README.md": {
-      "sha256": "0da232683c0e8c8f04ec5bbb06a4d7c82c45c926427efd2b15362fc5ceb52cc8",
-      "size": 50813
+      "sha256": "cafe6290411ba344340056d551db6cc7f5c79aa6251ddfa5c0cb348fea3faf2a",
+      "size": 52601
     },
     "SKILL-lite.md": {
       "sha256": "055fa7bc54f273e5fa16517c38b2a7d25f0726ece43428b68fbf60d276f197a3",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "e04f671b3e745594727525402a9354f9fa4b627aadffffb9a08e5df84a942ad4",
+      "sha256": "292a9c1c12a698cd6c613e192496e46926fbeaa077de5edc0ae876d63b39edf8",
       "size": 20139
     },
     "assets/panel.html": {
@@ -38,8 +38,8 @@
       "size": 1742
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "f38fbbfd8f75c6e8995e06d17474eb3815104bc47850b7c74cf50f004e616218",
-      "size": 20436
+      "sha256": "e7345637f8f653bd296277f0163e4f4adbe0c3e490eb4174401c31ba990bf229",
+      "size": 22596
     },
     "cordis-plugin/lingshu-startup/README.md": {
       "sha256": "e62016afb05dd910cd1b99fd547b1b5eead2afea43e0b90b96df2d2782c0b386",
@@ -58,20 +58,20 @@
       "size": 1391
     },
     "cordis-plugin/lingshu-startup/plugin.js": {
-      "sha256": "4a8bf860b212b0f0364dc6d70ec9cc867cb5dda7552c45da8609a92272456ed5",
-      "size": 12450
+      "sha256": "fb8d22ef885e9321dcee7672f872831a27e3d6d7c21ea843a7066688b7681b5a",
+      "size": 12700
     },
     "cordis.patch.yml": {
       "sha256": "f0c18e561c15f2afa40e77ed71ca08a220b11487ccf8975da47b684c6055eead",
       "size": 54
     },
     "docs/commands.md": {
-      "sha256": "8d22d670435dd2e61161e4540dfeee10aec25c68f374c3c95658d34cf143426b",
-      "size": 10853
+      "sha256": "416d2b81623bd4eb8053669f39d9f3a5193bc69b2f79d43d8a576dff0e3fd2a3",
+      "size": 12988
     },
     "docs/mechanics.md": {
-      "sha256": "a19fe323f3d81d1753dbdac2a760df3dd74c105277e23819dc8e119ad96bc1af",
-      "size": 34109
+      "sha256": "230f42e9845de918f67360e829db01972604a2c829cf21a5064fb89c1a058773",
+      "size": 35807
     },
     "docs/models.md": {
       "sha256": "53dfd5d375e9574830cb08e23fc8bfdd68f1de3ef7fd5ee84274be3a045c632e",
@@ -82,11 +82,11 @@
       "size": 10172
     },
     "index.js": {
-      "sha256": "a9e14bdb57a18107451b67ad76803cebc98b894022ae8b78bdf7880ab95134cc",
-      "size": 2915
+      "sha256": "e0dd9b3a8b10907c7359751966a4fd7c92b438caec445f64205361cc2496a8ce",
+      "size": 3482
     },
     "package.json": {
-      "sha256": "acab9ac15671d0a17576e268e9deebecf8a5f1a2e250b9f352725a7175fa0220",
+      "sha256": "d4a5609388e20fec95275c158ef8beacc26add6e2063715f7cfc415a8a08cbd9",
       "size": 663
     },
     "scripts/brain.py": {
@@ -94,24 +94,24 @@
       "size": 1649
     },
     "scripts/check_version.py": {
-      "sha256": "42c3bc37cf8e04f768527f5fbfa6b1f6b0e2324637e68b8bdda51a7a507cb26b",
-      "size": 7230
+      "sha256": "ba1664a60166b81b6783744668331c833d87e1358e1d88b610b3d06008766ab6",
+      "size": 8337
     },
     "scripts/cli.py": {
-      "sha256": "aaf014e29ff6a7021e0863c73d085024656d172e681c06c28c62bb7b9d5a2a14",
-      "size": 134547
+      "sha256": "ef14f4cf76440eba2403135abf2805a378c60774a24d2db5474e1771ab011dca",
+      "size": 144446
     },
     "scripts/core.py": {
-      "sha256": "accf292f3c83e32b553f9690f9083f9aed81a242a7b30b4805ecf5766da25af9",
-      "size": 46800
+      "sha256": "72a85149ddeb5e1586a7e4ccb259c4464e61698cbcac1a457a35b02dcacce932",
+      "size": 49378
     },
     "scripts/dream.py": {
-      "sha256": "266d989036e0ff4d1cb03fd671418695958a69f4849bd78370cea9e8dabf6976",
-      "size": 21914
+      "sha256": "b67c996e9ef632131a88de9fb097080af3e2e929f0f66eccc24f519b35d3cdbb",
+      "size": 22389
     },
     "scripts/emotion.py": {
-      "sha256": "9996aede878ae1a3c6cfc3abe03d24019f03a000f8b7c90ed3365828956f67b8",
-      "size": 41231
+      "sha256": "70f7d2b511da3f82e89b1cf285c217ef3786def0a6eac4d669988447c9358c51",
+      "size": 41803
     },
     "scripts/growth.py": {
       "sha256": "fea2deef3d4fbc4404c28b6b56f71d32ff791921905a8349904d69e93e4d5966",
@@ -122,28 +122,36 @@
       "size": 743
     },
     "scripts/make_manifest.py": {
-      "sha256": "d88d9051af07b7f6c18e571eab4159de3b9dfb145923e08c1053237da028da61",
-      "size": 7704
+      "sha256": "f7ee18964b5ad22f64985a9a59bccf0b8b4c63a475950c378f7747d3a1a27dc0",
+      "size": 8106
+    },
+    "scripts/make_plugin_zip.py": {
+      "sha256": "f6752d29179dd0a371d56b01656e02b1d5c956fff7f7b4d64b23eaa8006441a3",
+      "size": 1972
     },
     "scripts/memory.py": {
-      "sha256": "5731e0c2392757bb2a28a468172a362791f0c9964aec06eda0d9b79b96e597d9",
-      "size": 113237
+      "sha256": "618c430cf8d45939ad3c4241a1a91e997fdf4c9a0988240de517b2b4fc8f63b4",
+      "size": 115364
     },
     "scripts/panel_cloud.py": {
-      "sha256": "23f35a190c3b96d5a2d7320dce41f4a2911407e61811c45a223629a559d538f7",
-      "size": 25845
+      "sha256": "c17ea2cb6e59c5f55b72be34d4ce19000c660d9d6dc04cb5e0dc05a37a61bac5",
+      "size": 27424
     },
     "scripts/panel_server.py": {
       "sha256": "a2fc5ffe8afb48b03d123f05954f268f2218967108b00cc866253aeb251e234b",
       "size": 81730
     },
     "scripts/panels.py": {
-      "sha256": "36e048f9aa4825cf6da26a70a7df60b067d3865609601189a16c4dccc07e14bc",
-      "size": 25806
+      "sha256": "87dfce47693340af7c9bc6010a593256331e32c2e8504a0ac0745cf2ef992fd6",
+      "size": 26593
     },
     "scripts/persona.py": {
-      "sha256": "3a3498e027ddf3aa14462a5fee0b374886f751e729577e1f7c5c55cb346c53c7",
-      "size": 57086
+      "sha256": "29796dacd41e7c1d32de878cc8de7e2c9951e1b92f55663b8515510f71f5a3d9",
+      "size": 57900
+    },
+    "scripts/sync_engine.py": {
+      "sha256": "82202ac89f1f18aa35fa363f5d5db5bda8945be004dfcb172d4100aa699e169d",
+      "size": 3351
     },
     "start-panel.bat": {
       "sha256": "48dc3d2957b17216788870e7aa1d3afd9ddf304692d8d001682d990e1b90022d",

@@ -35,7 +35,9 @@ def detect_conflicts(limit: int = 50) -> list:
 
     change_cues = ("改用", "换成", "改成", "改为", "不再", "已经不用", "换了", "现在用",
                    "现在不用", "不喝", "不吃", "不用", "戒了", "停了", "放弃", "移除", "删了")
-    neg_cues = ("不", "没", "别", "反")
+    # 否定线索：短语级（去掉单字 "不"/"没"/"别"/"反" 后，"不知道"vs"知道"/"没问题"vs"问题"
+    # 这类自然组合就不会再被误判成矛盾候选了）。
+    neg_cues = ("不是", "不再", "没有", "没再", "别再", "反而", "不再说", "不再有")
     found, seen = [], set()
 
     def flag(a, b, reason):
@@ -52,10 +54,17 @@ def detect_conflicts(limit: int = 50) -> list:
     for ent, members in by_entity.items():
         if len(members) < 2:
             continue
+        # 实体聚合时限定同 (channel, user) 作用域内比较：跨 channel 或陌生人的记忆不会互相比矛盾
+        _last_scope = None
+        _scope_members = []
+
+        def _in_scope(m1, m2):
+            return str(m1.get("channel") or "") == str(m2.get("channel") or "") and str(m1.get("user") or "") == str(m2.get("user") or "")
+
         for i in range(len(members)):
             for j in range(i + 1, len(members)):
                 a, b = members[i], members[j]
-                if a["id"] == b["id"]:
+                if a["id"] == b["id"] or not _in_scope(a, b):
                     continue
                 inter = set(terms(a.get("text", ""))) & set(terms(b.get("text", "")))
                 if len(inter) < 1:
@@ -143,6 +152,9 @@ def set_memory_review(mid: str, status: str) -> dict:
     """确认 / 废弃一条 AI 整理的记忆（confirm → 转正；discard → 移入淡忘区）。"""
     if READONLY:
         raise PermissionError("记忆库当前只读，无法审核。")
+    status = str(status or "").strip().lower()
+    if status not in ("confirm", "discard"):
+        raise ValueError(f"非法 review 状态 {status!r}：只支持 confirm / discard")
     # 读-改-写整体放在写锁里：否则并发的 remember/dream 可能在我们读完之后插入新记忆，
     # 被这里的 save_all 用旧快照整库覆盖而丢失。
     with _locked(HOME / "hippocampus.jsonl"):
@@ -814,14 +826,27 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
                     m["gist"] = heuristic_gist(new)
                 else:
                     m["gist"] = heuristic_gist(old)
-                m["importance"] = round(max(0.0, min(1.0, max(_num(m.get("importance"), 0.5), float(imp) if imp <= 1 else imp / 10))), 3)
+                # importance 消歧：int 一律按 0-10 制；float 且 <=1 按 0-1 制。
+                # 原来 imp <= 1 的隐式判定无法区分"用户想给最低档 1/10 却输入 1"的场景。
+                if imp is not None:
+                    if isinstance(imp, int):
+                        imp_val = float(imp) / 10.0
+                    elif isinstance(imp, float):
+                        imp_val = imp if imp <= 1 else imp / 10.0
+                    else:
+                        imp_val = float(imp) / 10.0 if float(imp) > 1 else float(imp)
+                    m["importance"] = round(max(0.0, min(1.0, max(_num(m.get("importance"), 0.5), imp_val))), 3)
+                else:
+                    m["importance"] = round(max(0.0, min(1.0, _num(m.get("importance"), 0.5))), 3)
                 m["last_access"] = now_ts()
                 m["access_count"] = int(_num(m.get("access_count"), 0)) + 1
                 m["stability"] = min(MAX_STABILITY, _num(m.get("stability"), DEFAULT_STABILITY) * 1.4 * stability_boost)
                 # 习惯化（享乐适应）：同一件事反复出现，新鲜感递减、重要性不再步步抬升。
                 # 就像警报器一直响就没人再在意——但保留一个下限，别把真重要的磨掉。
                 m["repeat"] = int(_num(m.get("repeat"), 0)) + 1
-                if m["repeat"] >= 3 and m["importance"] > 0.25:
+                # repeat 降权只对 AI/做梦等来源生效——用户亲口反复强调的事
+                # （source=user）应该加权而不是降权，与其"亲述立即取代"语义一致
+                if m["source"] != "user" and m["repeat"] >= 3 and m["importance"] > 0.25:
                     m["importance"] = round(m["importance"] - 0.02, 3)
                 if emo_name and not m.get("emotion"):
                     m["emotion"] = emo_name
@@ -987,10 +1012,12 @@ class PrivacyDenied(Exception):
     """
 
     def __init__(self, target_user: str):
+        # 完整标识只留在字段里供本地日志/调试使用，不进对外文案——
+        # 拒绝提示若回显完整 ID，等于向群里确认「这个 ID 存在且有记忆」。
         self.target_user = str(target_user)
         super().__init__(
-            f"[隐私保护] 关于 {self.target_user} 的记忆需要 {self.target_user} 本人同意"
-            f"或由其本人查询（对方可用 `lingshu 同意` 授权对外分享）。")
+            "[隐私保护] 对方尚未授权在当前群分享记忆：需其本人查询，"
+            "或由其本人在群内用 `lingshu 同意` 授权后重试。")
 
 
 def _channel_visible(m: dict, channel, group_id, user) -> bool:
@@ -1007,10 +1034,12 @@ def _channel_visible(m: dict, channel, group_id, user) -> bool:
     m_user, m_group = str(m.get("user") or ""), str(m.get("group_id") or "")
     own = bool(user) and m_user == str(user)
     if not group_id:
-        return own
+        # 私聊：本人记忆 + 全局/群公共（m_user 为空）对本机调用可见。
+        # 通道上下文私聊（caller 在私聊里查自己）：同语义——用户空的是群公共话题，可见。
+        return own or not m_user
     if m_group != str(group_id):
         return False
-    return own or not m_user or _consented(m_user)
+    return own or not m_user or _consented(m_user, group_id)
 
 
 def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
@@ -1038,7 +1067,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         # asker 缺失 ≠ 本人：无身份的调用一律按"第三人"处理，
         # 不能因为拿不到身份就静默放行私密记忆（fail closed）。
         a = str(asker).strip() if asker is not None else ""
-        if a != str(target_user).strip() and not _consented(target_user):
+        if a != str(target_user).strip() and not _consented(target_user, group_id):
             raise PrivacyDenied(target_user)
     ensure_home()
     cfg = load_config()

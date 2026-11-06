@@ -10,6 +10,12 @@ import { dirname, join } from 'node:path'
 // 它们此前是 cordis-plugin/ 下的独立子包，需要单独 tgz 安装进 profile——
 // 插件商店只装根包，子包永远"没按上"。现改为根包 apply 时直接挂载，
 // 商店一次安装全带上。两子包均零外部依赖，plugin.js 可直接 import。
+//
+// 降级声明（#71）：静态 import 意味着任一子插件文件缺失/语法损坏会让整个根包
+// 激活失败（技能 + 另一子插件一并失效）。可接受的原因：子插件随根包同一
+// bundle 发布、同一校验和守护，运行期缺失仅见于人为删改；届时按下面
+// logger.error 的指引重装根包即可恢复。若未来要做真正的部分降级，需把
+// import 改为动态 import() 并逐包 try/catch。
 import * as startupPlugin from './cordis-plugin/lingshu-startup/plugin.js'
 import * as cronPlugin from './cordis-plugin/lingshu-cron/plugin.js'
 
@@ -56,11 +62,11 @@ export function apply(ctx) {
   try {
     startupPlugin.apply(ctx, {})
   } catch (e) {
-    ctx.logger?.warn?.('lingshu-skill: startup 子插件挂载失败', e)
+    ctx.logger?.error?.('lingshu-skill: startup 子插件挂载失败，启动注入不可用；重装根包可恢复', e)
   }
   try {
     cronPlugin.apply(ctx, {})
   } catch (e) {
-    ctx.logger?.warn?.('lingshu-skill: cron 子插件挂载失败', e)
+    ctx.logger?.error?.('lingshu-skill: cron 子插件挂载失败，例行维护不可用；重装根包可恢复', e)
   }
 }

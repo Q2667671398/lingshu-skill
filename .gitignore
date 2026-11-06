@@ -23,17 +23,19 @@ Thumbs.db
 astrbot.zip
 pnpm-lock.yaml
 
-# 临时文件与本地运行产物（更新源解耦：_* 开头的目录/文件、日志、散落 json 一律不进库）
+# 临时文件与本地运行产物（_* 开头的目录/文件、日志、散落 json 一律不进库）
 _*/
 _*
 *.log
-*.json
-# 白名单：发布必需的 json 清单与包描述（*.json 忽略不带 /，配 ** 才能救回子目录）
-!package.json
-!package-lock.json
-!manifest.json
-!cordis.patch.yml
-!**/package.json
-!**/package-lock.json
-!**/_conf_schema.json
-!**/CHECKSUMS.json
+# 已知运行数据 json（记忆库/配置侧产物），而不是全局 *.json：
+# 全局忽略曾让新增配置文件（plugin.json、rules.json…）静默不进库（#26）。
+# 新增发布必需 json 时请在 .gitattributes / make_manifest 里显式登记。
+persona.json
+hippocampus.jsonl
+consent.json
+emotions.jsonl
+config.json
+panel-token.txt
+pnpm-lock.yaml
+# 本项目零 npm 依赖（仅 peerDependencies），锁文件无意义（#25）；
+# 如未来引入 dependencies，请改用一种包管理器并提交其锁文件 + packageManager 字段。

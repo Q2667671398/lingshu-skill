@@ -1,10 +1,10 @@
-# 灵枢跨环境记忆桥 · 本地修订 v0.2.1
+# 灵枢跨环境记忆桥 · 本地修订 v0.2.2
 
 适配目标：AstrBot `>=4.13.0,<5.0.0` 的 Windows、Linux、macOS、Docker/远程部署。使用宿主现有 Python，不需要 DSH、Node、Ollama 或新增第三方 Python 依赖。实际运行测试仅完成 Windows Python 3.12；其他平台和真实 AstrBot 仍须验收。
 
 ## 安装
 
-1. 在 AstrBot 插件管理中上传 `astrbot_plugin_lingshu-0.2.1-portable.zip`，或将本目录完整复制到 `data/plugins/astrbot_plugin_lingshu/` 后加载。不要把最外层的原始技能 ZIP 当成 AstrBot 插件上传。
+1. 安装方式二选一：**整目录复制**（推荐）——把本目录完整复制到 `data/plugins/astrbot_plugin_lingshu/` 后加载；或用 `python scripts/make_plugin_zip.py` 在仓库根生成 `astrbot.zip` 后在 AstrBot 插件管理中上传。不要把最外层的原始技能 ZIP 当成 AstrBot 插件上传。
 2. 默认配置留空即可使用包内核心。`lingshu_path` 指向包含 `scripts/brain.py` 的目录；自定义核心必须是本修订版，否则隔离修复不会生效。
 3. 默认数据在 `data/plugin_data/astrbot_plugin_lingshu/memory`。Docker 的 `data` 必须持久化到宿主机；容器内配置只能填写容器内路径。一般沿用 AstrBot 官方 `./data:/AstrBot/data` 挂载即可。
 4. 加载后私聊执行 `lingshu 状态`，再执行 `lingshu 身份`、`lingshu 记住 我喜欢绿茶`、`lingshu 找回 绿茶`。根据 AstrBot 的唤醒前缀配置，命令可能需要 `/` 或 @机器人。
@@ -40,5 +40,7 @@
 先在测试实例验证两个不同用户、两个群、两个平台实例、授权/撤回和重启后的数据保留；可选自动召回还应验证具体模型提供商与其他记忆插件的交互。受限托管实例若禁止子进程或没有持久可写目录，本方案不可安装，需另做受保护的独立服务接口。
 
 跨用户“做梦”与人格/情绪演化暂未开放。自动聊天写入需显式开启 `auto_capture`，且只写用户消息、不写助手输出。全库面板及本机 CLI 仍是可信管理员入口。标签化历史资料只能降低提示词注入风险，不能保证模型绝不会遵循恶意记忆；因此自动召回与自动写回均默认关闭。
+
+**双宿主写回（#78）**：Cordis 技能包（`lingshu-cron` 的 extract 落盘）与本 AstrBot 桥接（`auto_capture`）是两条独立写回链路，共用同一记忆库。若同一用户在两个宿主上都开启自动写回，同一段对话会分别入链，产生重复/冲突（灵枢 capture 内部仅做近似去重兜底）。建议：同一用户同一时期只在一条链路开启自动写回——常见做法是本机 Cordis 开 `lingshu-cron` extract、群里 AstrBot 开 `auto_capture`，两者服务不同对话面，天然互斥；确实要双开时，优先依赖 `capture_interval` 拉长间隔减小重叠。
 
 此包不是上游官方发布，完整修订及待验证边界见 `PATCH_NOTES.md`。插件目录为可替换程序，记忆目录为持久数据；升级前备份数据，升级后重复验收。卸载或换回旧插件不会自动转换身份、撤销授权或删除本版数据。

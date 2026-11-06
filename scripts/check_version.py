@@ -26,9 +26,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VERSION_RE = re.compile(r"^version:\s*([0-9][0-9.]*)\s*$", re.MULTILINE)
 CODE_PREFIXES = ("scripts/", "assets/", "cordis-plugin/")
-CODE_ROOT_FILES = {"start-panel.bat", "package.json"}
-DOC_NAMES = {"README.md", "CHANGELOG.md", "SKILL.md", "SKILL-lite.md",
-             "SKILL-tiny.md", "AGENTS.md"}
+# index.js（Cordis 根包入口，行为变更 = 能力变更）、cordis.patch.yml 一并算代码（#17）
+CODE_ROOT_FILES = {"start-panel.bat", "package.json", "index.js", "cordis.patch.yml"}
+DOC_NAMES = {"README.md", "CHANGELOG.md", "AGENTS.md"}
+# SKILL.md 是能力文件：正文即模型行为，变更必须升版本（#18）。
+# SKILL-lite/tiny 是裁剪文档，不触发。
+CAPABILITY_NAMES = {"SKILL.md"}
 
 
 def _git(args: list[str]) -> str | None:
@@ -51,7 +54,10 @@ def _norm(path: str) -> str:
 
 def _is_code(path: str) -> bool:
     p = _norm(path)
-    if Path(p).name in DOC_NAMES or p.startswith("docs/"):
+    name = Path(p).name
+    if name in CAPABILITY_NAMES:
+        return True   # SKILL.md 正文变更必须走版本检查（#18）
+    if name in DOC_NAMES or p.startswith("docs/") or name in {"SKILL-lite.md", "SKILL-tiny.md"}:
         return False
     if p in CODE_ROOT_FILES:
         return True
@@ -113,6 +119,20 @@ def check(staged: bool = False, base: str = "HEAD") -> int:
         if mf_v is not None and mf_v != new_ver:
             print(f"[version] 拒绝：manifest.json version（{mf_v}）与 SKILL.md version"
                   f"（{new_ver}）不一致。运行 python scripts/make_manifest.py 重新生成。",
+                  file=sys.stderr)
+            return 1
+
+    # package.json 版本须为 SKILL.md 的 X.Y.0 映射（#21）
+    pkg_path = ROOT / "package.json"
+    if pkg_path.exists():
+        try:
+            pkg_v = str(json.loads(pkg_path.read_text(encoding="utf-8")).get("version", ""))
+        except (OSError, ValueError):
+            pkg_v = None
+        expected = f"{new_ver}.0" if re.fullmatch(r"\d+\.\d+", new_ver) else None
+        if pkg_v is not None and expected and pkg_v != expected:
+            print(f"[version] 拒绝：package.json version（{pkg_v}）应为 SKILL.md v{new_ver}"
+                  f" 的映射 {expected}。npm/Cordis 侧版本号会失真。",
                   file=sys.stderr)
             return 1
 

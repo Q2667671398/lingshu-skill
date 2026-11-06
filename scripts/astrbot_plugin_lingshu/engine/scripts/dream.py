@@ -89,7 +89,7 @@ def _dream_snapshot() -> str:
 
     只打包记忆相关的核心文件（hippocampus/assoc/archive 等），比全库 backup
     轻量得多；存在 ~/.brain-memory/dream-snapshots/ 下，保留最近 10 份。
-    失败静默——快照失败不该挡住做梦本身。返回快照路径，失败返回 ""。
+    失败返回 "" 并记事件日志；调用方（dream）fail-closed：拿不到快照就拒绝整理。
     """
     snap_dir = HOME / "dream-snapshots"
     try:
@@ -115,7 +115,11 @@ def _dream_snapshot() -> str:
             except OSError:
                 pass
         return str(path)
-    except Exception:
+    except Exception as exc:
+        try:
+            log_event("dream", f"做梦前自动快照失败：{exc}")
+        except Exception:
+            pass
         return ""
 
 
@@ -130,11 +134,15 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
     # dry_run 纯预览不写盘，就别去抢锁——只读记忆库（HOME 不可写）下抢锁会直接报错。
     lock_ctx = (nullcontext() if dry_run else _locked(HOME / "hippocampus.jsonl"))
     with lock_ctx:
-        # 改库前先打快照（回滚点）：梦错了可以用 restore 还原，做梦本身不背"压错找不回"的锅
+        # 改库前先打快照（回滚点）：梦错了可以用 restore 还原，做梦本身不背"压错找不回"的锅。
+        # fail-closed：快照失败（磁盘满/权限等）拿不到回滚点，宁可拒绝整理也不裸奔。
         if not dry_run:
             snap = _dream_snapshot()
-            if snap:
-                report["snapshot"] = snap
+            if not snap:
+                raise RuntimeError(
+                    "做梦前自动快照失败（没有回滚点），已中止整理；"
+                    "请检查 dream-snapshots 目录可写、磁盘未满后再试")
+            report["snapshot"] = snap
         records = load_all()
         archived_recs = []
 

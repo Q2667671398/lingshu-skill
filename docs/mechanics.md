@@ -22,8 +22,22 @@
 - [灵魂与自我](#灵魂与自我你不是一个常量)
 - [人格规则](#人格规则)
 - [备份、恢复与迁移](#备份恢复与迁移)
+- [通道记忆归属三元组与隐私裁决](#通道记忆归属三元组与隐私裁决)
 - [与 DSH 记忆的边界与每日同步](#与-dsh-记忆的边界与每日同步)
 - [设计依据](#设计依据简述)
+
+---
+
+## 通道记忆归属三元组与隐私裁决
+
+群聊场景下每条记忆带 `(channel, group, user)` 归属三元组（channel = 平台标识如 `qq@bot1`，group = 群号、私聊为空，user = 全局用户标识如 `qq:10001`）。归属决定可见性，而不是"谁问都能看"：
+
+- **物理隔离**：`channel recall` 按三元组过滤——跨 channel、跨群的记忆在召回阶段就不可见（即使已授权），不存在"召回后再裁"的窗口。
+- **授权作用域**：`channel privacy grant` 在群内执行只对该群可见（scope=群）；全域授权（`*`）在所有群生效。授权可带 `--expires-days N`，到期自动失效（fail-closed：过期即视为未授权）。
+- **本人优先**：三元组中 user 等于自己的记忆永远可见；`--group` 留空的私聊只放本人记忆 + 全局记忆。
+- **冲突裁决**：同一 (channel, user) 作用域内，`--source user`（用户亲口说的）写回时**立即取代**旧说法（旧条标记 `superseded_by`）；`--source ai/dream` 的候选与旧记忆冲突时只做**双标待审**（`conflict_flag` + `conflicts` 链），等 `review confirm/discard` 人工裁决——AI 的说法永远不能自动压过用户。
+- **隐私门控**：`recall --asker/--target`、`channel user --asker` 启用第三人查询门控：目标未 grant → 退出码 4 拒绝，且拒绝消息不回显目标完整标识。
+- **敏感命令鉴权**：通道上下文（带 `--user + --channel`）执行 forget/dream/backup/restore/sync/owner 管理，需 owner/admin 白名单；纯本机 CLI 不受此限。
 
 ---
 

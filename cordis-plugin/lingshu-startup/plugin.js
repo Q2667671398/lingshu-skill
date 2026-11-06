@@ -80,7 +80,10 @@ async function findBrainPy(configured, ctx) {
         if (existsSync(p)) return p
       }
     }
-  } catch {}
+  } catch (e) {
+    // 技能注册表探测失败不该静默——留一条日志方便排障（但不在群/会话里打扰）
+    try { ctx?.logger?.warn?.('lingshu-startup: 技能注册表探测异常，走环境变量/默认路径兜底', e) } catch {}
+  }
   // 环境变量兜底：装在非常规位置（换盘符/自定义目录）时，
   // 设 LINGSHU_SKILL_DIR 指向技能根目录即可，不用改 profile。
   const envDir = (process.env.LINGSHU_SKILL_DIR || '').trim()

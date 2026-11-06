@@ -17,7 +17,7 @@
 // 保证不影响"人格/记忆/灵魂 + AI 自主自动化"的主功能。
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -225,22 +225,51 @@ export function apply(ctx, config) {
   const convo = new Map()   // agent -> { text, seen }（即记即存缓冲 + 已处理消息游标，extract 成功后清空）
   const lastReply = new Map() // agent -> 最后一条 assistant 文本（给 usage --reply 用）
   let state = loadState(statePath())
+
+  // 启动时清理崩溃残留的 extract 明文临时文件（超过 1 天的直接删）
+  try {
+    const base = process.env.APP_DSH || join(homedir(), '.dsh')
+    const cutoff = Date.now() - 24 * 3600 * 1000
+    for (const f of readdirSync(base)) {
+      if (!f.startsWith('lingshu-extract-') || !f.endsWith('.txt')) continue
+      const p = join(base, f)
+      try {
+        if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true })
+      } catch {}
+    }
+  } catch {}
   let brainPyCache = null
   let warnedOnce = false
   let warnedNoBrain = false
+
+  // 状态节流落盘器（#69）：变更只置脏，30 秒合并刷盘，避免每轮 turn-stopping 都写磁盘
+  const stateSaver = (() => {
+    let dirty = false
+    let timer = null
+    const flush = () => {
+      timer = null
+      if (!dirty) return
+      dirty = false
+      saveState(statePath(), state)
+    }
+    return {
+      markDirty() {
+        dirty = true
+        if (!timer) {
+          timer = setTimeout(flush, 30_000)
+          if (timer?.unref) timer.unref()
+        }
+      },
+      flushNow: flush,
+    }
+  })()
+  const markStateDirty = () => stateSaver.markDirty()
 
   // review --json 缓存（pre-step 每步都问，30s 内复用）
   let reviewCacheAt = 0
   let reviewCacheVal = null
 
-  let turnStateSeed = null // 状态文件里的 {agentKey: n}，turn-stopping 里对号入座
-  // 重启恢复：把上次的累计轮数灌进 seed（turn-stopping 里按 agentKey 对号入座续算）
-  try {
-    const savedTurns = state?.turns
-    if (savedTurns && typeof savedTurns === 'object') {
-      turnStateSeed = savedTurns
-    }
-  } catch {}
+  // 重启恢复（#77）：state.turns 本身就是事实源，turn-stopping 直接读它续算，无需 seed 拷贝
 
   const warn = (msg) => { if (!warnedOnce) { warnedOnce = true; try { ctx.logger?.warn?.(msg) } catch {} } }
 
@@ -255,7 +284,7 @@ export function apply(ctx, config) {
     return found
   }
 
-  /** fire-and-forget：绝不 await、失败吞掉、成功才标记完成并落盘 */
+  /** fire-and-forget：绝不 await、失败允许下轮补跑一次（当日仅一次，再败等明天） */
   function fire(task) {
     if (running.has(task.id)) return
     running.add(task.id)
@@ -264,13 +293,23 @@ export function apply(ctx, config) {
         const brainPy = await ensureBrainPy()
         if (!brainPy) return
         const pythonExe = findPythonExe(cfg.python)
-        await runBrain(pythonExe, cfg.python, brainPy, task.argv, cfg.timeoutMs)
-        // 无论退出码如何都标记"已触发"：失败重跑会造成备份/做梦风暴；
-        // 例行任务明天/下个周期再来一次就好。
+        const out = await runBrain(pythonExe, cfg.python, brainPy, task.argv, cfg.timeoutMs)
+        // 退出码 0/10 才算跑成；失败不标记完成，下轮补跑一次，再失败就等明天
+        // （state.retries 记当日已补跑次数，防持续失败造成备份/做梦风暴）。
         if (task.days) {
           state.days = state.days || {}
-          state.days[task.id] = todayStr()
-          saveState(statePath(), state)
+          if (out !== null) {
+            state.days[task.id] = todayStr()
+            if (state.retries) delete state.retries[task.id]
+          } else {
+            state.retries = state.retries || {}
+            const r = state.retries[task.id] || { date: todayStr(), count: 0 }
+            if (r.date !== todayStr()) { r.date = todayStr(); r.count = 0 }
+            r.count += 1
+            state.retries[task.id] = r
+            if (r.count >= 1) state.days[task.id] = todayStr() // 已补跑过一次，今天不再纠缠
+          }
+          stateSaver.flushNow() // 天级任务低频，立即落盘保证不丢标记
         }
       } catch {} // 顶层兜底：任何异常静默吞掉
       finally {
@@ -302,17 +341,23 @@ export function apply(ctx, config) {
         try {
           writeFileSync(tmp, text, 'utf8')
           const pythonExe = findPythonExe(cfg.python)
-          await runBrain(pythonExe, cfg.python, brainPy,
+          const out = await runBrain(pythonExe, cfg.python, brainPy,
             ['extract', '--file', tmp, '--min-chars', String(cfg.extractMinChars)],
             cfg.timeoutMs)
-          ok = true // 退出码 0/10/其他都算"跑过了"——去重保证重试也无害，但别无限重试
+          // 只有退出码 0/10（写入成功/惊异未过门）才算跑成；失败保留缓冲，
+          // 下个 extractTurns 周期重试——原逻辑把错误退出也当成功清缓冲，会丢对话。
+          ok = out !== null
         } finally {
           try { rmSync(tmp, { force: true }) } catch {}
         }
       } catch {} // 顶层兜底
       finally {
         if (ok) convo.set(agent, { text: '', seen: buf?.seen }) // 清空缓冲，但保留游标（防止重复攒旧消息）
-        else if (text.length > 200_000) convo.set(agent, { text: '', seen: buf?.seen }) // 兜底防爆内存
+        else if (text.length > 200_000) {
+          // 兜底防爆内存：截断保留头部 100k 而非全丢，并至少告警一次（#64）
+          try { logger.warn(`[lingshu-cron] extract 失败且缓冲超 200k，截断保留前 100k 字符（已丢失 ${(text.length - 100_000)} 字符）`) } catch {}
+          convo.set(agent, { text: text.slice(0, 100_000), seen: buf?.seen })
+        }
         running.delete('extract')
       }
     })()
@@ -324,19 +369,19 @@ export function apply(ctx, config) {
       const agent = payload?.agent
       if (!agent) return
       const ak = agentKey(agent)
-      // 重启恢复：状态文件里有该 agent 的累计轮数就续算，没有才从 0 开始
-      let n = (turns.get(agent) ?? 0) + 1
-      if (!turns.has(agent) && ak && turnStateSeed && Number.isFinite(turnStateSeed[ak])) {
-        n = Number(turnStateSeed[ak]) + 1
-      }
+      // 轮数唯一事实源是状态文件 state.turns[ak]（#77）：重启续算不再依赖内存 map，
+      // 内存 turns 只在拿不到稳定 ak 时兜底，避免双轨计数互相回退。
+      let prev
+      if (ak && Number.isFinite(Number(state.turns?.[ak]))) prev = Number(state.turns[ak])
+      else prev = turns.get(agent) ?? 0
+      const n = prev + 1
       turns.set(agent, n)
-      // 轮数落盘：重启后按"已累计轮数"续算，避免每次重启都重新数 N 轮才触发
-      // dream / extract（ak 为 null 时拿不到稳定标识，退回纯内存计数）
+      // 轮数落盘：节流写（30s 合并刷盘，#69），重启后按状态文件续算
       if (ak) {
         state.turns = state.turns || {}
         if (state.turns[ak] !== n) {
           state.turns[ak] = n
-          saveState(statePath(), state)
+          markStateDirty()
         }
       }
 
@@ -478,4 +523,9 @@ export function apply(ctx, config) {
       return decision
     }
   })
+
+  // 插件卸载/进程退出前把脏状态刷盘，避免节流窗口内的轮数/任务标记丢失
+  const flushOnExit = () => { try { stateSaver.flushNow() } catch {} }
+  ctx.on('agent/dispose', flushOnExit)
+  try { process.on('exit', flushOnExit) } catch {}
 }

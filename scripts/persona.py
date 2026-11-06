@@ -123,7 +123,18 @@ def load_persona() -> dict:
     if path.exists():
         p = _slurp_json(path)
         if not isinstance(p, dict):
-            p = compile_persona()
+            raise ValueError("persona.json 结构损坏（不是 dict），请检查备份。")
+        # 结构校验（schema 级 GIGO 防）：必需键与类型，字段全 dict/列表/字符串，绝不静默吞坏数据。
+        _REQUIRED = ("identity", "traits", "history")
+        for k in _REQUIRED:
+            if k not in p:
+                raise ValueError(f"persona.json 缺必需字段 {k!r}，请检查备份。")
+        if not isinstance(p["identity"], dict):
+            raise ValueError("persona.json identity 字段不是 dict，请检查备份。")
+        if not isinstance(p["traits"], dict):
+            raise ValueError("persona.json traits 字段不是 dict，请检查备份。")
+        if not isinstance(p["history"], list):
+            raise ValueError("persona.json history 字段不是 list，请检查备份。")
     else:
         # 只读且档案缺失：给一份内存默认值，不影响读取已有记忆
         p = compile_persona() if not READONLY else default_persona()

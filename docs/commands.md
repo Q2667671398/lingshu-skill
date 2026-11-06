@@ -62,7 +62,35 @@
 | 列表 / 忘记 | `list` / `forget <id>` |
 | 配置 | `config show` / `config set <key> <value>` / `config unset <key>` |
 | 记忆冲突检查 | `detect-conflicts [--json] [--limit 50]` |
+| 聊天平台通道 | `channel remember "内容" --channel qq --group 群号 --user qq:10001 [--kind fact] [--importance 7] [--tags a,b] [--source user\|ai\|dream] [--layer hippo\|cortex]` |
+| 通道召回 | `channel recall "关键词" --channel qq --group 群号 --user qq:10001 [--k 8] [--json] [--asker 发起者 --target 目标]` |
+| 跨群画像 | `channel user qq:10001 [--k 20] [--asker 发起者]`（asker == 目标 → 全量；否则要求目标已 grant） |
+| 群友隐私 | `channel privacy grant\|revoke\|status\|capture-on\|capture-off --user qq:10001 [--expires-days N]`（只能操作自己的授权；群内 grant 只对该群可见，`--expires-days` 0/不填为永久，到期自动失效） |
+| 主人白名单 | `channel owner add\|remove\|list [qq:10001] [--caller 身份]`（owner add/remove 仅限本机或已有 owner；通道内必须带 `--caller` 且其为 owner） |
 | 可视化面板 | `serve` → http://127.0.0.1:8765 |
+
+### channel 召回的可见性规则（通道三元组）
+
+`--channel/--group/--user` 任一给出即进入通道上下文，召回范围被物理过滤：
+
+- 其他群 / 其他 channel 的记忆**不可见**（即使已授权）；
+- 同群记忆：本人的全可见；他人的需其 `consent`（群内授权只对该群，`*` 全域授权在所有群生效）；
+- `user` 为空的全局/群公共记忆：可见；
+- 私聊（`--group` 留空）：本人记忆 + 全局记忆可见。
+
+### 退出码
+
+| 码 | 含义 |
+|---|---|
+| 0 | 正常 |
+| 2 | 未初始化 / 命令错误（startup 只认 `--query`） |
+| 3 | 鉴权拒绝（通道上下文执行 owner/forget/dream/backup/restore/sync 等敏感命令，非 owner/admin） |
+| 4 | 隐私拒绝（`recall --asker/--target` 或 `channel user --asker`：目标未 grant；消息不回显目标完整标识） |
+| 10 | 只读降级 |
+
+### 自动写回（AstrBot 桥接 `auto_capture`）
+
+默认**关闭**。开启后群友消息写回 `channel remember --source user`（用户原话立即取代旧说法），但有三道闸：敏感词拦截 → 用户 consent 门控（`lingshu 拒绝` 即停）→ 节流。详见[插件 README](../scripts/astrbot_plugin_lingshu/README.md)。
 
 ## 可视化面板
 
