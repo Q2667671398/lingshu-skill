@@ -107,6 +107,15 @@ WORKING_FILE = HOME / "working.jsonl"
 WORKING_CAPACITY = 9
 WORKING_TTL = 12 * HOUR
 
+# 话题栈：会话里聊过的话题与权重（topics.jsonl）。
+# 拟人闲聊用：权重随轮次指数衰减、用户重提拉高、敷衍负反馈拉低，
+# 衰减到阈值以下 + 用户敷衍 → 允许 AI 主动开新话题（spawn_new）。
+TOPIC_FILE = HOME / "topics.jsonl"
+TOPIC_CAPACITY = 12          # 最多同时记住 12 个话题，最旧的先挤出
+TOPIC_DECAY = 0.85           # 每轮未重提，权重 ×0.85（指数衰减）
+TOPIC_SPAWN_THRESHOLD = 0.30 # 权重低于此 + 用户敷衍 → 满足自发话题条件
+TOPIC_TTL = 7 * 24 * HOUR    # 7 天没被重提的话题彻底退栈
+
 DEFAULT_CONFIG = {
     "budget_tokens": 1400,
     # 上下文水位三级防线（比例，0-1）：
@@ -130,6 +139,12 @@ DEFAULT_CONFIG = {
     # 纯本机命令行不带 --user 调用不受限（本机默认信任）。
     "owners": [],
     "admins": [],
+    # 会话模式判定信号词（I-09/F-13：词表外置 config，定制不用改源码）。
+    # analyze_topic 会把这里的词与代码内置表合并；留空即用内置表。
+    "topic_signals": {
+        "work": [],   # 额外的工作/工程信号词，如 ["推理", "微调"]
+        "human": [],  # 额外的情绪/寒暄信号词
+    },
 }
 
 # ---------------------------------------------------------------- 工具函数
@@ -188,14 +203,21 @@ def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
                     except Exception:
                         v = str(v)[:200]
                 row[k] = v
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
+        with open(LOG_FILE, "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        # 超过 512KB 滚动：保留后半（最新），避免单文件无限膨胀
+        # 超过 512KB 滚动：保留后半（最新），避免单文件无限膨胀。
+        # E-15：多进程同时滚动会 read_text/write_text 竞态丢行——用 lingshu.log
+        # 自己的写锁串行化滚动（抢不到锁就这轮不滚，下次写入再试）。
         try:
             if LOG_FILE.stat().st_size > 512 * 1024:
-                data = (LOG_FILE.read_text(encoding="utf-8-sig") or "").splitlines()
-                keep = data[-(len(data) // 2):]
-                LOG_FILE.write_text("\n".join(keep) + "\n", encoding="utf-8")
+                try:
+                    with _locked(LOG_FILE, timeout=1.0):
+                        if LOG_FILE.stat().st_size > 512 * 1024:
+                            data = (LOG_FILE.read_text(encoding="utf-8-sig") or "").splitlines()
+                            keep = data[-(len(data) // 2):]
+                            LOG_FILE.write_text("\n".join(keep) + "\n", encoding="utf-8")
+                except TimeoutError:
+                    pass  # 别的进程正在滚：这轮跳过，下次写入再检查
         except OSError:
             pass
     except Exception:
@@ -564,15 +586,21 @@ def analyze_topic(query: str = "") -> dict:
         return {"mode": "human", "confidence": 0.0, "work_score": 0.0, "human_score": 0.0,
                 "work_hits": [], "human_hits": [], "mixed": False,
                 "reason": "没有话题内容，默认拟人模式"}
-    work_hits, human_hits = [], []
+    # I-09/F-13：config.topic_signals 允许用户追加自定义信号词（不改源码即可定制）
+    extra = (load_config().get("topic_signals") or {}) if not READONLY else {}
+    work_words = {w.lower() for w in extra.get("work") or [] if str(w).strip()}
+    human_words = {w.lower() for w in extra.get("human") or [] if str(w).strip()}
     for _cat, words in _WORK_SIGNALS.items():
-        for w in words:
-            if w in q:
-                work_hits.append(w)
+        work_words.update(w.lower() for w in words)
     for _cat, words in _HUMAN_SIGNALS.items():
-        for w in words:
-            if w in q:
-                human_hits.append(w)
+        human_words.update(w.lower() for w in words)
+    work_hits, human_hits = [], []
+    for w in sorted(work_words):
+        if w in q:
+            work_hits.append(w)
+    for w in sorted(human_words):
+        if w in q:
+            human_hits.append(w)
     work_hits = list(dict.fromkeys(work_hits))
     human_hits = list(dict.fromkeys(human_hits))
     work_score, human_score = float(len(work_hits)), float(len(human_hits))
@@ -673,6 +701,8 @@ def atomic_json(path: Path, obj) -> None:
     tmp = _tmp_path(path)
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
     _replace_retry(tmp, path)
 
 
@@ -719,6 +749,11 @@ def read_jsonl(path: Path) -> list:
     if not path.exists():
         return []
     out, bad_blocks = [], []
+    # 只读环境（E-06）：修不了坏块也无法写 .corrupt，同一坏块每次读取都会重报。
+    # 模块级按 (文件名, 块内容) 去重，同一坏块只告警一次。
+    _corrupt_reported: set = getattr(read_jsonl, "_corrupt_reported", None)
+    if _corrupt_reported is None:
+        _corrupt_reported = read_jsonl._corrupt_reported = set()
     # utf-8-sig：兼容 Windows 编辑器 / 脚本写出的带 BOM 文件，BOM 不该把首行变成"坏行"
     raw = path.read_text(encoding="utf-8-sig")
     lines = raw.splitlines()
@@ -753,9 +788,16 @@ def read_jsonl(path: Path) -> list:
             pass
         bad_blocks.append(joined)
     if bad_blocks:
+        # E-06：只读环境修不了，内存内去重——同一坏块每次读取只告警一次
+        fresh_blocks = [b for b in bad_blocks
+                        if (path.name, b.rstrip()) not in _corrupt_reported]
+        for b in bad_blocks:
+            _corrupt_reported.add((path.name, b.rstrip()))
+        if not fresh_blocks:
+            return out
         # 有损坏块：好记录写回，坏块原样（可含多行）挪到 .corrupt 备份，
         # 绝不静默当作没发生、也不让后续保存把它们永久抹掉。
-        log_event("parse", f"{path.name} 有 {len(bad_blocks)} 个坏块，已挪到 .corrupt 备份",
+        log_event("parse", f"{path.name} 有 {len(fresh_blocks)} 个坏块，已挪到 .corrupt 备份",
                   level="warn", path=path.name)
         try:
             corrupt = path.with_name(path.name + ".corrupt")
@@ -767,7 +809,7 @@ def read_jsonl(path: Path) -> list:
                 existing = ""
             fresh = [b for b in bad_blocks if b.rstrip() not in existing]
             if fresh:
-                with open(corrupt, "a", encoding="utf-8") as cf:
+                with open(corrupt, "a", encoding="utf-8", newline="\n") as cf:
                     for b in fresh:
                         cf.write(b.rstrip() + "\n---\n")
             tmp = _tmp_path(path)
@@ -893,6 +935,9 @@ def _locked(path: Path, timeout: float = 10.0):
     finally:
         _HELD_LOCKS.discard((str(lock), threading.get_ident()))
         # 只在"自己成功创建或接管了锁（写入了自己 pid）"时才释放。
+        # 锁文件已不存在（被陈旧锁接管流程删掉）→ 直接跳过，不留告警也不误删。
+        if not lock.exists():
+            return
         # _lock_owner 读不到内容返回 None 时不删——那可能是其他进程刚接管/正在写
         # 锁文件，误删会让第三个进程立刻挤进来一起写。
         if _lock_owner(lock) == os.getpid():
@@ -900,6 +945,8 @@ def _locked(path: Path, timeout: float = 10.0):
         if _owns:
             try:
                 lock.unlink()
+            except FileNotFoundError:
+                pass  # 锁文件刚被别的流程删掉：无需处理
             except OSError:
                 pass
         else:
@@ -921,16 +968,19 @@ def _pid_alive(pid: int) -> bool:
             kernel32 = ctypes.windll.kernel32
             h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if not h:
-                return False
+                # 打不开句柄（权限拒绝/跨会话）：保守视为存活，避免误判陈旧锁抢走别人的锁
+                return True
             code = ctypes.c_ulong()
             ok = kernel32.GetExitCodeProcess(h, ctypes.byref(code))
             kernel32.CloseHandle(h)
             return bool(ok) and code.value == 259  # STILL_ACTIVE
         os.kill(pid, 0)
         return True
-    except (OSError, ProcessLookupError):
+    except ProcessLookupError:
         return False
-    except Exception:
+    except PermissionError:
+        return True  # 探测被拒绝（跨会话等）：保守视为存活
+    except (OSError, Exception):
         return True
 
 
@@ -1111,9 +1161,10 @@ def _recompute_paths() -> None:
     模块加载完成时也调用一次，保证与文件内字面定义一致。
     """
     global LOG_FILE, WORKING_FILE, VERBATIM_DIR, ASSOC_FILE, PERSONA_SNAP_DIR, DAILY_FILE
-    global RETRIEVAL_FILE, USAGE_FILE, CONSENT_FILE
+    global RETRIEVAL_FILE, USAGE_FILE, CONSENT_FILE, TOPIC_FILE
     LOG_FILE = HOME / "lingshu.log"
     WORKING_FILE = HOME / "working.jsonl"
+    TOPIC_FILE = HOME / "topics.jsonl"
     VERBATIM_DIR = HOME / "verbatim"
     ASSOC_FILE = HOME / "assoc.jsonl"
     PERSONA_SNAP_DIR = HOME / "persona_snapshots"

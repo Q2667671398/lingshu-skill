@@ -367,7 +367,8 @@ def feel(name: str, intensity: float = 0.6, why: str = "",
         "ts": ts_now, "emotion": name, "valence": v, "arousal": a,
         "intensity": round(eff, 3),
         "why": _why, "about": _about,
-        "decay_hours": float(decay_hours) if decay_hours else EMOTION_HALF_LIFE / HOUR,
+        "decay_hours": (max(0.5, min(720.0, float(decay_hours)))
+                        if decay_hours else EMOTION_HALF_LIFE / HOUR),
         "genesis": bool(genesis),
     }
     if resonance != "none":

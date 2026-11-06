@@ -1,7 +1,7 @@
 name: astrbot_plugin_lingshu
 display_name: 灵枢跨环境记忆桥（本地修订版）
 desc: 内置灵枢 2.69 核心，独立存储、平台实例隔离、同群授权召回；可选对话前召回与对话后写回，不注入、不改写宿主人格。
-version: v0.2.2
+version: 0.2.3
 author: lingshu
 repo: https://github.com/Q2667671398/lingshu-skill
 astrbot_version: ">=4.13.0,<5.0.0"

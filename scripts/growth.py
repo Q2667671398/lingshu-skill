@@ -1255,7 +1255,22 @@ GITHUB_REPO = "266767398/lingshu-skill"
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_REPO}"
 GITHUB_BRANCH = "main"
 GITEE_ZIP_URL = f"https://gitee.com/htmcwy_0/lingshu-skill/repository/archive/{GITEE_BRANCH}.zip"
-REMOTE_TIMEOUT = 30  # 下载超时（秒）
+REMOTE_TIMEOUT = 30  # 下载超时（秒）默认值，可被 config.json 的 remote_timeout 覆盖（弱网调大）
+
+
+def _remote_timeout() -> float:
+    """远程下载超时：优先读 config.json 里的 remote_timeout（秒），非法值回退默认。"""
+    try:
+        import core as _core_mod
+        cfg = _core_mod.load_config()
+        v = float(cfg.get("remote_timeout", REMOTE_TIMEOUT))
+        if v > 0:
+            return v
+    except Exception:
+        pass
+    return float(REMOTE_TIMEOUT)
+
+
 BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
@@ -1325,7 +1340,7 @@ def _remote_api(url: str, host: str = "") -> object:
     for attempt in range(3):
         req = _urlreq.Request(url, headers=headers)
         try:
-            with _urlreq.urlopen(req, timeout=REMOTE_TIMEOUT) as resp:
+            with _urlreq.urlopen(req, timeout=_remote_timeout()) as resp:
                 body = resp.read()
                 # HTML 风控页可能以 HTTP 200 返回（Gitee 匿名被风控的典型形态），
                 # 在 JSON 解析前拦住，报带 token 提示的可读错误而不是难懂 KeyError。
@@ -1381,14 +1396,15 @@ def _fetch_gitee_zip_source() -> Path:
     staging.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(suffix=".zip", dir=str(cache))
     try:
-        # 配置了 token 则走 query 参数认证（Gitee 归档下载不支持 header token）
+        # 配置了 token 则优先走 HTTP header 认证（避免 token 进 URL query——
+        # URL 会出现在 urllib 异常消息、代理日志与错误堆栈里，泄露面大）。
+        # header 认证被远端拒绝（401/403 且带 token）时由调用方走匿名重试。
         zip_url = GITEE_ZIP_URL
+        req_headers = {"User-Agent": BROWSER_UA, "Accept": "application/zip"}
         gitee_token = _remote_token("gitee")
         if gitee_token:
-            sep = "&" if "?" in zip_url else "?"
-            zip_url = f"{zip_url}{sep}access_token={_urlparse.quote(gitee_token, safe='')}"
-        req = _urlreq.Request(zip_url, headers={
-            "User-Agent": BROWSER_UA, "Accept": "application/zip"})
+            req_headers["PRIVATE-TOKEN"] = gitee_token
+        req = _urlreq.Request(zip_url, headers=req_headers)
         # fd 先包进 with：urlopen 失败时也能正确关闭，不泄漏文件描述符。
         # 分块写入落盘（resp.read() 全量进内存在仓库变大后峰值不可控），
         # 超过 50MB 认为指错仓库，主动中止。
@@ -1414,7 +1430,7 @@ def _fetch_gitee_zip_source() -> Path:
             # 防 zip slip：归档里出现 ../ 或绝对路径的成员名一律拒绝解压
             for member in zf.namelist():
                 p = (staging / member).resolve()
-                if not str(p).startswith(str(staging.resolve())):
+                if not p.is_relative_to(staging.resolve()):
                     raise RuntimeError(f"Gitee zip 归档含非法路径成员：{member}")
             zf.extractall(staging)
         # Gitee 归档带一层顶层目录，定位含 SKILL.md 的真实根。
@@ -1437,6 +1453,9 @@ def _fetch_gitee_zip_source() -> Path:
         if e.code == 403:
             raise RuntimeError("Gitee 归档直下也被风控（403）") from e
         raise
+    except _urlreq.URLError as e:
+        # 兜底：异常链里的 URL 可能带认证信息，脱敏后再抛（token 绝不进日志）
+        raise RuntimeError(f"Gitee zip 归档下载失败：{_sanitize_exc(e)}") from None
     finally:
         shutil.rmtree(staging, ignore_errors=True)
         try:
@@ -1469,7 +1488,7 @@ def _fetch_git_source(repo_url: str, branch: str, source: str) -> Path:
             [git, "-c", "core.autocrlf=false", "-c", "core.eol=lf",
              "clone", "--depth", "1", "--single-branch",
              "--branch", branch, repo_url, str(staging)],
-            check=True, capture_output=True, text=True, timeout=REMOTE_TIMEOUT)
+            check=True, capture_output=True, text=True, timeout=_remote_timeout())
         if not (staging / "SKILL.md").is_file():
             raise RuntimeError("git 克隆后找不到 SKILL.md（仓库结构不符）")
         # 拿 HEAD SHA 写标记，供下次 SHA 快路径命中
@@ -2492,7 +2511,23 @@ def install_skill(name: str, force: bool = False, from_dir: str | None = None,
         except OSError:
             _src_resolved = src_dir.absolute()
             _home_resolved = Path(HOME).absolute()
-        _allowed = [SKILLS_DIR, _panel_root(), _home_resolved]
+        _allowed = [SKILLS_DIR, _home_resolved]
+        # 白名单按审计要求收紧为 SKILLS_DIR + HOME；如需在本体目录外整包安装，
+        # 在 config.json 配 install_from_allowlist（目录列表）显式放行。
+        try:
+            import core as _core_mod
+            for extra in (_core_mod.load_config().get("install_from_allowlist") or []):
+                try:
+                    _allowed.append(Path(str(extra)).expanduser().resolve())
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        # 自身副本所在目录（面板/CLI 运行根）也算合法源——这是"更新本技能"的正路
+        try:
+            _allowed.append(Path(__file__).resolve().parent.parent)
+        except OSError:
+            pass
         if not any(_src_resolved.is_relative_to(a) for a in _allowed):
             raise KeyError(
                 f"--from 只能指向项目内目录（技能区 {SKILLS_DIR}、灵枢本体所在目录或记忆库内部），"

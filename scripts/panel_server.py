@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -11,6 +12,7 @@ import secrets
 import shutil
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -503,14 +505,24 @@ class Handler(BaseHTTPRequestHandler):
                           f"http://localhost:{self.server.server_port}")
 
     def _token_ok(self) -> bool:
-        """所有 API 请求必须带正确 token（页面注入，非浏览器可借机偷读）。"""
+        """所有 API 请求必须带正确 token（页面注入，非浏览器可借机偷读）。
+
+        正式 token（TOKEN）只随内置首页/默认面板下发；第三方 iframe 面板用
+        「当日滚动派生 token」：由主 TOKEN 对日期做 HMAC 派生，逐日失效，
+        泄露面被限制在当天且不进浏览器历史的是完整长期凭据。
+        """
         got = ""
         auth = self.headers.get("Authorization") or ""
         if auth.lower().startswith("bearer "):
             got = auth[7:].strip()
+        if hmac.compare_digest(got.encode("utf-8"), TOKEN.encode("utf-8")):
+            return True
+        # 派生 iframe token：SHA256(TOKEN || YYYY-MM-DD) 前 32 位，逐日轮换
+        day = time.strftime("%Y-%m-%d", time.localtime())
+        digest = hashlib.sha256((TOKEN + "|" + day).encode("utf-8")).hexdigest()[:32]
         # encode 成 bytes 再比：非 ASCII header（恶意/异常客户端）直接传 str 会让
         # compare_digest 抛 TypeError，且 do_POST 的鉴权调用不在 try 里，会断连
-        return hmac.compare_digest(got.encode("utf-8"), TOKEN.encode("utf-8"))
+        return hmac.compare_digest(got.encode("utf-8"), digest.encode("utf-8"))
 
     # -------------------------------------------------- routes
     def do_GET(self):
@@ -732,7 +744,8 @@ class Handler(BaseHTTPRequestHandler):
                     text = body.decode("utf-8")
                     # 安全：只有内置默认面板才注入主 TOKEN。第三方（非内置）面板
                     # 一旦不可信，主 TOKEN 注入即可带出全部记忆——第三方面板想调
-                    # API 可通过 URL query 自行携带 token，服务端不主动下发。
+                    # API 可通过 Bearer header 携带「当日派生 token」（见 _token_ok，
+                    # 逐日轮换、非 query 传参），服务端不主动下发长期主 TOKEN。
                     if pname == panels.DEFAULT_NAME:
                         text = text.replace("/*__PANEL_TOKEN__*/", TOKEN)
                         if "PANEL_TOKEN" not in text:

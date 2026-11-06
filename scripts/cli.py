@@ -132,11 +132,26 @@ def _open_backup_zip(zp: Path, password: str | None):
     return zipfile.ZipFile(zp)
 
 
-def cmd_backup(target: str | None = None, keep: int = 20, password: str | None = None) -> int:
-    """把整个记忆库打成 zip。保留最近 keep 份，旧的自动修剪。"""
+def cmd_backup(target: str | None = None, keep: int = 20, password: str | None = None,
+               assume_yes: bool = False) -> int:
+    """把整个记忆库打成 zip。保留最近 keep 份，旧的自动修剪。
+
+    无口令备份是明文 zip（含全部记忆原文），交互环境下需显式确认；
+    restore 前的自动备份、--yes / 非交互脚本传 assume_yes=True 跳过确认。
+    """
     if not HOME.exists():
         print(f"[错误] 记忆库还不存在：{HOME}（先运行 init）", file=sys.stderr)
         return 2
+    if not password and not assume_yes:
+        # 明文备份会扩大泄露面（备份文件与明文数据同盘甚至可能更分散）：显式确认
+        if sys.stdin and sys.stdin.isatty():
+            try:
+                ans = input("本次备份不加口令，将生成含全部记忆原文的明文 zip。继续？[y/N] ")
+            except (EOFError, KeyboardInterrupt):
+                ans = ""
+            if ans.strip().lower() not in ("y", "yes"):
+                print("已取消。加 --password <口令> 可生成加密备份（.zip.enc）。")
+                return 0
     out_dir = Path(target).expanduser() if target else _default_backup_dir()
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -269,7 +284,12 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
             except EOFError:
                 pass
     if HOME.exists():
-        cmd_backup(target=str(HOME / "backups"), keep=10)  # 恢复前先留现状
+        # 恢复前先留现状备份；备份失败（如磁盘空间不足）必须中止恢复，避免既恢复失败又没有回滚点
+        bk = cmd_backup(target=str(HOME / "backups"), keep=10, assume_yes=True)
+        if bk != 0:
+            print("[错误] 恢复前的现状备份失败（可能是磁盘空间不足或目录只读），已中止恢复。"
+                  "请先清理磁盘空间或手工备份后重试。", file=sys.stderr)
+            return 2
     # 解压到临时目录，然后整包用 os.replace 原子替换——避免中途失败把目标文件写成半截。
     # 目录名带随机后缀：同秒并发恢复不会互撞；替换时逐文件持锁，
     # 防止与正在跑的面板/CLI 并发互相踩写（不再只锁 hippocampus/persona 两个文件）。
@@ -915,6 +935,9 @@ def _require_privileged(user, channel, cmd, action="") -> bool:
 
     口径（唯一权威，别在别处再各写一套 is_owner/is_admin 判定）：
       * 无 --user（纯本机命令行）→ 放行：本机使用者默认可信，别误伤日常使用；
+        但受控宿主（桥接插件等子进程）应设置 BRAIN_MEMORY_TRUSTED=1 声明信任上下文；
+        若宿主显式设置 BRAIN_MEMORY_TRUSTED=0，则"无 --user 放行"关闭，无 --user 一律拒绝
+        （用于受限环境收紧口径，防止其他进程借空 --user 绕过白名单）；
       * owner → 放行一切敏感命令；
       * admin → 按命令级别放行（当前所有敏感命令都是同一级别，owner/admin 等权；
         未来若有 owner 专属命令，在此加白名单即可，不必再散落新判定）；
@@ -923,6 +946,11 @@ def _require_privileged(user, channel, cmd, action="") -> bool:
     """
     u = (user or "").strip()
     if not u:               # 本机调用不带 --user：一律放行
+        # 受限宿主可设 BRAIN_MEMORY_TRUSTED=0 收紧：无 --user 视为不可信上下文，拒绝
+        if (os.environ.get("BRAIN_MEMORY_TRUSTED", "") or "").strip() == "0":
+            print(f"[拒绝] {cmd} 是敏感命令：当前为受限信任上下文（BRAIN_MEMORY_TRUSTED=0），"
+                  "必须携带已授权的 --user 才能执行。", file=sys.stderr)
+            return False
         return True
     if not (channel or "").strip():
         # 只带 --user 不带 --channel 的异常组合：按通道上下文从严处理
@@ -1129,6 +1157,9 @@ def _main(argv=None) -> int:
                        help="本轮还没落盘的估计字数（凭感觉估即可，用来提示'该记没记'）")
     p_ctx.add_argument("--handoff", action="store_true",
                        help="写交接笔记（四段式：状态/目标/死路/下一步），替代把压缩前的细节硬背给下个会话")
+    p_ctx.add_argument("--section", action="append", default=[],
+                       help="非交互写交接笔记：--section \"状态=...\" --section \"下一步=...\"（可多次；"
+                            "给出后跳过交互输入）")
 
     p_work = sub.add_parser("work", help="工作记忆：当前上下文，默认不落盘")
     p_work.add_argument("action", nargs="?", default="status",
@@ -1139,6 +1170,21 @@ def _main(argv=None) -> int:
     p_work.add_argument("--skip-done", action="store_true",
                         help="flush 时丢弃已完成条目，不转记忆（做完了就该放下）")
     p_work.add_argument("--json", action="store_true")
+
+    p_topic = sub.add_parser("topic", help="话题栈：拟人闲聊用，记录聊过的话题与权重")
+    p_topic.add_argument("action", nargs="?", default="list",
+                        choices=["list", "touch", "feedback", "drop", "status"])
+    p_topic.add_argument("name", nargs="?", default="", help="话题名（touch/feedback/drop 必填）")
+    p_topic.add_argument("--type", default="", help="话题类型：chat/life/tech/plan/vent/hobby…")
+    p_topic.add_argument("--weight", type=float, default=None,
+                         help="touch：直接置权重 0-1（默认 0.8；AI 自发话题建议 0.4）")
+    p_topic.add_argument("--delta", type=float, default=None, help="touch：按增量调权重")
+    p_topic.add_argument("--good", action="store_true", help="feedback：正向（用户展开多说）")
+    p_topic.add_argument("--bad", action="store_true", help="feedback：负向（用户敷衍/转移话题）")
+    p_topic.add_argument("--why", default="")
+    p_topic.add_argument("--json", action="store_true")
+    p_topic.add_argument("--compact", action="store_true",
+                         help="机器可读紧凑输出：touch/feedback/drop 也输出 JSON（一行 {name,weight,count}）")
 
     p_cap = sub.add_parser("capture", help="上下文原样封存：逐段落盘 + 原文归档，100%% 不丢")
     p_cap.add_argument("payload", nargs="+")
@@ -1168,6 +1214,7 @@ def _main(argv=None) -> int:
     p_bak.add_argument("--out", default=None, help="目标目录或 zip 路径（默认 D:/brain-memory-backups 或桌面）")
     p_bak.add_argument("--keep", type=int, default=20, help="保留最近 N 份，删除更旧的（0=不修剪）")
     p_bak.add_argument("--password", default=None, help="备份口令：给出则生成加密备份（.zip.enc），恢复时需同一口令")
+    p_bak.add_argument("--yes", action="store_true", help="跳过明文备份的确认提示（脚本/宿主调用用）")
 
     p_arch = sub.add_parser("archive", help="冷热归档：把沉眠记忆雪藏出热查询集（原文保留，可随时回捞）")
     p_arch.add_argument("action", nargs="?", default="show",
@@ -1316,6 +1363,7 @@ def _main(argv=None) -> int:
             args.cmd in ("remember", "init", "restore", "forget", "capture", "extract")
             or (args.cmd == "dream" and not args.dry_run)
             or (args.cmd == "work" and action in ("add", "done", "flush", "clear"))
+            or (args.cmd == "topic" and action in ("touch", "feedback", "drop"))
             or (args.cmd == "persona" and action not in ("show", "path", "onboarding",
                                                          "history", "snapshots", "drift",
                                                          "check"))
@@ -2146,6 +2194,77 @@ def _main(argv=None) -> int:
         print("  work clear       丢掉")
         return 0
 
+    if args.cmd == "topic":
+        name = (args.name or "").strip()
+        if args.action in ("touch", "feedback", "drop") and not name:
+            print(f"用法：topic {args.action} \"话题名\" [--why \"...\"]"
+                  + (" --good/--bad" if args.action == "feedback" else ""), file=sys.stderr)
+            return 2
+        if args.action == "touch":
+            kw = {"why": args.why}
+            if args.type:
+                kw["type_"] = args.type
+            if args.weight is not None:
+                kw["weight"] = args.weight
+            if args.delta is not None:
+                kw["delta"] = args.delta
+            rows = topic_touch(name, **kw)
+            cur = next((r for r in rows if r["name"] == name), rows[0] if rows else None)
+            if getattr(args, "compact", False):
+                print(json.dumps({"name": name, "weight": cur["weight"] if cur else None,
+                                  "count": len(rows)}, ensure_ascii=False))
+            else:
+                print(f"话题「{name}」权重 {cur['weight'] if cur else '?'}"
+                      f"（共 {len(rows)} 个在栈）。用户重提=拉高，AI 自发话题用 --weight 0.4 起步。")
+            return 0
+        if args.action == "feedback":
+            pos = args.good and not args.bad
+            if not (args.good or args.bad):
+                print("feedback 需要 --good（用户展开多说）或 --bad（敷衍/转移话题）二选一。", file=sys.stderr)
+                return 2
+            rows = topic_feedback(name, positive=pos, why=args.why)
+            cur = next((r for r in rows if r["name"] == name), None)
+            if cur is None:
+                if getattr(args, "compact", False):
+                    print(json.dumps({"name": name, "weight": None, "in_stack": False},
+                                     ensure_ascii=False))
+                else:
+                    print(f"话题「{name}」不在栈里（可能已过期），没有可反馈的。")
+                return 0
+            if getattr(args, "compact", False):
+                print(json.dumps({"name": name, "weight": cur["weight"], "positive": pos},
+                                 ensure_ascii=False))
+            else:
+                print(f"话题「{name}」权重 → {cur['weight']}"
+                      f"（{'正' if pos else '负'}反馈已写回，后续{'多聊' if pos else '少碰'}这类话题）。")
+            return 0
+        if args.action == "drop":
+            topic_drop(name)
+            if getattr(args, "compact", False):
+                print(json.dumps({"name": name, "dropped": True}, ensure_ascii=False))
+            else:
+                print(f"话题「{name}」已移出栈（用户明确说不想聊了）。")
+            return 0
+        st = topic_status()
+        if args.json:
+            print(json.dumps(st, ensure_ascii=False, indent=2))
+            return 0
+        print(f"话题栈：{st['count']}/{st['capacity']} 个；"
+              f"自发话题阈值 {st['spawn_threshold']}（权重低于它的话题快聊死了）。")
+        if not st["items"]:
+            print("  （空。用户抛出新话题时：topic touch \"话题名\"）")
+        for r in st["items"]:
+            flag = " ↓" if r["weight"] < st["spawn_threshold"] else ""
+            print(f"  {r['weight']:.2f}{flag} {r['name']}"
+                  + (f" [{r.get('type')}]" if r.get("type") else "")
+                  + f" · {r.get('turns', 1)} 轮")
+        if st["weak"]:
+            print(f"  快聊死的：{'、'.join(st['weak'])}——用户也敷衍的话，可以顺势自然开个新话题。")
+        print("  topic touch \"话题名\" [--weight 0.8|--delta +0.2]   重提/接住某话题")
+        print("  topic feedback \"话题名\" --good|--bad              用户兴趣反馈（正/负）")
+        print("  topic drop \"话题名\"                              用户明确说不想聊了")
+        return 0
+
     if args.cmd == "logs":
         lvl = None if args.all else args.level
         rows = read_logs(args.limit, level=lvl)
@@ -2323,7 +2442,12 @@ def _main(argv=None) -> int:
 
     if args.cmd == "forget":
         ok = forget(args.id)
-        print("已淡忘（移入淡忘区，保留轮廓）。" if ok else "没找到这条记忆。")
+        if ok:
+            print("已淡忘（移入淡忘区，保留轮廓）。")
+            print("说明：淡忘不是彻底删除——记忆仍在淡忘区，可用 `memory dust revive <id>` 复活回活跃层，"
+                  "`memory dust unfold <id>` 还原折叠原文。要彻底清除请手工删除对应记录文件。")
+        else:
+            print("没找到这条记忆。")
         return 0 if ok else 1
 
     if args.cmd == "check-context":
@@ -2333,17 +2457,31 @@ def _main(argv=None) -> int:
         if getattr(args, "handoff", False):
             import growth
             sections = {}
-            print("交接笔记 · 逐段输入（直接回车跳过该段；四段填完自动落盘）")
-            for key, tip in (("状态", "现在做到哪了"),
-                             ("目标", "这轮在干什么、要交付什么"),
-                             ("死路及原因", "试过什么不行、为什么不行（最有价值的一段）"),
-                             ("下一步", "下个会话第一件事做什么")):
-                try:
-                    val = input(f"  {key}（{tip}）：").strip()
-                except (EOFError, KeyboardInterrupt):
-                    val = ""
+            # 非交互优先：--section "键=值"（可多次），避免宿主环境 input() EOF 拿不到内容
+            spec_sections = getattr(args, "section", None) or []
+            for item in spec_sections:
+                s = str(item).strip()
+                if not s:
+                    continue
+                key, sep, val = s.partition("=")
+                if not sep:
+                    print(f"[错误] --section 需为 \"键=值\" 形式（键：状态/目标/死路及原因/下一步），收到：{item}",
+                          file=sys.stderr)
+                    return 2
                 if val:
-                    sections[key] = val
+                    sections[key.strip()] = val.strip()
+            if not sections:
+                print("交接笔记 · 逐段输入（直接回车跳过该段；四段填完自动落盘）")
+                for key, tip in (("状态", "现在做到哪了"),
+                                 ("目标", "这轮在干什么、要交付什么"),
+                                 ("死路及原因", "试过什么不行、为什么不行（最有价值的一段）"),
+                                 ("下一步", "下个会话第一件事做什么")):
+                    try:
+                        val = input(f"  {key}（{tip}）：").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        val = ""
+                    if val:
+                        sections[key] = val
             if not sections:
                 print("（没输入任何内容，未写交接笔记）")
                 return 0
@@ -2550,14 +2688,21 @@ def _main(argv=None) -> int:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import panel_server
         port = args.port or int(load_config().get("panel_port", 8765))
-        panel_server.serve(port, open_browser=not args.no_browser)
+        try:
+            panel_server.serve(port, open_browser=not args.no_browser)
+        except OSError as exc:
+            print(f"[错误] 面板启动失败（端口 {port} 可能被占用）：{exc}", file=sys.stderr)
+            print("换端口：python scripts/brain.py serve --port 8766；"
+                  "或修改 config.json 的 panel_port 字段。", file=sys.stderr)
+            return 2
         return 0
 
     if args.cmd == "home":
         return cmd_home(args.action, args.dest)
 
     if args.cmd == "backup":
-        return cmd_backup(args.out, args.keep, password=getattr(args, "password", None))
+        return cmd_backup(args.out, args.keep, password=getattr(args, "password", None),
+                          assume_yes=getattr(args, "yes", False))
 
     if args.cmd == "archive":
         return cmd_archive(args.action, args.arg, args.limit, args.dry_run)
@@ -2692,6 +2837,13 @@ def _main(argv=None) -> int:
 
 def main(argv=None) -> int:
     """入口：给 AI 的中文报错，不甩 Python 堆栈。"""
+    # Python 版本预检：代码使用 `int | None` 等 3.10+ 语法，低版本解释器 import 即语法错误，
+    # 这里提前给出可读报错而不是让宿主拿到一屏 SyntaxError
+    if sys.version_info < (3, 10):
+        print(f"[错误] 灵枢需要 Python 3.10 及以上，当前为 "
+              f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}。"
+              "请用新版本解释器运行（如 python3.10+ 或宿主配置的解释器路径）。", file=sys.stderr)
+        return 2
     try:
         return _main(argv)
     except (ValueError, KeyError, FileExistsError, PermissionError) as exc:
@@ -2701,11 +2853,19 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         print("\n已停止")
         return 130
-    except Exception as exc:  # 兜底：不甩裸堆栈，但完整写进运行日志供排查
+    except Exception as exc:  # 兜底：不甩裸堆栈，完整堆栈单独落诊断文件供复盘
         import traceback
+        full = traceback.format_exc()
+        diag = HOME / f"crash-{now_ts()}.log"
+        try:
+            if HOME.exists():
+                with open(diag, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(full)
+        except OSError:
+            pass
         log_event("run", f"未捕获异常：{type(exc).__name__}: {exc}", level="error",
-                  trace=traceback.format_exc()[-400:])
+                  trace=full[-400:] + (f"（完整堆栈：{diag}）" if diag.exists() else ""))
         print(f"[错误] {type(exc).__name__}: {exc}"
-              "（详情已写入运行日志，可用 `python scripts/brain.py logs --all` 查看）",
+              + (f"（完整堆栈已写入：{diag}）" if diag.exists() else "（详情见运行日志）"),
               file=sys.stderr)
         return 1

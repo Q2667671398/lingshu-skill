@@ -9,6 +9,35 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.71 — 话题栈与拟人闲聊：主动对话纪律
+
+- **话题栈数据层（core.py / memory.py）**：新增 `topics.jsonl`（容量 12，TOPIC_CAPACITY），
+  每条话题 `{name, weight, ts, turns, type, whys}`；每 12 小时一个衰减周期未重提权重
+  ×0.85（TOPIC_DECAY），7 天未重提自动退栈（TOPIC_TTL）。用户重提 `topic touch` 拉回
+  0.8；AI 自发话题低权重 0.4 起步。反馈闭环：负反馈 ×0.6、正反馈 +0.15。
+- **CLI（cli.py）**：新增 `topic` 子命令组——`list / touch / feedback --bad|--good /
+  drop / status [--json]`；通道上下文下只读保护，禁止写操作。
+- **startup 注入（memory.py build_injection）**：注入包在工作记忆节之后新增话题栈块，
+  分「还热乎的（≥0.30）」与「快聊死的（<0.30 标 ↓）」两档，作为拟人闲聊的行为依据。
+- **拟人闲聊纪律（SKILL.md 新章节）**：三级话题策略 follow_current > recall_history >
+  spawn_new；自发话题准入门槛 4 条（话题快聊死或用户敷衍、情绪非 sad/annoyed、
+  无禁入场景、同会话最多连续 1 次自发且连续两次敷衍即停止主动）；过渡词软化
+  （「对了」「说起来」）；候选优先级：历史话题关联衍生 > 通用生活化 > 人设专属。
+- **文档（docs/mechanics.md）**：新增「话题栈与拟人闲聊」机制章节（数据模型、权重规则、
+  准入门槛、命令示例、与七情六欲/工作模式/记忆关联的联动、防台账化提醒）。
+- **每会话自检清单**：「会话中」新增话题反馈动作条目。
+
+## v2.70 — 桥接 v0.2.3：自动联动 + 记忆隔离开关 + AstrBotAI 联想
+
+- **AstrBot 桥接（v0.2.3）**：
+  - 核心目录自动联动：`lingshu_path` 留空时按「环境变量 LINGSHU_PATH → 插件内置
+    engine → 上层目录探测 scripts/brain.py」自动探测，装好即用；手动配置仍优先。
+  - 记忆隔离开关 `memory_isolation`（默认开启）：开启时召回查询只用用户本轮消息，
+    宿主会话/人格不进入灵枢侧；宿主回消息始终使用 AstrBot 自己的人格画像。
+  - AstrBotAI 联想：隔离开关关闭时，召回查询可附带 `astrbot_context_lines`
+    （0–10，默认 0）条 AstrBot 会话最近上下文，召回块头部标注联想来源。
+  - `lingshu 状态` 新增核心来源与隔离开关展示；README/conf schema 同步更新。
+
 ## v2.69 — 全量质量修复（79 项问题清单）
 
 - **记忆核心**：写锁内重读再写（防并发覆盖丢）；通道召回物理过滤

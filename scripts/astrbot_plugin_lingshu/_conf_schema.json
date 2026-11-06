@@ -1,8 +1,18 @@
 {
   "lingshu_path": {
-    "description": "核心目录，留空使用随插件内置的 engine；Docker 填容器内路径",
+    "description": "核心目录，留空自动探测（环境变量 LINGSHU_PATH → 插件内置 engine → 上层目录自动联动）；Docker 填容器内路径",
     "type": "string",
     "default": ""
+  },
+  "memory_isolation": {
+    "description": "记忆隔离开关（默认开启）：开启时召回只用用户本轮消息，宿主会话/人格不进入灵枢查询；关闭后允许召回查询附带 AstrBot 会话上下文（AstrBotAI 联想）",
+    "type": "bool",
+    "default": true
+  },
+  "astrbot_context_lines": {
+    "description": "AstrBotAI 联想条数（0–10）：隔离开关关闭时，召回查询附带最近几条会话上下文；0 表示不附带",
+    "type": "int",
+    "default": 0
   },
   "data_home": {
     "description": "记忆目录，留空存入 AstrBot 的 data/plugin_data；Docker 必须持久化 data",

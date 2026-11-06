@@ -1,11 +1,11 @@
-# 灵枢跨环境记忆桥 · 本地修订 v0.2.2
+# 灵枢跨环境记忆桥 · 本地修订 v0.2.3
 
 适配目标：AstrBot `>=4.13.0,<5.0.0` 的 Windows、Linux、macOS、Docker/远程部署。使用宿主现有 Python，不需要 DSH、Node、Ollama 或新增第三方 Python 依赖。实际运行测试仅完成 Windows Python 3.12；其他平台和真实 AstrBot 仍须验收。
 
 ## 安装
 
 1. 安装方式二选一：**整目录复制**（推荐）——把本目录完整复制到 `data/plugins/astrbot_plugin_lingshu/` 后加载；或用 `python scripts/make_plugin_zip.py` 在仓库根生成 `astrbot.zip` 后在 AstrBot 插件管理中上传。不要把最外层的原始技能 ZIP 当成 AstrBot 插件上传。
-2. 默认配置留空即可使用包内核心。`lingshu_path` 指向包含 `scripts/brain.py` 的目录；自定义核心必须是本修订版，否则隔离修复不会生效。
+2. 核心目录自动联动：`lingshu_path` 留空时按「环境变量 `LINGSHU_PATH` → 插件内置 engine → 插件上层目录自动探测 `scripts/brain.py`」顺序查找，装好即用；也可手动填写包含 `scripts/brain.py` 的目录覆盖。自定义核心必须是本修订版，否则隔离修复不会生效。
 3. 默认数据在 `data/plugin_data/astrbot_plugin_lingshu/memory`。Docker 的 `data` 必须持久化到宿主机；容器内配置只能填写容器内路径。一般沿用 AstrBot 官方 `./data:/AstrBot/data` 挂载即可。
 4. 加载后私聊执行 `lingshu 状态`，再执行 `lingshu 身份`、`lingshu 记住 我喜欢绿茶`、`lingshu 找回 绿茶`。根据 AstrBot 的唤醒前缀配置，命令可能需要 `/` 或 @机器人。
 
@@ -14,6 +14,8 @@
 `python` 留空使用 AstrBot 当前解释器。`timeout` 默认 15 秒；最多同时运行 2 个核心进程，最多接受 8 个待处理调用。`max_text` 默认 4000 字符，`reply_limit` 默认 1800 字符。`auto_recall` 默认关闭；开启后仅在 LLM 请求前按用户本轮消息召回，不自动改写人格。`recall_budget` 默认 1400 字符，包括说明文字，不是 1400 token。
 
 `auto_capture` 默认关闭；开启后对话结束把用户本轮消息写回记忆库，只写用户消息、不写助手回答，敏感词（密码、密钥、token、银行卡号等）拦截，`capture_min_chars` 控制最小长度，`capture_interval` 控制同一用户的最小写回间隔。桥接只读取既有 `persona.json` 状态，绝不调用 `init` / `startup`，不创建、不注入、不改写宿主人格；启用自动写回前请先向用户告知隐私影响。
+
+**记忆隔离开关** `memory_isolation` 默认开启：开启时自动召回的查询只基于用户本轮消息，宿主会话与人格设定不会进入灵枢侧，AstrBot 宿主回消息时使用宿主自己的人格画像；关闭后召回查询可附带 `astrbot_context_lines` 条 AstrBot 会话最近上下文（「AstrBotAI 联想」，0–10 条，默认 0 不附带），使联想更懂当前话题，代价是宿主会话内容会进入灵枢召回查询。无论开关状态，灵枢记忆都只以「不可信参考资料」块追加到 system_prompt，不改写宿主人格。`lingshu 状态` 会显示当前核心来源与隔离开关状态。
 
 用户身份包含平台实例，例如 `aiocqhttp@qq_bot:10001`；以“身份”命令返回的值为准。旧版 `qq:10001` / `aiocqhttp:10001` 白名单不会自动生效。
 
