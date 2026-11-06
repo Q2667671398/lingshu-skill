@@ -9,6 +9,17 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.73 — 修复：`capture` 子命令 UnboundLocalError 崩溃
+
+- **cli.py**：`channel privacy` 展示分支（L2637）里局部变量 `capture = "允许" if ...`
+  与全局 `capture()` 函数重名。Python 函数级作用域使该赋值把 `capture` 变成
+  `_main` 的局部变量，遮蔽全局函数——任何地方调用 `capture` 子命令
+  （`brain.py capture "..."`）都会触发 `UnboundLocalError: cannot access local
+  variable 'capture'`。局部变量改名 `cap_st` 修复。
+- Trae CN 全功能冒烟时发现：startup / remember / recall / check-context /
+  emotion / topic / mode / persona check / audit / skill scan / dream --dry-run /
+  knowledge add 全部通过，仅 capture 崩溃，本版修复后复测通过。
+
 ## v2.72 — 修复：GitHub 镜像仓库名错误导致"检查更新"假报
 
 - **growth.py**：`GITHUB_REPO` 误写为 `266767398/lingshu-skill`（少 Q、ID 错），

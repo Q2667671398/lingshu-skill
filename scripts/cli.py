@@ -2634,8 +2634,8 @@ def _main(argv=None) -> int:
                     share = f"已授权（范围：{scope}）"
                 else:
                     share = "未授权"
-                capture = "允许" if rec.get("capture") else "未允许（默认不记录）"
-                print(f"{u}：分享授权={share}；自动写回={capture}")
+                cap_st = "允许" if rec.get("capture") else "未允许（默认不记录）"
+                print(f"{u}：分享授权={share}；自动写回={cap_st}")
             else:
                 data = load_consent()
                 granted = [k for k, v in data.items() if v.get("granted")]
