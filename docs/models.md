@@ -39,7 +39,7 @@
    DIR="$HOME/.cache/灵枢-skill"
    if [ -d "$DIR/.git" ]; then git -C "$DIR" pull; else git clone --depth 1 https://gitee.com/htmcwy_0/lingshu-skill.git "$DIR"; fi
    ```
-   主仓库：<https://gitee.com/htmcwy_0/lingshu-skill>　镜像：<https://github.com/266767398/lingshu-skill>
+   主仓库：<https://gitee.com/htmcwy_0/lingshu-skill>　镜像：<https://github.com/Q2667671398/lingshu-skill>
 3. **对照版本**：读 `"$DIR"/SKILL.md` 的 `version` 和 `"$DIR"/CHANGELOG.md`。与本地一样 → 告诉用户"已是最新版本"，结束；更高 → 继续。
 4. **覆盖更新**：把克隆目录里的这些文件/目录复制到 `<本技能目录>`（覆盖同名）：
    `SKILL.md`、`SKILL-lite.md`、`SKILL-tiny.md`、`README.md`、`CHANGELOG.md`、`docs/`、`assets/`、`scripts/`、`start-panel.bat`

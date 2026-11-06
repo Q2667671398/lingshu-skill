@@ -1,4 +1,4 @@
-﻿﻿# 灵枢 · 类脑记忆、人格与成长
+﻿# 灵枢 · 类脑记忆、人格与成长
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
@@ -425,7 +425,7 @@ git add -A && git commit -m "v2.33 …" && git tag v2.33 && git push --tags
 
 ### 用户侧更新
 
-**主仓库：<https://gitee.com/htmcwy_0/lingshu-skill>**　镜像：<https://github.com/266767398/lingshu-skill>
+**主仓库：<https://gitee.com/htmcwy_0/lingshu-skill>**　镜像：<https://github.com/Q2667671398/lingshu-skill>
 
 对 AI 说一句「**更新灵枢技能**」即可，它会按 `SKILL.md` 的「更新灵枢技能」流程执行。手动更新也简单：
 

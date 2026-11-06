@@ -9,6 +9,15 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.72 — 修复：GitHub 镜像仓库名错误导致"检查更新"假报
+
+- **growth.py**：`GITHUB_REPO` 误写为 `266767398/lingshu-skill`（少 Q、ID 错），
+  GitHub 兜底链路永远 404。Gitee 匿名 API 被 IP 风控限流时双远端全挂，
+  复用旧缓存触发 stale_source 守门，面板假报"缓存源版本（v2.67）不比已装
+  （v2.71）新"。修正为 `Q2667671398/lingshu-skill`。
+- 同步修正 README.md / CHANGELOG.md / docs/models.md 及 engine 镜像中的
+  GitHub 镜像地址。
+
 ## v2.71 — 话题栈与拟人闲聊：主动对话纪律
 
 - **话题栈数据层（core.py / memory.py）**：新增 `topics.jsonl`（容量 12，TOPIC_CAPACITY），
@@ -1413,7 +1422,7 @@ v2.11 后的自查加固，不改功能只堵隐患：
 ## v2.2 — 技能自更新流程
 
 - 新增「更新灵枢技能」：SKILL.md 内置一键更新流程（gitee 仓库拉取 → 版本对照 → 覆盖技能文件 → 自检），对 AI 说「更新灵枢技能」即可执行。
-- 主仓库：<https://gitee.com/htmcwy_0/lingshu-skill>　镜像：<https://github.com/266767398/lingshu-skill>。
+- 主仓库：<https://gitee.com/htmcwy_0/lingshu-skill>　镜像：<https://github.com/Q2667671398/lingshu-skill>。
 - 更新只替换技能本体文件，记忆数据（`~/.brain-memory/`）不受影响。
 
 ## v2.0 — 类人机制 + 工程化补强

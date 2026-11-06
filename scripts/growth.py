@@ -1251,7 +1251,7 @@ def list_skills() -> list:
 # （python scripts/brain.py config set gitee_token <token>）。token 绝不写日志。
 GITEE_API_BASE = "https://gitee.com/api/v5/repos/htmcwy_0/lingshu-skill"
 GITEE_BRANCH = "main"
-GITHUB_REPO = "266767398/lingshu-skill"
+GITHUB_REPO = "Q2667671398/lingshu-skill"
 GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_REPO}"
 GITHUB_BRANCH = "main"
 GITEE_ZIP_URL = f"https://gitee.com/htmcwy_0/lingshu-skill/repository/archive/{GITEE_BRANCH}.zip"
