@@ -21,6 +21,8 @@ from pathlib import Path
 
 from core import *
 
+import memory as _mem   # load_all / save_all / retention / 归档等（模块级延迟引用避免循环）
+
 # ---------------------------------------------------------------- 做梦 / 巩固
 
 # 聚类池上限：记忆多了之后 O(n²) 两两比对会拖垮每晚的巩固，
@@ -30,6 +32,146 @@ _MAX_CLUSTER_POOL = 400
 # 孤儿梦任务时效：pending 生成后超过这么久还没被 apply，视为孤儿任务。
 # 未到期前重复触发不覆盖（沿用旧任务），到期后归档再开新任务。
 _DREAM_ORPHAN_TTL = 48 * 3600
+
+# 重放池上限：上次做梦之后的新记忆 + 未完成工作记忆，太多就取最近的
+_REPLAY_MAX = 30
+
+# 交接摘要目录：做梦时把重放线索压成结构化交接（借鉴 dsh-handoff-compaction：
+# 老上下文→结构化摘要，最近细节原样保留在记忆库里，可 recall 追溯，不破坏原始数据）
+# 保留最近 10 份，旧的自动清理。
+
+# 分模式压缩策略（联动面板 AI/工程/拟人/自动模式）：
+#   work（工程模式）——骨架压缩：少淡化、少淡忘，代码/报错/路径类细节保真；
+#   human（拟人模式）——摘要压缩：细节可放心淡化，人设与情绪要点保住即可；
+#   auto 按当前话题判定落到上面两档。
+_COMPACTION_POLICY = {
+    "work": {
+        "detail_floor": 0.55,        # detail 淡化下限：骨架信息不打太薄
+        "dust_retention_shift": 0.10,  # 淡忘判据加严：R 要再低 0.10 才进淡忘区
+        "desc": "工程模式：骨架压缩——代码/报错/路径类细节保真，淡忘加严",
+    },
+    "human": {
+        "detail_floor": 0.0,
+        "dust_retention_shift": 0.0,
+        "desc": "拟人模式：摘要压缩——细节可淡化，要点与人设保住即可",
+    },
+}
+
+
+def _num(v, default: float = 0.0) -> float:
+    """把 None/字符串/坏值安全转成 float（与 memory._num 同语义，避免环形 import）。"""
+    if v is None or isinstance(v, bool):
+        return float(default)
+    try:
+        f = float(v)
+        return default if (f != f) else f   # NaN 检查
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def compaction_policy(mode: str = "") -> dict:
+    """按会话模式取压缩策略（auto 时按话题判定，拿不到就当 human）。"""
+    try:
+        if not mode:
+            mode = resolve_mode("")
+    except Exception:
+        mode = "human"
+    pol = _COMPACTION_POLICY.get(mode)
+    if not pol:
+        mode = "human"
+        pol = _COMPACTION_POLICY["human"]
+    out = dict(pol)
+    out["mode"] = mode
+    return out
+
+
+def replay_recent(limit: int = _REPLAY_MAX) -> list:
+    """重放：把「上次做梦之后」的经历线索按时间倒序拼出来（做梦前的快速眼动）。
+
+    来源：新写入的记忆（hippo/cortex，跳过 dust）+ 工作记忆里还没做完的事。
+    只读不改库——重放是做梦的输入，不是对记忆的修改。
+    """
+    last = _num(load_dream_state().get("last_dream"), 0)
+    now = now_ts()
+    items = []
+    for m in load_all():
+        if not m.get("id") or m.get("layer") == "dust":
+            continue
+        if last and _num(m.get("created"), 0) < last:
+            continue
+        items.append({"id": m["id"], "kind": m.get("kind", ""),
+                      "text": (m.get("text") or "")[:200],
+                      "ts": _num(m.get("created"), 0), "from": "memory"})
+    try:
+        for r in read_jsonl(WORKING_FILE):
+            if not r.get("open", True):
+                continue
+            ts = _num(r.get("ts"), 0)
+            if now - ts > 12 * HOUR:
+                continue
+            items.append({"id": "", "kind": "working",
+                          "text": (r.get("text") or "")[:200],
+                          "ts": ts, "from": "working"})
+    except Exception:
+        pass
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return items[:max(1, int(limit))]
+
+
+def build_handoff(items: list, mode: str = "") -> dict:
+    """压缩：重放线索 → 结构化交接摘要（状态 / 要点 / 未决 / 下一步）。
+
+    只生成摘要、不动原始数据：原文仍在记忆库里，下个会话可以 recall 追溯。
+    工程模式保「未决/下一步」优先（干活导向），拟人模式保「要点」优先（陪伴导向）。
+    """
+    pol = compaction_policy(mode)
+    memories = [x for x in items if x.get("from") == "memory"]
+    workings = [x for x in items if x.get("from") == "working"]
+    # 要点：按 kind 分组取代表，工程模式优先 fact/insight/mistake，拟人模式优先 emotion/relationship
+    priority = ("fact", "insight", "mistake", "preference") if pol["mode"] == "work" \
+        else ("emotion", "relationship", "preference", "insight")
+    ranked = sorted(memories, key=lambda x: (priority.index(x["kind"]) if x["kind"] in priority else 99,
+                                             -x["ts"]))
+    points = [x["text"] for x in ranked[:6]]
+    todo = [x["text"] for x in workings[:5]]
+    summary = {
+        "at": now_ts(),
+        "mode": pol["mode"],
+        "replayed": len(items),
+        "状态": f"上次做梦后新增 {len(memories)} 条记忆、{len(workings)} 件未完成的事",
+        "要点": points,
+        "未决": todo,
+        "下一步": "下个会话开始时先处理「未决」事项；细节用 recall <关键词> 追原文",
+    }
+    return summary
+
+
+def save_handoff(summary: dict) -> Path:
+    """交接摘要落盘（JSON，可检索），只保留最近 10 份。"""
+    d = HOME / "handoffs"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"handoff_{int(summary.get('at', now_ts()))}.json"
+    atomic_json(path, summary)
+    olds = sorted(d.glob("handoff_*.json"))
+    for old in olds[:-10]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return path
+
+
+def latest_handoff() -> dict | None:
+    """最近一份交接摘要（注入用）。"""
+    d = HOME / "handoffs"
+    files = sorted(d.glob("handoff_*.json")) if d.exists() else []
+    if not files:
+        return None
+    try:
+        h = _slurp_json(files[-1])
+        return h if isinstance(h, dict) and h.get("要点") is not None else None
+    except Exception:
+        return None
 
 
 def cluster_memories(records: list, max_clusters: int = 6, include_ids: set | None = None) -> list:
@@ -148,6 +290,24 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
                     "请检查 dream-snapshots 目录可写、磁盘未满后再试")
             report["snapshot"] = snap
         records = load_all()
+
+        # 重放→压缩：先快速眼动重放上次做梦后的经历，压成交接摘要落盘
+        # （借鉴 dsh-handoff-compaction：结构化摘要 + 原文可 recall 追溯 + 不动原始数据）。
+        # 失败不挡巩固——交接只是加分项，聚类/淡忘/晋升照常走。
+        try:
+            replay = replay_recent()
+            report["replayed"] = len(replay)
+            pol = compaction_policy()
+            report["policy"] = pol["mode"]
+            detail_floor = _num(pol.get("detail_floor"), 0.0)
+            dust_shift = _num(pol.get("dust_retention_shift"), 0.0)
+            if not dry_run and replay:
+                hp = save_handoff(build_handoff(replay))
+                report["handoff"] = hp.name
+        except Exception as e:
+            log_event("dream", f"重放/交接失败（不影响巩固）：{e}", level="warn")
+            detail_floor, dust_shift = 0.0, 0.0
+
         archived_recs = []
 
         for m in records:
@@ -167,7 +327,7 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
                 archived_recs.append(m)
                 report["archived"].append({"id": m["id"], "gist": m.get("gist") or heuristic_gist(text)})
                 continue
-            if (not verbatim and m.get("layer") == "hippo" and R < RETENTION_FLOOR
+            if (not verbatim and m.get("layer") == "hippo" and R < RETENTION_FLOOR - dust_shift
                     and _num(m.get("importance"), 0.5) < 0.6 and now - _num(m.get("created"), now) > 5 * DAY):
                 # 淡忘判据曾经是"2 天 + 重要度<0.75"：做梦触发得勤了之后（daily 自动
                 # 做梦、面板一键做梦），同一批记忆第一次被巩固处理就会大片进淡忘区，
@@ -187,6 +347,8 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
                 m["detail"] = 1.0  # 封存件永不模糊
             else:
                 target = round(0.35 + 0.65 * R, 2)
+                # 工程模式骨架压缩：detail 有下限，代码/报错类细节不被淡忘打得太薄
+                target = max(target, detail_floor)
                 if _num(m.get("detail"), 1) > target:
                     m["detail"] = target
                     report["faded"] += 1

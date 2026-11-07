@@ -2455,8 +2455,29 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     rv = f"{_cfg_num(cfg, 'review_threshold', 0.60) * 100:.0f}%"
     dr = f"{_cfg_num(cfg, 'dream_threshold', 0.75) * 100:.0f}%"
     es = f"{_cfg_num(cfg, 'escape_threshold', 0.90) * 100:.0f}%"
+    _mode_tail = {"work": "工程模式：骨架压缩，代码/报错/路径等细节照原样留痕，别急着淡忘。",
+                  "human": "拟人模式：摘要压缩，细节可放心淡化，人设与情绪要点保住即可。"}.get(
+                      session_mode if session_mode in ("work", "human") else "human", "")
     out.append(f"[水位守则] 会话中即记即存；{rv} 补记清点，{dr} 做梦压缩，{es} 封存保底。"
+               + _mode_tail +
                "用 python scripts/brain.py check-context --used <当前百分比> 逐档检查。")
+    # 上次做梦的交接摘要（重放→压缩产物）：让新会话直接接上旧话题，
+    # 而不是把「未决事项」一直压在上下文里占水位。
+    try:
+        import dream as _dream_mod
+        _ho = _dream_mod.latest_handoff()
+        if _ho:
+            _pts = [str(x) for x in (_ho.get("要点") or [])[:3]]
+            _todo = [str(x) for x in (_ho.get("未决") or [])[:3]]
+            if _pts or _todo:
+                seg = [f"[上次交接] {_ho.get('状态', '')}（{_ho.get('mode', '')} 模式压缩）"]
+                if _todo:
+                    seg.append("未决：" + "；".join(_todo))
+                if _pts:
+                    seg.append("要点：" + "；".join(_pts))
+                out.append("／".join(seg) + "。细节用 recall <关键词> 追原文。")
+    except Exception:
+        pass
     # 水位自动评估（不依赖 AI 自觉）：脚本数不出 AI 的上下文百分比，但能数出
     # 「上次做梦之后新写入的记忆条数」——攒得多说明上一场会话结束时没人做梦。
     # 超过 8 条就在 startup 注入包里直接提示，让新会话第一件事先把旧账结了。
