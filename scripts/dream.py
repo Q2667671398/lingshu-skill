@@ -533,6 +533,20 @@ def apply_dream(result: dict) -> dict:
         by_id = {m["id"]: m for m in records if m.get("id")}
         _old_terms_cache = {}  # id → terms：锁内缓存旧记忆分词，多条新记忆不重复算
 
+        # 写入时校验引用（借鉴图数据库 dangling edge 防线）：
+        # AI 填的 source_ids 可能编造/抄错 id，老版本直接写进 links 就成了死链。
+        # 现在落库前先对一遍现库，不存在的 id 丢弃并留痕。
+        _known_ids = set(by_id)
+        for item in result.get("memories") or []:
+            if isinstance(item, dict) and item.get("source_ids"):
+                bad = [sid for sid in item["source_ids"]
+                       if isinstance(sid, str) and sid not in _known_ids]
+                if bad:
+                    applied["rejected"].append(
+                        f"忽略 source_ids 中不存在的引用：{', '.join(bad)}")
+                    item["source_ids"] = [s for s in item["source_ids"]
+                                          if not (isinstance(s, str) and s in bad)]
+
         for item in result.get("memories") or []:
             if not isinstance(item, dict):
                 continue

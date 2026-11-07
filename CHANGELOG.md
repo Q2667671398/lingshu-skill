@@ -9,7 +9,19 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
-## v2.80 — C2 面板路由拆分修复 + C4 插件 4.13 兼容冒烟扩展
+## v2.81 — 死链根治：一键清理 + 写入时校验 + 干净交接工作流
+
+**死链成因与修复**（面板自诊断「6 条记忆带死链」）：经查**不是删除对话导致**——forget/归档均保留 id，库内不存在撕断链接的删除路径；真正成因是做梦 `dream apply` 老版本对 AI 填写的 `source_ids` 不校验，编造/抄错的 id 直接落库成死链。三层修复（借鉴图数据库 dangling edge 惯例）：
+
+1. **写入时校验**：`scripts/dream.py` apply 落库前校验 `source_ids`，不存在的引用丢弃并写入 `rejected` 留痕；
+2. **惰性 GC 一键清理**：`memory.py` 新增 `fix_dead_links()`，扫描热区+归档层的 `links/conflicts/superseded_by`，摘除断链引用（只清链不删记忆，零数据损失）；面板诊断页新增「清理死链」按钮（`/api/diagnostics/fix-links`），CLI 新增 `memory fix-links`；诊断文案同步改为指引修复而非只警告；
+3. **实测**：本机 6 条记忆 12 个断链引用一键清理成功，`memory diagnose` 归零。
+
+**来源归属完整率 40%**：属 v2.7x 之前老数据缺 `project` 字段的预期提示，新写入已补全，无需处理。
+
+**SKILL.md 工作流新增**：「AI 自身上下文 ~75% 时的干净交接」——清点做梦（总结成果）→ 写交接笔记/知识落盘 → `new_context` 干净重开，不等被动截断。
+
+
 
 **C2 重构**：`scripts/panel_server.py` 修复此前半成品路由拆分的致命残留——模块级 stray `self._json(...)` 行、`_POST_ROUTES` 在函数定义前导致的导入 NameError。将 37 条 POST 路由的 `_POST_ROUTES` 分发表按路由家族分组并移到 `_api_*` 处理函数之后；`do_POST` 保持"鉴权→只读门控→字典分发→异常兜底"结构，行为零变更。启动冒烟/py_compile/插件冒烟全部通过。
 

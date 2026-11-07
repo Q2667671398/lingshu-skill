@@ -403,7 +403,9 @@ def diagnose() -> dict:
 
     problems = []
     if dead:
-        problems.append(f"{len(dead)} 条记忆带死链（指向不存在的 id），建议清理 links 或确认数据没丢")
+        problems.append(f"{len(dead)} 条记忆带死链（指向不存在的 id）——多是做梦 apply 时 source_ids "
+                        f"填了库里没有的 id（老版本写入时不校验）；不影响数据本身，"
+                        f"可在面板点「清理死链」或跑 `memory fix-links` 一键清掉断链")
     if open_conf:
         problems.append(f"{len(open_conf)} 条冲突未裁决，旧说法仍在生效——去「记忆」页裁决")
     for w in bloat_warn:
@@ -417,6 +419,55 @@ def diagnose() -> dict:
                       "total_bytes": total_bytes, "long_rows": long_rows[:20]},
             "dust": {"count": len(dust_rows), "folded": folded_n},
             "origin": {"with_project": with_origin, "total": len(records), "pct": origin_pct}}
+
+
+def fix_dead_links() -> dict:
+    """一键清理死链（图数据库 dangling edge 的惰性 GC 思路）：
+
+    扫描全部记忆（含归档层）的 links / conflicts / superseded_by，
+    把指向不存在 id 的引用摘除，保留合法引用与记忆本身——只清链、不删记忆，
+    数据零损失。superseded_by 被清掉的旧说法恢复"可被回忆看到"（本来指向的
+    新说法不存在，取代关系不成立）。清理前自动打快照备份。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法清理死链。")
+    ensure_home()
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        arch = load_archive()
+        all_ids = {m.get("id") for m in records + arch if m.get("id")}
+        changed, removed = 0, 0
+        for m in records + arch:
+            fixed = False
+            links = [x for x in (m.get("links") or []) if x in all_ids]
+            if links != (m.get("links") or []):
+                removed += len((m.get("links") or [])) - len(links)
+                m["links"] = links
+                fixed = True
+            if m.get("conflicts"):
+                conf = [x for x in m["conflicts"] if x in all_ids]
+                if conf != m["conflicts"]:
+                    removed += len(m["conflicts"]) - len(conf)
+                    if conf:
+                        m["conflicts"] = conf
+                    else:
+                        m.pop("conflicts", None)
+                        m.pop("conflict_flag", None)   # 双方都没了，冲突标记自然解除
+                    fixed = True
+            if m.get("superseded_by") and m["superseded_by"] not in all_ids:
+                m.pop("superseded_by")
+                removed += 1
+                fixed = True
+            if fixed:
+                changed += 1
+        if changed:
+            # records（三个热层）与 arch（归档层）都已在原对象上就地修好，分别写回：
+            # 归档层走专用通道覆写，不能混进 save_all（否则可能把归档文件清空）
+            if arch:
+                write_jsonl(HOME / "archive.jsonl", arch)
+            save_all(records)
+            log_event("diagnose", f"清理死链：修正 {changed} 条记忆、摘除 {removed} 个断链引用")
+    return {"fixed_records": changed, "removed_refs": removed}
 
 
 def load_all() -> list:

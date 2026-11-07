@@ -1246,6 +1246,7 @@ def _main(argv=None) -> int:
     p_mem_dust.add_argument("--layer", default="cortex", choices=["cortex", "hippo"],
                             help="revive 的目标活跃层（默认 cortex）")
     mem_sub.add_parser("diagnose", help="数据自诊断：死链、冲突未裁决、数据膨胀、来源归属完整率、折叠状态")
+    mem_sub.add_parser("fix-links", help="一键清理死链：摘除指向不存在 id 的 links/conflicts/superseded_by（不删记忆）")
 
     p_res = sub.add_parser("restore", help="从备份恢复记忆库（恢复前自动留现状备份）")
     p_res.add_argument("archive", help="备份 zip 路径（加密备份为 .zip.enc）")
@@ -2766,7 +2767,16 @@ def _main(argv=None) -> int:
             d = diagnose()
             print(json.dumps(d, ensure_ascii=False, indent=2))
             return 0
-        print("用法：memory dust fold|unfold|revive <id> [--layer cortex|hippo] / memory diagnose",
+        if mem_cmd == "fix-links":
+            r = fix_dead_links()
+            if r["fixed_records"]:
+                print(f"已清理 {r['fixed_records']} 条记忆里的 {r['removed_refs']} 个断链引用"
+                      f"（只清链不删记忆，可用 restore 回滚）")
+            else:
+                print("没有死链，库里干干净净。")
+            return 0
+        print("用法：memory dust fold|unfold|revive <id> [--layer cortex|hippo] / "
+              "memory diagnose / memory fix-links",
               file=sys.stderr)
         return 64
 

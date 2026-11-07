@@ -1206,6 +1206,12 @@ def _api_forget(self, path, data):
 
 
 
+def _api_diag_fix_links(self, path, data):
+    # 自诊断配套的一键修复：摘除断链引用（只清链不删记忆，零数据损失）
+    self._json(brain.fix_dead_links())
+
+
+
 def _api_memory_dust(self, path, data):
     # 淡忘可逆通道：fold 折叠（原文收起）/ unfold 解压还原 / revive 彻底复活
     act = data.get("action", "fold")
@@ -1633,6 +1639,7 @@ _POST_ROUTES = {
         # 记忆管理 / 知识 / 笔记
         "/api/memory": _api_memory_edit,
         "/api/forget": _api_forget,
+        "/api/diagnostics/fix-links": _api_diag_fix_links,
         "/api/memory/dust": _api_memory_dust,
         "/api/memory/review": _api_memory_review,
         "/api/memory/bulk": _api_memory_bulk,

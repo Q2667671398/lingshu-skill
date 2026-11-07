@@ -824,7 +824,8 @@
             <h2 style="margin-bottom:4px">自诊断</h2>
             <div class="sub">不只展示记忆，还归因异常：死链（指向不存在的 id）、冲突未裁决、数据膨胀、来源归属完整率。</div>
           </div>
-          <button class="ghost" id="btn-diag-refresh" style="margin-left:auto">重新体检</button>
+          <button class="ghost" id="btn-diag-fixlinks" style="margin-left:auto;display:none">清理死链</button>
+          <button class="ghost" id="btn-diag-refresh" style="margin-left:8px">重新体检</button>
         </div>
         <div id="diag-summary" style="margin-top:12px"></div>
         <div id="diag-body" style="margin-top:10px"><div class="empty">加载中…</div></div>
@@ -3101,6 +3102,8 @@ async function loadDiagnostics(){
   box.innerHTML = `<div class="sub">体检中…</div>`;
   try {
     const d = await api("/api/diagnostics");
+    const fixBtn = $("btn-diag-fixlinks");
+    if (fixBtn) fixBtn.style.display = (d.dead_links && d.dead_links.length) ? "" : "none";
     if (sum) sum.innerHTML = d.ok
       ? `<span class="chip good">✔ 体检通过：没有发现异常</span>`
       : d.problems.map(p => `<div class="chip bad" style="display:block;margin-bottom:6px;padding:7px 12px">⚠ ${esc(p)}</div>`).join("");
@@ -3133,6 +3136,16 @@ async function loadDiagnostics(){
   }
 }
 $("btn-diag-refresh") && $("btn-diag-refresh").addEventListener("click", loadDiagnostics);
+$("btn-diag-fixlinks") && $("btn-diag-fixlinks").addEventListener("click", async () => {
+  if (!confirm("一键清理死链：摘除指向不存在 id 的引用（只清链、不删记忆，数据零损失）。继续？")) return;
+  try {
+    const r = await api("/api/diagnostics/fix-links", {});
+    window.alert(`已清理 ${r.fixed_records} 条记忆里的 ${r.removed_refs} 个断链引用。`);
+  } catch (e) {
+    window.alert(`清理失败：${e.message}`);
+  }
+  loadDiagnostics();
+});
 
 // ---- 数据目录（查看 / 迁移）
 const _fmtBytes = (b) => b > 1073741824 ? (b/1073741824).toFixed(2) + " GB"
