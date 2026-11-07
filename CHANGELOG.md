@@ -9,6 +9,19 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.78 — knowledge 淡出分层（借鉴 Mnemosyne / 大肥鱼 memory_policy）
+
+**功能**：知识条目按 `updated` 距今分三个淡出相位，检索与展示时实时计算、**只读不写盘、零迁移**：
+- `🌱 active`（活跃）：30 天内动过，正常检索全量展示；
+- `🍂 fading`（淡出）：30–180 天，检索降权 −0.03，正文只展示 160 字概要（细节淡出、概要与来源保留）；
+- `💤 dormant`（休眠）：>180 天，默认不再出现在召回里；关键词真命中仍可找到但分数压到 ≤0.4 作线索，看原文走 `knowledge show <id>`。
+
+**豁免（protected，始终 active）**：`pinned` 置顶条目、证据等级 E3/E4 的已验证铁律——重要或反复被证实的知识不因没人提就沉底。时间不明的条目不推测新鲜程度，一律按 active 处理（借鉴 memory_policy 对 unknown 的处理）。
+
+**生效面**：`search_knowledge`（相位降权/休眠压制）、`learn_ask`（AI 提问时附 `phase` 字段、非 active 条目正文截到 160 字）、`_print_knowledge`（相位标记 + 分相位截短正文）、`knowledge_stats`（新增 `fade` 相位计数）。
+
+**测试**：新增 `tests/test_knowledge_fade.py`，15 项断言覆盖相位计算（豁免/时间不明/created 回退/显式 now）、检索降权数值、dormant 不删除只压低位、fade 统计。引擎副本已同步，校验链（manifest/checksums/冒烟）全绿。
+
 ## v2.77 — 外部借鉴落地：日程感知只读注入（借鉴大肥鱼）
 
 - **日程感知只读注入**（AstrBot 桥接）：借鉴大肥鱼 `astrbot_plugin_schedule_awareness`——

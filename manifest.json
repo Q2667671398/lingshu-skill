@@ -1,9 +1,9 @@
 {
-  "version": "2.77",
+  "version": "2.78",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "d3c2a8a1c553616ce9a4b9bd81be0b6b2d6cc1422f5283ab1f620bfc7c48048d",
-      "size": 127242
+      "sha256": "1225643d2fb5420ae3856b08001aa911c234b865361c213b3739130082e9ea31",
+      "size": 128708
     },
     "README.md": {
       "sha256": "8fd189cb5c9b7526c784ed730053c5d63d7421101a49a84f0cd3e1f1001bc884",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "49c12fb3809610436b9e124b441a64b227ca9663c7800f5068bee992a06b6e34",
+      "sha256": "84cceb18233eaae6d5b569a3e4dda264367e44f9b413b5df7c7aed82bfcc9352",
       "size": 22835
     },
     "assets/panel.html": {
@@ -90,7 +90,7 @@
       "size": 3482
     },
     "package.json": {
-      "sha256": "78a0c9bd1edbc4f4e892b01eb4fbb04ff37de797a1bf11a6182996d564812dcd",
+      "sha256": "7e162c57cdde450af9f58140890501c38c11f1da0dec60080817ba97fd912647",
       "size": 663
     },
     "scripts/brain.py": {
@@ -118,8 +118,8 @@
       "size": 45684
     },
     "scripts/growth.py": {
-      "sha256": "6fa72902faa64e7de8bb93309f85db144308c80ea4782d8ea9e3dd0a1c34faf6",
-      "size": 201929
+      "sha256": "1238d682bca69eedd37ec0ecf8f51ba53d6cadd614ce6c0543dfe3e002035195",
+      "size": 204758
     },
     "scripts/hooks/pre-commit": {
       "sha256": "14dafabbfd698f7e510411b144ec624affe41023113b1ffd0f1aa8f3e623a275",

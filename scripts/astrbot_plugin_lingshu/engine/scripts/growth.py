@@ -410,6 +410,40 @@ def knowledge_verify(kid: str, note: str = "", level: str | None = None) -> dict
     return rec
 
 
+# 知识淡出分层（借鉴 Mnemosyne/大肥鱼 memory_policy 的 detail→gist→dormant 三相）：
+# 分层不写入、不删原文，检索/展示时按 updated 距今实时计算相位——
+#   active  活跃：30 天内动过（更新或验证），正常检索；
+#   fading  淡出：30–180 天，检索降权，正文展示截短（细节淡出，概要与来源保留）；
+#   dormant 休眠：>180 天，默认检索跳过；关键词仍能命中但只给标题线索，
+#           看原文走 knowledge show <id>（对应"ID 可查原始证据"）。
+# 豁免（始终 active，对应 protected）：pinned 置顶、E4/E3 已验证铁律——
+# 这些条目代表"重要或反复被证实"，不该因为没人提就沉底。
+FADE_ACTIVE_DAYS = 30
+FADE_DORMANT_DAYS = 180
+_FADE_PENALTY = 0.03   # fading 相位检索降权：淡出的结论该让位给新鲜说法
+
+_FADE_MARK = {"active": "🌱", "fading": "🍂", "dormant": "💤"}
+
+
+def _protected_knowledge(rec: dict) -> bool:
+    return bool(rec.get("pinned")) or rec.get("evidence_level") in ("E3", "E4")
+
+
+def knowledge_fade_phase(rec: dict, now: float | None = None) -> str:
+    """计算一条知识的淡出相位：active / fading / dormant。只读，不写盘。"""
+    if _protected_knowledge(rec):
+        return "active"
+    ts = brain._num(rec.get("updated"), 0) or brain._num(rec.get("created"), 0)
+    if ts <= 0:
+        return "active"   # 时间不明的条目不推测新鲜程度（借鉴 memory_policy 对 unknown 的处理）
+    days = (now if now is not None else brain.now_ts()) - ts
+    if days < FADE_ACTIVE_DAYS * 86400:
+        return "active"
+    if days < FADE_DORMANT_DAYS * 86400:
+        return "fading"
+    return "dormant"
+
+
 def search_knowledge(query: str, k: int = 8) -> list:
     rows = load_knowledge()
     if not rows or not (query or "").strip():
@@ -422,6 +456,13 @@ def search_knowledge(query: str, k: int = 8) -> list:
         if rec.get("status") == "discarded":
             continue
         score = brain.relevance(q, doc, idf)
+        if score <= 0:
+            continue   # dormant 相位只在真命中时出现，不占默认召回位
+        phase = knowledge_fade_phase(rec)
+        if phase == "dormant":
+            score = min(score, 0.4)   # 休眠条目关键词命中也给，但压到低位，只作线索
+        elif phase == "fading":
+            score = max(0.02, score - _FADE_PENALTY)
         if rec.get("pinned") and score > 0:
             score = min(1.0, score + 0.05)
         # 证据等级加分：被验证过的结论优先被看到（E0 不加分）
@@ -513,6 +554,8 @@ def knowledge_stats() -> dict:
         "words": sum(len(str(r.get("body") or "")) for r in rows),
         "pinned": sum(1 for r in rows if r.get("pinned")),
         "pending": sum(1 for r in rows if r.get("status") == "pending"),
+        "fade": {p: sum(1 for r in rows if knowledge_fade_phase(r) == p)
+                 for p in ("active", "fading", "dormant")},
     }
 
 
@@ -3384,7 +3427,9 @@ def learn_ask(question: str, k: int = 6) -> dict:
     return {
         "question": q,
         "knowledge": [{"id": r["id"], "title": r.get("title", ""), "topic": r.get("topic", ""),
-                       "body": _clip(r.get("body", ""), 300), "score": round(s, 3)} for r, s in ks],
+                       "phase": knowledge_fade_phase(r),
+                       "body": _clip(r.get("body", ""), 160 if knowledge_fade_phase(r) != "active" else 300),
+                       "score": round(s, 3)} for r, s in ks],
         "notes": [{"id": r["id"], "title": r.get("title", ""), "type": r.get("type", ""),
                    "body": _clip(r.get("body", ""), 200), "score": round(s, 3)} for r, s in ns],
         "memories": [{"id": m["id"], "text": _clip(m.get("text", ""), 160)} for m, _, _ in ms],
@@ -3511,8 +3556,15 @@ def _print_knowledge(rec: dict, score: float | None = None) -> None:
           + ("  ★置顶" if rec.get("pinned") else ""))
     if rec.get("evidence_level"):
         print(f"  证据 {rec['evidence_level']}" + (f" · 已验证 {rec['verified_count']} 次" if rec.get("verified_count") else ""))
+    phase = knowledge_fade_phase(rec)
+    if phase != "active":
+        print(f"  {_FADE_MARK[phase]} {phase}"
+              + ("  正文已截短，knowledge show 看全文" if phase == "fading" else
+                 "  长期未动，默认检索已淡出"))
     if rec.get("body"):
-        print("  " + _clip(rec["body"], 240))
+        # 淡出相位只给概要：细节淡出、概要与来源保留（借鉴 memory_policy 的 gist）
+        limit = 160 if phase == "fading" else (80 if phase == "dormant" else 240)
+        print("  " + _clip(rec["body"], limit))
     if rec.get("points"):
         for p in rec["points"][:6]:
             print(f"    · {p}")
