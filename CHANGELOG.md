@@ -9,6 +9,12 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.75 — 外部借鉴落地：做梦任务幂等抢占与孤儿收尾
+
+- **幂等抢占**（借鉴 dsh-mnemosyne 幂等键/租约验证）：`dream()` 写新 pending 前检查已有未消费的梦任务——未超时（<48h）不覆盖，沿用旧 task_id 并在报告标 `pending_kept`，防止旧任务被静默顶掉后 AI 的 apply 全部对不上号；超时则把旧任务归档到 `dreams/orphaned_<task_id>.json` 再开新任务，报告标 `orphaned_task_id`
+- **孤儿时效提示**：build_injection 的「待办：有一场梦还没整理完」块标注悬置时长（≥48h 提示即将作废），催促及时整理
+- `_DREAM_ORPHAN_TTL`（48h）可按需调整；apply_dream 的 task_id 对账既有防线不变
+
 ## v2.74 — 外部借鉴落地（情绪注入三道闸、防重复注入等）+ 插件审计修复
 
 - **情绪注入三道闸**（借鉴 dsh-feiyu-mood）：`mood_brief` 加签名防复读（标签+强度 0.1 分桶）、每日额度（`mood_inject_per_day`，默认 6，0=关闭）、饱和限幅（情绪饱和 ≥85% 折算）；新配置 `mood_inject_change_delta` / `mood_inject_per_day`，状态存 `emotion_inject.json`

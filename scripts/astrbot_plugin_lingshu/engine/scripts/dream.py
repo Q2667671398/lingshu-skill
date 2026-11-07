@@ -27,6 +27,10 @@ from core import *
 # 超过就按重要度取前 N 条，剩下的留到下轮（反正 consolidate 是按批推进的）。
 _MAX_CLUSTER_POOL = 400
 
+# 孤儿梦任务时效：pending 生成后超过这么久还没被 apply，视为孤儿任务。
+# 未到期前重复触发不覆盖（沿用旧任务），到期后归档再开新任务。
+_DREAM_ORPHAN_TTL = 48 * 3600
+
 
 def cluster_memories(records: list, max_clusters: int = 6, include_ids: set | None = None) -> list:
     include_ids = include_ids or set()
@@ -206,7 +210,7 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
 
     if not dry_run:
         if clusters:
-            pending = {
+            new_pending = {
                 "task_id": task_id,
                 "created": now,
                 "trigger": trigger,
@@ -227,7 +231,31 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
                     "narrative": "这次梦的叙述（可选）",
                 },
             }
-            atomic_json(HOME / "dreams" / "pending.json", pending)
+            # 幂等抢占：已有未消费的 pending 时不覆盖——旧任务的 task_id 已发给
+            # AI（面板/注入都读 pending.json），静默顶掉会让旧 apply 全部对不上号，
+            # 新任务也可能被晾着（借鉴 Mnemosyne 幂等键防重复情节、租约验证）。
+            # 未超时 → 沿用旧任务；超时太久（孤儿）→ 归档后接新任务。
+            old = load_dream_pending()
+            if old and old.get("task_id"):
+                age = now - _num(old.get("created"), now)
+                if age < _DREAM_ORPHAN_TTL:
+                    report["superseded_task_id"] = task_id
+                    task_id = old["task_id"]
+                    report["task_id"] = task_id
+                    report["pending_kept"] = True
+                    log_event("dream", f"已有未整理的梦（task_id={old['task_id']}，"
+                              f"{age / 3600:.1f}h 前触发），本次不重复生成新任务", level="warn")
+                else:
+                    orphan_path = HOME / "dreams" / f"orphaned_{old['task_id']}.json"
+                    atomic_json(orphan_path, old)
+                    pending_path = HOME / "dreams" / "pending.json"
+                    if pending_path.exists():
+                        pending_path.unlink()
+                    log_event("dream", f"过期梦任务已归档（task_id={old['task_id']}，"
+                              f"悬置 {age / 3600:.1f}h > {_DREAM_ORPHAN_TTL / 3600:.0f}h），"
+                              "生成新任务", level="warn")
+                    report["orphaned_task_id"] = old["task_id"]
+            atomic_json(HOME / "dreams" / "pending.json", new_pending)
         # 没有可整理的碎片就不写 pending.json，免得让 AI 对着一份空任务空转
         write_dream_report(report)
         st = load_dream_state()

@@ -2418,10 +2418,18 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         out.append("\n## 上次睡醒后记得的结论")
         out.extend(digest[:6])
 
-    # 待整理的梦
+    # 待整理的梦（超过 48h 未整理视为孤儿任务，下次做梦会自动归档）
     pending = HOME / "dreams" / "pending.json"
     if pending.exists():
+        try:
+            dp = json.loads(pending.read_text("utf-8")) or {}
+            age_h = (now_ts() - float(dp.get("created") or 0)) / 3600
+        except Exception:
+            age_h = 0.0
         out.append("\n## 待办：有一场梦还没整理完")
+        if age_h >= 48:
+            out.append(f"（这场梦已经悬置 {age_h:.0f} 小时了——太久没整理会被归档作废，"
+                       "下次自动做梦时旧任务作废、重新生成。请尽快处理。）")
         out.append("运行 `python scripts/brain.py dream --apply <你的整理结果.json>` 把记忆固化下来。")
 
     out.append("===== 注入结束：请自然地使用这些记忆，不要逐条复述 =====")
