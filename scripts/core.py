@@ -130,6 +130,11 @@ DEFAULT_CONFIG = {
     # 模型档位：auto 不干预；small 时注入"小模型模式"提示，劝退高风险自动能力
     # （dream --apply 自动合并 / knowledge tidy 提炼 / emotion evaluate 自动判读）。
     "model_tier": "auto",
+    # 情绪注入三道闸（借鉴 dsh-feiyu-mood，防情绪复读/漂移）：
+    #   mood_inject_change_delta = True 时，情绪签名（标签+强度档）没变就不重复注入；
+    #   mood_inject_per_day = 每天最多注入 N 次心情摘要，0 = 不限额。
+    "mood_inject_change_delta": True,
+    "mood_inject_per_day": 6,
     # 会话模式：auto = 按场景自动切换；work = 恒为工程模式（情绪隔离、理性优先）；
     # human = 恒为拟人模式（情绪照常注入）。用于解决"刚聊完情绪化话题立刻写代码"。
     "mode": "auto",

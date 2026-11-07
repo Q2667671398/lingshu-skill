@@ -9,6 +9,15 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.74 — 外部借鉴落地（情绪注入三道闸、防重复注入等）+ 插件审计修复
+
+- **情绪注入三道闸**（借鉴 dsh-feiyu-mood）：`mood_brief` 加签名防复读（标签+强度 0.1 分桶）、每日额度（`mood_inject_per_day`，默认 6，0=关闭）、饱和限幅（情绪饱和 ≥85% 折算）；新配置 `mood_inject_change_delta` / `mood_inject_per_day`，状态存 `emotion_inject.json`
+- **防重复注入**（借鉴 dsh-meow-memory）：插件按会话（unified_msg_origin）记录已见记忆 id，同会话不重复注入，全命中已见则安静跳过；集合有界（512，超限淘汰一半）防内存泄漏
+- **入站翻译 + 群聊身份标记**（借鉴大肥鱼）：空表情消息转占位文本；群聊召回消息带 `[昵称(ID)] 说：` 发送者前缀
+- **索引硬上限守卫**（借鉴 engramory）：`hippocampus.jsonl` 超上限（`index_max_records=5000` / `index_max_mb=5.0`）且为净增写入时拒绝并引导先做梦；合并/取代类操作放行
+- 云端发布条目补 sha256 校验；健康检查失败信息带排查步骤；敏感词支持 data 目录 `sensitive_words.txt` 追加；capture 队列改 `deque.popleft`
+- 新增 `tests/test_plugin_smoke.py` 并入 CI；移除 engine 内多余 `sync_engine.py` 副本；修正 SKILL.md 双 BOM；更新 manifest/checksums；桥接插件升 0.2.4；删除已完成的「灵枢-项目问题清单.md」
+
 ## v2.73 — 修复：`capture` 子命令 UnboundLocalError 崩溃
 
 - **cli.py**：`channel privacy` 展示分支（L2637）里局部变量 `capture = "允许" if ...`

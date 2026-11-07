@@ -570,15 +570,66 @@ def _state_regress(st: dict, at: float | None = None) -> dict:
     return out
 
 
+def _mood_gate_state_path():
+    return HOME / "emotion_inject.json"
+
+
+def _mood_sig(m: dict) -> str:
+    """情绪注入签名：标签 + 强度分桶（0.1 一档）。
+
+    "一次变化只说一次"的判据——标签和强度档都没变，就不算显著变化，
+    不再反复把同样一句话塞进每轮上下文（借鉴 dsh-feiyu-mood）。
+    """
+    return f"{m['label']}|{round(m['intensity'] * 10) / 10:.1f}"
+
+
 def mood_brief() -> str:
-    """给注入用的一句话心情摘要。"""
+    """给注入用的一句话心情摘要。
+
+    注入三道闸（借鉴 dsh-feiyu-mood 防情绪漂移，配置键，0 = 关闭）：
+      1. mood_inject_change_delta：显著变化阈值——签名与上次注入相同就不注入，
+         避免"我有点开心"每轮复读；
+      2. mood_inject_per_day：每日注入额度——当天注入满 N 次后不再注入，
+         心情是底色不是弹幕；
+      3. 饱和限幅：强度 ≥0.85 时按 0.85 折算展示强度，激动也不夸张。
+    状态存 HOME/emotion_inject.json（日期 + 计数 + 上次签名），写失败静默跳过。
+    """
     m = mood_now()
     if not m["active"]:
+        return ""
+    cfg = load_config()
+    per_day = _num(cfg.get("mood_inject_per_day"), 6)
+    # 饱和限幅：先折算展示强度
+    shown = min(_num(m["intensity"], 0.0), 0.85)
+    sig = _mood_sig(m)
+    gated = False
+    if not READONLY and (per_day > 0 or cfg.get("mood_inject_change_delta", True)):
+        try:
+            path = _mood_gate_state_path()
+            st = {}
+            try:
+                st = json.loads(path.read_text(encoding="utf-8-sig"))
+            except Exception:
+                pass
+            today = fmt_date(now_ts())
+            if st.get("date") != today:
+                st = {"date": today, "count": 0, "sig": ""}
+            if cfg.get("mood_inject_change_delta", True) and st.get("sig") == sig:
+                gated = True
+            elif per_day > 0 and int(st.get("count") or 0) >= per_day:
+                gated = True
+            if not gated:
+                st["count"] = int(st.get("count") or 0) + 1
+                st["sig"] = sig
+                atomic_json(path, st)
+        except Exception:
+            pass   # 闸门状态读写失败绝不挡正常注入
+    if gated:
         return ""
     top = m["active"][0]
     tail = f"，因为{top['why']}" if top.get("why") else ""
     s = (f"{m['label']}（{top['emotion']}{tail}）"
-         f"，强度 {m['intensity']:.0%}")
+         f"，强度 {shown:.0%}")
     # 心境被 EMA 平滑过且与瞬时感受差得不小时，把"没折过的真实感受"补一句——
     # AI 说得清自己现在是"瞬时激动"还是"沉淀后的心境"，手感不再隔层
     raw = m.get("raw")

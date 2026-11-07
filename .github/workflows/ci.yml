@@ -36,6 +36,10 @@ jobs:
       - name: privacy tests
         run: python tests/test_privacy_scope.py
 
+      # C1：宿主插件冒烟测试（stub AstrBot 导入 + 队列/敏感词/边界工具）
+      - name: plugin smoke tests
+        run: python tests/test_plugin_smoke.py
+
       # 语法全量编译检查
       - name: py_compile
         run: python -m compileall -q scripts tests

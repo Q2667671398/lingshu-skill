@@ -9,7 +9,7 @@ import asyncio
 import json
 import os
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 import re
 import subprocess
@@ -106,9 +106,13 @@ class LingshuPlugin(Star):
         self._background = set()
         # 敏感词：中英文全覆盖 + token 用词边界（"context token" 不会误判，但 "token: abc" 会）。
         # 标签式黑名单：每个条目是 (label, regex) 或（简单子串）。
+        # 词表集中在一个常量，可被数据目录 sensitive_words.txt 追加（每行一条正则），
+        # 代码只读不散落硬编码。
+        self._sensitive_extra = self._load_sensitive_words()
         self._sensitive = re.compile(
             r'密码|口令|密钥|私钥|token|api\s*key|apikey|银行卡号|身份证|手机号|验证码|邮箱|'
-            r'passwd|password|secret|credential|ssh[-_ ]?key|private[-_ ]?key|\bcookies?\b',
+            r'passwd|password|secret|credential|ssh[-_ ]?key|private[-_ ]?key|\bcookies?\b|'
+            + '|'.join(self._sensitive_extra),
             re.IGNORECASE)
         # 并发闸门：sync recall 用信号量，自动写回走独立队列（见 #on_llm_response）。
         self._slots = asyncio.Semaphore(2)
@@ -122,11 +126,34 @@ class LingshuPlugin(Star):
         self._consent_cache = {}
         # E-10：节流时间戳用 OrderedDict 做 LRU（move_to_end 保最近使用）。
         self._last_capture = OrderedDict()
-        # F-07：自动写回独立队列改为 asyncio.Queue，worker 阻塞 get（不再轮询）。
-        self._capture_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+        # F-07：自动写回独立队列改为 deque(maxlen)，按 list 语义消费（pop(0)/append）。
+        self._capture_queue: deque = deque(maxlen=500)
         self._capture_queue_limit = 500
         self._capture_dropped = 0
         self._capture_worker_task = None
+        # 防重复注入（借鉴 dsh-meow-memory"已见 id 按会话记录"）：
+        # session -> 最近注入过的记忆 id 集合，同会话内同一记忆不再反复注入，
+        # 避免"越聊越偏"（模型对重复出现的记忆过度加权）。有界防泄漏。
+        self._seen_memory: dict = {}
+        self._seen_memory_limit = 512
+
+    def _load_sensitive_words(self):
+        """B-05：从数据目录 sensitive_words.txt 追加敏感词（每行一条正则），读不到就为空。"""
+        path = self.data_home / 'sensitive_words.txt'
+        try:
+            lines = [ln.strip() for ln in path.read_text(encoding='utf-8').splitlines()]
+        except OSError:
+            return []
+        out = []
+        for ln in lines:
+            if not ln or ln.startswith('#'):
+                continue
+            try:
+                re.compile(ln)
+                out.append(ln)
+            except re.error:
+                logger.warning(f'[lingshu] sensitive_words.txt 中无效正则已跳过：{ln[:40]}')
+        return out
 
     async def initialize(self):
         def check():
@@ -147,9 +174,12 @@ class LingshuPlugin(Star):
                                   if self.persona_path.is_file()
                                   else '未初始化（桥接不会自动创建人格）')
         except Exception as exc:
-            self.health = f'初始化失败：{type(exc).__name__}'
+            self.health = (f'初始化失败：{type(exc).__name__}。排查步骤：'
+                           '① 确认配置的核心路径存在且 Python 版本 ≥3.10；'
+                           '② 确认数据目录可读写（磁盘未满、无只读权限）；'
+                           '③ 修复后执行「重启插件」或运行一次首次初始化命令')
             self._closed = True   # 初始化失败时禁命令，让用户先修核心，而不是每次都收到"操作失败"
-            logger.error(f'[lingshu] {self.health}；检查核心路径与数据目录权限')
+            logger.error(f'[lingshu] {self.health}', exc_info=exc)
 
     def _ident(self, event):
         platform = str(event.get_platform_name() or '').strip()
@@ -331,6 +361,39 @@ class LingshuPlugin(Star):
             result = str(exc)
         yield event.plain_result(result)
 
+    def _inbound_text(self, event):
+        """入站翻译（借鉴大肥鱼 AstrBot 插件）：只用于召回上下文，不落盘。
+
+        1. 空文字消息（纯表情/纯图片）：AstrBot 的 get_message_str 会返回空串，
+           导致自动召回直接跳过。这里按消息组件翻译成占位文本，让"用户发了个表情"
+           这类轻交互也能触发上下文召回。
+        2. 群聊消息：在查询前带上发送者身份标记 [昵称(ID)]，让召回查询和注入的
+           上下文能区分群内不同发言人；原始文字保持不变。
+        """
+        raw = str(event.get_message_str() or '').strip()
+        if not raw:
+            kinds = []
+            try:
+                for comp in (event.get_messages() or []):
+                    ctype = str(getattr(comp, 'type', '') or '').lower()
+                    if 'face' in ctype or 'mface' in ctype or 'sticker' in ctype:
+                        kinds.append('表情')
+                    elif 'image' in ctype:
+                        kinds.append('图片')
+                    elif 'at' in ctype:
+                        kinds.append('艾特')
+            except Exception:
+                pass
+            if kinds:
+                return '[用户发送了' + '/'.join(dict.fromkeys(kinds)) + '，无文字]'
+            return ''
+        if event.get_group_id():
+            nick = str(event.get_sender_name() or '').strip()
+            sender = str(event.get_sender_id() or '').strip()
+            if nick and sender and not raw.startswith('['):
+                raw = f'[{nick}({sender})] 说：{raw}'
+        return raw
+
     @filter.on_llm_request()
     async def inject_memory(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self.auto_recall or self._closed:
@@ -338,7 +401,8 @@ class LingshuPlugin(Star):
         try:
             # Retrieve by the user's own message only: the host system prompt
             # carries its persona/rules and must never leak into the query.
-            raw = str(event.get_message_str() or '').strip()
+            # 入站翻译：空表情→占位文本、群聊消息→带身份标记（借鉴大肥鱼，只进上下文）。
+            raw = self._inbound_text(event)
             if not raw or raw.startswith(('lingshu', '/lingshu')):
                 return
             # 召回查询与写入同限：超长消息整体进相似度计算会拖慢召回（#70）。
@@ -366,9 +430,24 @@ class LingshuPlugin(Star):
             if code:
                 return
             entries = json.loads(out)
+            # 防重复注入：本会话已注入过的记忆不再重复出现（linked 邻居无稳定
+            # 排名也跳过）。全部被过滤掉就本轮不注入——宁可安静，不复读。
+            session = event.unified_msg_origin or ''
+            seen = self._seen_memory.get(session, set())
+            fresh = [x for x in entries
+                     if x['memory'].get('id') and x['memory']['id'] not in seen]
+            if entries and not fresh:
+                return
+            entries = fresh
             memories = [str(x['memory'].get('text') or x['memory'].get('gist') or '') for x in entries]
             if not any(memories):
                 return
+            # 记录本会话已见 id（有界，防长会话/多会话泄漏）
+            seen.update(x['memory']['id'] for x in entries)
+            self._seen_memory[session] = seen
+            if len(self._seen_memory) > self._seen_memory_limit:
+                for k in list(self._seen_memory)[:len(self._seen_memory) // 2]:
+                    self._seen_memory.pop(k, None)
             # 逐条预算累积：再加就超 recall_budget 就停，绝不切半条记忆。
             # 边界包裹让模型一眼看到这是"不可信参考资料"的片段，降低提示注入面。
             header = (
@@ -473,7 +552,7 @@ class LingshuPlugin(Star):
         # 入队而非直接起任务：写回由独立消费循环串行执行，不与 recall 抢并发额度；
         # 队列有上限，极端积压时丢最旧并周期性告警，而不是无限占用内存。
         if len(self._capture_queue) >= self._capture_queue_limit:
-            self._capture_queue.pop(0)
+            self._capture_queue.popleft()
             self._capture_dropped += 1
             if self._capture_dropped % 50 == 1:
                 logger.warning(f'[lingshu] 自动写回队列已满，累计丢弃 {self._capture_dropped} 条（核心响应过慢或 capture_interval 过大）')
@@ -486,7 +565,7 @@ class LingshuPlugin(Star):
             if self._closed:
                 return
             if self._capture_queue:
-                item = self._capture_queue.pop(0)
+                item = self._capture_queue.popleft()
                 try:
                     await self._capture_turn(*item)
                 except Exception as exc:

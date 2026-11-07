@@ -493,7 +493,7 @@ def cloud_publish(name: str, screenshot: bytes | None = None,
     entry = {"name": mf["name"], "title": mf["title"], "version": mf["version"],
              "author": mf.get("author", ""), "description": mf.get("description", ""),
              "screenshot": (f"{name}{shot_ext}" if screenshot is not None else ""),
-             "size": len(zbytes), "updated": now}
+             "size": len(zbytes), "sha256": hashlib.sha256(zbytes).hexdigest(), "updated": now}
     c = _cfg()
     branch = c.get("branch", "master")
     author = _commit_author(c)
@@ -551,7 +551,7 @@ def cloud_extension_publish(ext_id: str) -> dict:
     entry = {"id": ext_id, "title": ext_id,
              "version": meta.get("version", "0.0.0"),
              "author": meta.get("author", ""),
-             "size": len(zbytes), "updated": now}
+             "size": len(zbytes), "sha256": hashlib.sha256(zbytes).hexdigest(), "updated": now}
     c = _cfg()
     branch = c.get("branch", "master")
     author = _commit_author(c)

@@ -1,9 +1,9 @@
 {
-  "version": "2.73",
+  "version": "2.74",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "3b84000c118cc93ceae70be4f8bd5d07167bf4ceb635d0f523361fd3343152e5",
-      "size": 123035
+      "sha256": "9cec6e05808540a15547ad6b345de16f7dd1e41331dd90e7009997edbb165542",
+      "size": 124468
     },
     "README.md": {
       "sha256": "8fd189cb5c9b7526c784ed730053c5d63d7421101a49a84f0cd3e1f1001bc884",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "f228bbb6881480b44f6923913380edd23cee678fe54f9b1306596a437e181d18",
+      "sha256": "7c864eb7ae4a02718c0d41e58536ece3175638b69ee20b34deb1a2c6f9c75cd3",
       "size": 22835
     },
     "assets/panel.html": {
@@ -90,7 +90,7 @@
       "size": 3482
     },
     "package.json": {
-      "sha256": "80152fcabf5bd923a123174f9104d4d6832632b2bf1cb4839e424cdc176207e0",
+      "sha256": "d3d5da17d17d0ab878475b387c21423f10582a1fda1719b4d488ce1d07863ae2",
       "size": 663
     },
     "scripts/brain.py": {
@@ -106,16 +106,16 @@
       "size": 154396
     },
     "scripts/core.py": {
-      "sha256": "273e1257be5b665a2d1edcb23e4d39e36b83170e4a1de8ed167c0e37f601c837",
-      "size": 52674
+      "sha256": "1dbad3e23099d7919f21d69053d06bf3284bea9c9b1f7b5b91d0969a84d3189f",
+      "size": 53019
     },
     "scripts/dream.py": {
       "sha256": "b67c996e9ef632131a88de9fb097080af3e2e929f0f66eccc24f519b35d3cdbb",
       "size": 22389
     },
     "scripts/emotion.py": {
-      "sha256": "67dcf96d320f2b02cb90fcae624f25900496e7613c206432fa05e60f786a57b3",
-      "size": 41851
+      "sha256": "47cb745647ea6a079107e0d57df98e1aec1ba2955bdea0662eb8b2687b23300e",
+      "size": 43995
     },
     "scripts/growth.py": {
       "sha256": "6fa72902faa64e7de8bb93309f85db144308c80ea4782d8ea9e3dd0a1c34faf6",
@@ -134,12 +134,12 @@
       "size": 1972
     },
     "scripts/memory.py": {
-      "sha256": "790ccbda031fb527fd2ad1f2b3c73e3111652c4217767abe34f694ee5cc8f8ac",
-      "size": 123655
+      "sha256": "a9c3a400b4218a7dad52989796f0d575ae596026e15bc394624252e9e9dabb88",
+      "size": 125261
     },
     "scripts/panel_cloud.py": {
-      "sha256": "c17ea2cb6e59c5f55b72be34d4ce19000c660d9d6dc04cb5e0dc05a37a61bac5",
-      "size": 27424
+      "sha256": "fff72888123d45bbf05ab329a06b2126f1c0b972c76283ecff32454bc4155c58",
+      "size": 27516
     },
     "scripts/panel_server.py": {
       "sha256": "d9d81bf7817b669142fcd74cc80667ab504979045fdd74a437d83ad2ec936e8e",

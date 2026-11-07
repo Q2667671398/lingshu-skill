@@ -924,6 +924,30 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
                 rec["superseded"] = superseded + conflicts  # 展示"这次牵动/质疑了哪些旧说法"
             else:
                 rec["superseded"] = superseded    # 给调用方展示"这次取代了哪些旧说法"
+        # —— 索引硬上限守卫（engramory 式单调守卫）——
+        # hippocampus.jsonl 是热索引，无限膨胀会拖垮每次 load_all/注入。
+        # 规则：超过硬上限（index_max_records 条 或 index_max_mb MB）且本次写入
+        # 还会让索引变大 → 拒绝写入（引导先做梦压缩/整理）；dream --apply 等缩小
+        # 或持平的写入路径不经过这里（直接走 save_all），读取永远不受影响。
+        # 合并/取代类写入本身不净增条数，视为"持平"放行。
+        try:
+            _cap_cfg = load_config()
+            _max_n = int(_cfg_num(_cap_cfg, "index_max_records", 5000, int))
+            _max_bytes = int(_cfg_num(_cap_cfg, "index_max_mb", 5.0, float) * 1024 * 1024)
+            if _max_n > 0 or _max_bytes > 0:
+                _idx = HOME / "hippocampus.jsonl"
+                _cur_bytes = _idx.stat().st_size if _idx.exists() else 0
+                _over = ((_max_n > 0 and len(records) + 1 > _max_n)
+                         or (_max_bytes > 0 and _cur_bytes > _max_bytes))
+                if _over and not (superseded or conflicts):
+                    raise ValueError(
+                        f"记忆索引已达硬上限（{len(records)} 条 / {_cur_bytes // 1024} KB，"
+                        f"上限 {_max_n} 条 / {_max_bytes // 1024 // 1024} MB）。"
+                        "先做梦压缩再写：`python scripts/brain.py dream --auto`。")
+        except ValueError:
+            raise
+        except Exception:
+            pass          # 守卫自身出错绝不能拦住记事
         records.append(rec)
         # 联想建链：与历史里词面最相近的几条互挂 links（锁内、传已 load 的快照）
         try:
