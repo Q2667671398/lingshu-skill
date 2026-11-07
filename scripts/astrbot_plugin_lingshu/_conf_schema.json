@@ -63,5 +63,15 @@
     "description": "同一用户自动写回的最小间隔秒数（10–86400），防止刷屏写入",
     "type": "int",
     "default": 300
+  },
+  "schedule_awareness": {
+    "description": "日程感知只读注入（借鉴大肥鱼）：只读宿主 data_v4.db 的定时任务表，把当前会话名下真实存在的日程注入提示词，让 AI 知道自己有什么安排；只读不写、失败静默",
+    "type": "bool",
+    "default": false
+  },
+  "schedule_max_tasks": {
+    "description": "日程注入的最大任务条数（1–50），超出部分截断",
+    "type": "int",
+    "default": 10
   }
 }

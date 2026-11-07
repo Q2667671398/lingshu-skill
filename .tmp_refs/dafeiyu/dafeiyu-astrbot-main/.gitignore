@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.log
+.venv/
+*.bak
+.serena/
+.memory-observatory/
+.life-pilot/
+.env
+payload/
