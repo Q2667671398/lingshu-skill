@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-03",
+  "updated": "2026-11-07",
   "panels": [],
   "extensions": [
     {
@@ -9,7 +9,7 @@
       "version": "v0.1.0",
       "author": "lingshu",
       "size": 11531,
-      "sha256": "",
+      "sha256": "1cff736289795c4cbbe0cd826cd0f1c61beacd90a65bcf61a2635bb36ac393af",
       "updated": "2026-11-03",
       "desc": "通过 subprocess 调用灵枢 CLI，把群聊/私聊记忆接入 AstrBot，含群友隐私保护（本人同意才能对外分享关于自己的记忆）。",
       "repo": "https://github.com/Q2667671398/lingshu-skill"
@@ -20,7 +20,7 @@
       "version": "0.1.0",
       "author": "lingshu",
       "size": 11507,
-      "sha256": "",
+      "sha256": "27ad44eb2c8de3b063a581810b3ffe6305dbad42ee97774891ec41c9d3f112c0",
       "updated": "2026-11-03",
       "desc": "会话启动时自动运行灵枢 brain.py startup，把人格/记忆/待办注入每个新会话，不依赖模型自觉读 SKILL.md。",
       "repo": "https://github.com/Q2667671398/lingshu-skill"
