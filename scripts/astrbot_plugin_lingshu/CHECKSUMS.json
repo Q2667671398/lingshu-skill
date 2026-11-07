@@ -16,7 +16,7 @@
   "engine/scripts/cli.py": "a164f5e5ab00cd8fc19f61c162d71e10490bab2f221738a826aa2945f6ba6359",
   "engine/scripts/core.py": "1dbad3e23099d7919f21d69053d06bf3284bea9c9b1f7b5b91d0969a84d3189f",
   "engine/scripts/dream.py": "0ad5245e2071e83c38b590a07f33c8d1fadd9e28ce2f76644ad17ce9ad1271a5",
-  "engine/scripts/emotion.py": "47cb745647ea6a079107e0d57df98e1aec1ba2955bdea0662eb8b2687b23300e",
+  "engine/scripts/emotion.py": "4f0e1eb2cde00918fde38ee3496dcfe60ecf91ccfa2241abdce3bc394f250d6d",
   "engine/scripts/growth.py": "6fa72902faa64e7de8bb93309f85db144308c80ea4782d8ea9e3dd0a1c34faf6",
   "engine/scripts/memory.py": "b87ae89f41afe1a1a9bdac028590415a8dbe6fde3793203167a347297f4e0c25",
   "engine/scripts/panel_cloud.py": "fff72888123d45bbf05ab329a06b2126f1c0b972c76283ecff32454bc4155c58",

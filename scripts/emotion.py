@@ -856,15 +856,46 @@ def _pick_emotion_by_appraisal(polarity: str, importance: float) -> str:
     return "好奇" if importance >= 0.7 else "平静"
 
 
-def _detect_polarity(event: str) -> str:
-    """自动判向：文本里的高能词 → 正/负；否则中性（认知评价的情绪偏向）。"""
+def _detect_polarity(event: str, detail: dict | None = None) -> str:
+    """自动判向：文本里的高能词 → 正/负；否则中性（认知评价的情绪偏向）。
+
+    detail 传入字典时，把命中明细写回去（neg_hits / pos_hits / words），
+    供判定审计留痕——出问题能溯源"为什么把这件事判成了负面"。
+    """
     neg = ("骂", "错", "坏", "输", "丢", "拒", "伤", "哭", "气", "烦", "累", "失败",
            "糟糕", "走了", "别", "没了", "担心", "害怕", "难过", "病")
     pos = ("夸", "好", "赢", "成", "到", "喜", "爱", "笑", "谢谢", "成功", "顺利",
            "记得", "来了", "喜欢", "开心", "感动")
-    neg_hit = sum(1 for w in neg if w in event)
-    pos_hit = sum(1 for w in pos if w in event)
-    return "negative" if neg_hit > pos_hit else ("positive" if pos_hit > neg_hit else "neutral")
+    neg_hits = [w for w in neg if w in event]
+    pos_hits = [w for w in pos if w in event]
+    if detail is not None:
+        detail["neg_hits"] = neg_hits
+        detail["pos_hits"] = pos_hits
+    return "negative" if len(neg_hits) > len(pos_hits) else ("positive" if len(pos_hits) > len(neg_hits) else "neutral")
+
+
+def _log_emotion_audit(row: dict) -> None:
+    """判定审计：每次 emotion_evaluate 留一条判定过程（含 auto 判向命中词）。
+
+    与 _log_emotion_check 同款惯例：jsonl、保留最近 200 条、只读跳过、失败静默。
+    """
+    if READONLY:
+        return
+    try:
+        ensure_home()
+        p = HOME / "emotion_audit.jsonl"
+        rows = read_jsonl(p)[-199:]
+        rows.append(row)
+        write_jsonl(p, rows)
+    except Exception:
+        pass
+
+
+def emotion_audit_recent(limit: int = 20) -> list:
+    """最近的判定审计记录（面板/排查用，最新在前）。"""
+    rows = read_jsonl(HOME / "emotion_audit.jsonl")
+    rows.sort(key=lambda r: _num(r.get("ts"), 0), reverse=True)
+    return rows[:max(0, limit)]
 
 
 def emotion_evaluate(event: str, polarity: str = "auto", importance: float = 0.6,
@@ -883,7 +914,10 @@ def emotion_evaluate(event: str, polarity: str = "auto", importance: float = 0.6
     if polar not in ("positive", "negative", "neutral", "auto"):
         raise ValueError(f"极性只能是 positive / negative / neutral / auto，收到：{polarity}")
     if polar == "auto":
-        polar = _detect_polarity(event)
+        _polar_detail: dict = {}
+        polar = _detect_polarity(event, _polar_detail)
+    else:
+        _polar_detail = None
     # 中性重要事不凭空变好事：原逻辑 imp>=0.75 会把 neutral 强转 positive，
     # 语义不成立（"重要"≠"好"）——保持中性，分量交给 intensity/decision 体现。
     emo = _pick_emotion_by_appraisal(polar, imp)
@@ -904,6 +938,19 @@ def emotion_evaluate(event: str, polarity: str = "auto", importance: float = 0.6
         "advice": ("情绪激动且分量重：先不急着下结论，把取舍给用户决定，"
                    "我只负责如实表达感受与建议。") if (ra["storm"] and (polar == "negative" and imp >= 0.6)) else "",
     }
+    # 判定审计：极性判定方式、auto 命中词、评价与最终决策全留痕，可溯源
+    _log_emotion_audit({
+        "ts": now_ts(),
+        "event": event[:120],
+        "polarity_requested": (polarity or "auto").strip().lower(),
+        "polarity": polar,
+        "auto_polarity_hits": _polar_detail,
+        "importance": imp,
+        "emotion": emo,
+        "decision": rv["decision"],
+        "storm": bool(ra.get("storm")),
+        "event_id": (ev or {}).get("id"),
+    })
     return rv
 
 

@@ -9,6 +9,12 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.76 — 外部借鉴落地：情绪判定审计日志
+
+- `emotion_evaluate` 每次判定留痕到 `emotion_audit.jsonl`（`_log_emotion_audit`，保留最近 200 条，只读跳过、失败静默）：记录极性判定方式（requested vs 实际）、auto 判向的正/负词命中明细、importance、最终情绪、decision、理智上头标记、关联情绪事件 id——判错情绪时可溯源"为什么把这件事判成了负面"。
+- `_detect_polarity` 支持 `detail` 出参回传命中词列表（供审计），行为不变；`emotion_mirror` 内部调用不受影响。
+- 新增 `emotion_audit_recent(limit)` 读取接口（最新在前），供面板/排查使用。
+
 ## v2.75 — 外部借鉴落地：做梦任务幂等抢占与孤儿收尾
 
 - **幂等抢占**（借鉴 dsh-mnemosyne 幂等键/租约验证）：`dream()` 写新 pending 前检查已有未消费的梦任务——未超时（<48h）不覆盖，沿用旧 task_id 并在报告标 `pending_kept`，防止旧任务被静默顶掉后 AI 的 apply 全部对不上号；超时则把旧任务归档到 `dreams/orphaned_<task_id>.json` 再开新任务，报告标 `orphaned_task_id`

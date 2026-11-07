@@ -1,9 +1,9 @@
 {
-  "version": "2.75",
+  "version": "2.76",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "88f4ea3f6bb27c3d4303ce4e425f7195b0bea871dea7ae0f607bb630dffb7e1c",
-      "size": 125201
+      "sha256": "4c8401cb2fbf11728cc9cec96e3ace9e4eafd84409ec9a3116e4d44a878794b5",
+      "size": 125892
     },
     "README.md": {
       "sha256": "8fd189cb5c9b7526c784ed730053c5d63d7421101a49a84f0cd3e1f1001bc884",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "bf396421f63defec21cfe394cff232f908bb6a4af59ebc5fc46c3ac9ade854ef",
+      "sha256": "a3ce50c920c6f881f76e664a4d30e4535c7c81ff3f379c57dae3287b542ad902",
       "size": 22835
     },
     "assets/panel.html": {
@@ -90,7 +90,7 @@
       "size": 3482
     },
     "package.json": {
-      "sha256": "68050ecf94c4026cace09fd20d5e3f906cc0d7cc8ae0b4f208149d68e0ecafea",
+      "sha256": "86a694f4fa5e41c563b6ddaeb962954dde79eec93143e8a652a3d5f99042af8e",
       "size": 663
     },
     "scripts/brain.py": {
@@ -114,8 +114,8 @@
       "size": 24269
     },
     "scripts/emotion.py": {
-      "sha256": "47cb745647ea6a079107e0d57df98e1aec1ba2955bdea0662eb8b2687b23300e",
-      "size": 43995
+      "sha256": "4f0e1eb2cde00918fde38ee3496dcfe60ecf91ccfa2241abdce3bc394f250d6d",
+      "size": 45684
     },
     "scripts/growth.py": {
       "sha256": "6fa72902faa64e7de8bb93309f85db144308c80ea4782d8ea9e3dd0a1c34faf6",
