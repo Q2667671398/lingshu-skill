@@ -9,6 +9,12 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.80 — C2 面板路由拆分修复 + C4 插件 4.13 兼容冒烟扩展
+
+**C2 重构**：`scripts/panel_server.py` 修复此前半成品路由拆分的致命残留——模块级 stray `self._json(...)` 行、`_POST_ROUTES` 在函数定义前导致的导入 NameError。将 37 条 POST 路由的 `_POST_ROUTES` 分发表按路由家族分组并移到 `_api_*` 处理函数之后；`do_POST` 保持"鉴权→只读门控→字典分发→异常兜底"结构，行为零变更。启动冒烟/py_compile/插件冒烟全部通过。
+
+**C4 兼容冒烟扩展**：`tests/test_plugin_smoke.py` 扩展 AstrBot 4.13 宿主接口 stub（filter 装饰器注册表、AstrMessageEvent/EventMessageEvent/ProviderRequest 假类、StarTools.get_data_dir 重定向），新增断言：装饰器注册、完整实例化 + initialize 生命周期、`_ident` 隔离键、`_validate_text` 边界、capture 队列 500 上限丢最旧、terminate 清理。注：真实 4.13 宿主实测（事件钩子真实签名、ProviderRequest 流转、data_v4.db 布局）仍需用户环境。
+
 ## v2.79 — 做梦「重放→压缩→巩固」落地 + 分模式压缩策略（借鉴 dsh-handoff-compaction）
 
 **功能**：CLI 文案一直说"重放→压缩→巩固"，但 dream.py 实际只有巩固没有重放——这次补齐三段式：
