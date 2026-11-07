@@ -39,3 +39,5 @@ panel-token.txt
 pnpm-lock.yaml
 # 本项目零 npm 依赖（仅 peerDependencies），锁文件无意义（#25）；
 # 如未来引入 dependencies，请改用一种包管理器并提交其锁文件 + packageManager 字段。
+
+.tmp_refs/
