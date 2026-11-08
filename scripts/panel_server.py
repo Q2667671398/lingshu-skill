@@ -34,7 +34,7 @@ _WRITE_ENDPOINTS = {
     "/api/persona/self", "/api/persona/rollback", "/api/persona/changes-viewed",
     "/api/memory", "/api/memory/review", "/api/knowledge", "/api/knowledge/review",
     "/api/note", "/api/skill",
-    "/api/skill/self-review", "/api/evolve", "/api/dream", "/api/dream/auto",
+    "/api/skill/self-review", "/api/skill/dsh-repair", "/api/evolve", "/api/dream", "/api/dream/auto",
     "/api/dream/apply", "/api/dream/draft", "/api/memory/bulk",
     "/api/emotion", "/api/mode", "/api/link",
     "/api/mind/weigh", "/api/diagnostics/fix-links", "/api/seed",
@@ -1385,6 +1385,18 @@ def _api_skill(self, path, data):
 
 
 
+def _api_skill_dsh_repair(self, path, data):
+    """修复 DSH 里残缺的 lingshu-skill 副本（空壳目录 + 被移除的声明）。"""
+    profile = data.get("profile") or None
+    res = growth.repair_dsh_lingshu_copy(profile)
+    brain.log_event("panel",
+                    f"DSH 副本修复请求 profile={profile or 'all'} → "
+                    f"repaired={res.get('repaired')} errors={res.get('errors')}")
+    self._json({"ok": bool(res.get("ok")), "result": res,
+                "workspace": workspace()})
+
+
+
 def _api_evolve(self, path, data):
     row = growth.log_evolution(data.get("kind", "self"), data.get("title", ""),
                                data.get("detail", ""), data.get("refs") or [])
@@ -1661,6 +1673,7 @@ _POST_ROUTES = {
         # 技能 / 种子
         "/api/skill": _api_skill,
         "/api/skill/self-review": _api_skill_self_review,
+        "/api/skill/dsh-repair": _api_skill_dsh_repair,
         "/api/seed": _api_seed,
         # 日志
         "/api/logs": _api_logs_post,

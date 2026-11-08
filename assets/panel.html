@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1000,6 +1000,13 @@ const progress = topProgress();
   <div class="box">
     <h3 id="upd-title">检查更新</h3>
     <div class="pre" id="upd-detail" style="margin:10px 0 4px"></div>
+    <div id="upd-dsh-section" style="display:none;margin-top:14px;padding:12px;border:1px solid #e2c27a;border-radius:8px;background:#fffaf0">
+      <div style="font-weight:600;margin-bottom:8px">⚠ DSH 插件副本需要修复</div>
+      <div id="upd-dsh-detail" style="font-size:13px;color:#5a4a1f;line-height:1.6"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="upd-dsh-repair" style="background:#c47f17">一键修复 DSH 副本</button>
+      </div>
+    </div>
     <div class="row" style="margin-top:16px">
       <button class="ghost" id="upd-close">关闭</button>
       <button class="btn hidden" id="upd-apply">立即更新</button>
@@ -3982,6 +3989,9 @@ async function checkUpdate(auto){
         }
       }
     }
+    // DSH 副本健康检查：不管本体有没有更新，只要 DSH 里的 lingshu-skill 残缺
+    // （商店更新时被占用导致清空）就显示修复区块，让用户一键补回文件与声明。
+    renderDshCopies(r.dsh_copies);
   } catch (e) {
     console.error("检查更新:", e);
     progress.done();
@@ -4002,6 +4012,54 @@ $("upd-close").addEventListener("click", () => {
   $("upd-modal").classList.add("hidden");
 });
 $("btn-self-update").addEventListener("click", () => checkUpdate(false));
+// DSH 副本修复：把商店更新时被清空的 lingshu-skill 目录补回文件 + 恢复 profile 声明
+const DSH_STATE_LABEL = {
+  ok: "正常", empty: "空壳（已被清空）", partial: "残缺（缺关键文件）",
+  missing_bundle: "未在 bundles 声明", missing_dep: "未在 dependencies 声明",
+  not_installed: "未安装",
+};
+function renderDshCopies(copies){
+  const sec = $("upd-dsh-section");
+  if (!sec) return;
+  const broken = (copies || []).filter(c => c.state !== "ok" && c.state !== "not_installed");
+  if (!broken.length) { sec.style.display = "none"; return; }
+  const lines = broken.map(c => {
+    const ver = c.version ? " v" + esc(c.version) : "";
+    return "· <b>" + esc(c.profile) + "</b>：" + DSH_STATE_LABEL[c.state] + ver
+      + (c.file_count != null ? "（" + c.file_count + " 个文件）" : "");
+  });
+  $("upd-dsh-detail").innerHTML = lines.join("<br>") +
+    "<br><i>商店在 DSH 运行时更新会留下空壳目录。点下方按钮从本机源补全文件并恢复声明，"
+    + "DSH 下次启动自动加载，无需手动退出重装。</i>";
+  sec.style.display = "block";
+}
+$("upd-dsh-repair").addEventListener("click", async () => {
+  const btn = $("upd-dsh-repair");
+  try {
+    btn.disabled = true;
+    btn.classList.add("loading");
+    btn.textContent = "修复中…";
+    const r = await post("/api/skill/dsh-repair", {});
+    const res = r.result || {};
+    const ok = (res.repaired || []).length;
+    const errs = res.errors || [];
+    if (errs.length) {
+      const detail = errs.map(e => "· " + esc(e.profile) + "：" + (e.errors || []).join("；")).join("<br>");
+      toast("修复完成，" + ok + " 个 profile 成功，" + errs.length + " 个有错误", true);
+      $("upd-dsh-detail").innerHTML += "<br><br><b>修复结果：</b><br>" +
+        (ok ? "成功：" + res.repaired.join("、") + "<br>" : "") + detail;
+    } else {
+      toast("修复完成：" + (res.repaired || []).join("、") + " 已恢复，重启 DSH 即可生效");
+      $("upd-dsh-section").style.display = "none";
+    }
+  } catch (e) {
+    toast("修复失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("loading");
+    btn.textContent = "一键修复 DSH 副本";
+  }
+});
 $("upd-apply").addEventListener("click", async () => {
   const btn = $("upd-apply");
   try {

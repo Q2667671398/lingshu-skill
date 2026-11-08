@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.90（2026-11-09）
+
+- 新增 DSH 副本自动修复：dsh-market 在 DSH 运行时更新灵枢失败后留下的空壳目录（文件被清空 + bundles/dependencies 声明被移除），面板现在能自动检测并一键修复，DSH 重开即正常装载，无需手动退出重装
+- `dsh_lingshu_copy_state()`：扫描所有 DSH profile 的 node_modules/lingshu-skill，判定 ok/empty/partial/missing_bundle/missing_dep/not_installed 六种状态；检查更新接口（`/api/skill/update-check`）自动附带各 profile 副本状态
+- `repair_dsh_lingshu_copy()`：空目录可直接写入不受占用锁影响，按 manifest.json 发布清单 O(清单) 补全文件（只写缺失/0 字节文件，不覆盖），并恢复 profile 声明（优先用 pnpm-lock.yaml 里的原始 specifier，与 lockfile 对齐避免 pnpm 重解析）
+- panel.html：更新弹窗内展示异常副本 + 「修复」按钮，成功后提示重启 DSH 生效
+- panel_server.py：新增 POST `/api/skill/dsh-repair`（写入接口，纳入只读门控）
+
 ## v2.89（2026-11-09）
 
 - 修复检查更新误报「v2.87 → v2.87 还显示有更新」：版本号解析成功且相等时以版本号闸门为准，同版本不再因内容差异被判 outdated（`_update_check_live` 主判定与 stale 重拉分支、`list_skills` 三处同步修正）
