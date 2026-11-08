@@ -136,6 +136,20 @@ def check(staged: bool = False, base: str = "HEAD") -> int:
                   file=sys.stderr)
             return 1
 
+    # JSON 交付物禁止 UTF-8 BOM：dsh 用严格 JSON.parse 读已装包的 package.json，
+    # 带 BOM 直接 SyntaxError 拒装（v2.87 踩过一次，v2.88 被 PowerShell 写回复发）。
+    for jname in ("package.json", "manifest.json"):
+        jp = ROOT / jname
+        if jp.exists():
+            try:
+                head = jp.read_bytes()[:3]
+            except OSError:
+                continue
+            if head == b"\xef\xbb\xbf":
+                print(f"[version] 拒绝：{jname} 带 UTF-8 BOM，dsh 安装校验会失败。"
+                      f"用无 BOM UTF-8 重写后再提交。", file=sys.stderr)
+                return 1
+
     code = [p for p in _changed_files(staged, base) if _is_code(p)]
     if not code:
         return 0

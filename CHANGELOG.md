@@ -1,5 +1,10 @@
 # 更新日志
 
+## v2.91（2026-11-09）
+
+- 根 package.json 再次带 UTF-8 BOM 导致 dsh-market 安装拒收（`SyntaxError: Unexpected token '﻿'`）——v2.87 修过一次，v2.88 发版时被 PowerShell 5 写回（默认 UTF-8 with BOM）复发
+- 加防线：pre-commit 钩子（check_version.py）新增 BOM 闸——package.json / manifest.json 带 BOM 直接拒绝提交，杜绝第三次复发
+
 ## v2.90（2026-11-09）
 
 - 新增 DSH 副本自动修复：dsh-market 在 DSH 运行时更新灵枢失败后留下的空壳目录（文件被清空 + bundles/dependencies 声明被移除），面板现在能自动检测并一键修复，DSH 重开即正常装载，无需手动退出重装
