@@ -1,12 +1,12 @@
 {
-  "version": "2.87",
+  "version": "2.88",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "e1e2bf2e7525c83b512e88239b3ff892e2d41328188af68628dac1d8837e3967",
-      "size": 138707
+      "sha256": "2982b069d7f3f9a724d5e3f927dcf0ccf8a983c4fc63ab48531a40a88366b972",
+      "size": 138950
     },
     "README.md": {
-      "sha256": "8fd189cb5c9b7526c784ed730053c5d63d7421101a49a84f0cd3e1f1001bc884",
+      "sha256": "31de6570a9dd5a19fb6b326f5ec789276853c9557554b0bc6733631a5f54df33",
       "size": 52600
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "2b06f39e86be2659472fd49692ed9c7024ae2eaec776d4d02c09da267c006255",
+      "sha256": "f27676de3436f5f049b1449fef5f07a5733fd5c109519951b4193f0c60b433e0",
       "size": 24635
     },
     "assets/panel.html": {
@@ -90,7 +90,7 @@
       "size": 3482
     },
     "package.json": {
-      "sha256": "1d23c0270ae26a46210c4a8c6eb01cdafa0245c0578a951c1b7609a3076c2df4",
+      "sha256": "c813bd51196a2d2ba56e3a21c0b947452acdd19fe1ef2ef3c8f2f60c5cf33932",
       "size": 663
     },
     "scripts/brain.py": {

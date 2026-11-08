@@ -1,4 +1,12 @@
-﻿# 变更历史
+# 更新日志
+
+## v2.88（2026-11-08）
+
+- 同步 AstrBot 插件 engine 快照：SKILL.md 2.68→2.87、README 2.65→2.87，去 UTF-8 BOM
+- 根 README.md 版本行 2.65→2.87（漏升补齐），根 SKILL.md 去 BOM
+- manifest.json 重算
+
+# 变更历史
 
 本文件记录灵枢的版本变更。版本号跟随 `SKILL.md` 的 frontmatter 版本。
 
