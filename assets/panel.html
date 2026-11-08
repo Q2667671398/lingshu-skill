@@ -3952,8 +3952,11 @@ async function checkUpdate(auto){
         detail = (lines.join("\n\n") || "内容与全局副本不一致。") + "\n\n更新会以本地最新内容镜像同步到全局技能目录，记忆数据不受影响。";
       }
       // 标题里的两个版本语义必须分清：installed_version=已装，source_version=源里的
-      // （兼容旧字段 version，但字段名不能让人误以为是已装版本）
-      showUpdModal("灵枢本体有更新（v" + esc(r.installed_version || "?") + " → v" + esc(r.source_version || r.version) + "）", detail, true);
+      // （兼容旧字段 version，但字段名不能让人误以为是已装版本）。
+      // 版本号相等时（理论上 outdated 不会为 true，防旧缓存/旧后端兜底）不显示"vX → vX"怪文案。
+      const sameV = String(r.installed_version) === String(r.source_version || r.version);
+      showUpdModal(sameV ? "灵枢本体内容有变化（v" + esc(r.installed_version || "?") + "）"
+                         : "灵枢本体有更新（v" + esc(r.installed_version || "?") + " → v" + esc(r.source_version || r.version) + "）", detail, true);
     } else {
       dot.style.display = "none";
       if (!auto) {

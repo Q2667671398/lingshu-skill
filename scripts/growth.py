@@ -1197,8 +1197,16 @@ def _diff_signature(dir_path: Path) -> set:
     sig = set()
     if not dir_path.is_dir():
         return sig
+    # 非交付物排除：开发仓库里混着的参考素材/CI/本地数据/临时产物不参与差异判定——
+    # 不排除的话 dev 源（本地开发仓库）与任何已装副本的签名天然巨大差异，
+    # 每次检查都误报 outdated（.tmp_refs/ 参考目录一进来就是两千多个文件）。
+    _SKIP_PARTS = {".git", ".github", ".tmp_refs", "__pycache__", "data",
+                   "node_modules", ".venv", "dist", "build", ".vscode", ".trae",
+                   ".trae-cn", ".idea"}
     for f in dir_path.rglob("*"):
-        if not f.is_file() or "__pycache__" in f.parts or ".git" in f.parts:
+        if not f.is_file() or _SKIP_PARTS.intersection(f.parts):
+            continue
+        if f.name.startswith(".") or f.name.endswith((".tmp", ".pyc", ".lock", ".corrupt")):
             continue
         # AGENTS.md 是安装时重新生成的（区块化更新，含时间性内容），不参与差异判定
         # .lingshu-source 是远程缓存的来源标记（缓存元数据），副本里没有——
@@ -1268,10 +1276,16 @@ def list_skills() -> list:
                     inst_meta, _ = parse_frontmatter((installed_dir / "SKILL.md").read_text(encoding="utf-8"))
                 except OSError:
                     inst_meta = {}
-                src_sig, dst_sig = _diff_signature(d), _diff_signature(installed_dir)
-                outdated = (src_sig != dst_sig
-                            and (_real_drift(src_sig, dst_sig)
-                                 or _ver(meta.get("version", 1)) != _ver(inst_meta.get("version", 1))))
+                # 版本号相等时以版本号闸门为准：同版本就是没有新版本，
+                # 不让内容差异（如参考素材混入）顶出版本闸门造成误报
+                src_ver, inst_ver = _ver(meta.get("version", 1)), _ver(inst_meta.get("version", 1))
+                if src_ver == inst_ver and not isinstance(src_ver, str):
+                    outdated = False
+                else:
+                    src_sig, dst_sig = _diff_signature(d), _diff_signature(installed_dir)
+                    outdated = (src_sig != dst_sig
+                                and (_real_drift(src_sig, dst_sig)
+                                     or src_ver != inst_ver))
             out.append({
                 "name": name,
                 "description": meta.get("description", ""),
@@ -2110,21 +2124,24 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
     except OSError:
         inst_meta = {}
     # 双保险 2.0：纯 mtime 抖动（同名同大小）必须版本号真变了才算过期；
-    # 但副本残缺/关键文件内容变化（_real_drift）不依赖版本号——
-    # 发布时忘了升版本号，用户也不会卡死在旧版/损坏副本上。
-    outdated = bool(src_sig != dst_sig) and (
-        _real_drift(src_sig, dst_sig)
-        or _ver(meta.get("version", 1)) != _ver(inst_meta.get("version", 1)))
-    # 版本守门：远程拉取全链路失败时会复用旧缓存兜底，那份缓存可能比已装版本还旧
-    # （缓存停留在 v2.16、已装已升到 v2.18）。此时绝不能报 outdated——点了"更新"
-    # 会把旧代码镜像同步回去，造成真倒退。版本号解析不出（非语义化）时保守放行，
-    # 交给内容差异判断。
+    # 副本残缺/关键文件内容变化（_real_drift）平时也不依赖版本号——
+    # 但语义化版本解析成功且相等（src_v == inst_v）时以版本号闸门为准：
+    # 同版本就是没有新版本。否则会出现「v2.87 → v2.87 还报有更新」的怪弹窗
+    # （面板标题两个版本号一样，内容差异却让 outdated=true）。
     def _ver_tuple(v) -> tuple | None:
         try:
             return tuple(int(x) for x in str(v).strip().split("."))
         except (TypeError, ValueError):
             return None
     src_v, inst_v = _ver_tuple(meta.get("version", 1)), _ver_tuple(inst_meta.get("version", 1))
+    same_version = (src_v is not None and inst_v is not None and src_v == inst_v)
+    outdated = bool(src_sig != dst_sig) and not same_version and (
+        _real_drift(src_sig, dst_sig)
+        or _ver(meta.get("version", 1)) != _ver(inst_meta.get("version", 1)))
+    # 版本守门：远程拉取全链路失败时会复用旧缓存兜底，那份缓存可能比已装版本还旧
+    # （缓存停留在 v2.16、已装已升到 v2.18）。此时绝不能报 outdated——点了"更新"
+    # 会把旧代码镜像同步回去，造成真倒退。版本号解析不出（非语义化）时保守放行，
+    # 交给内容差异判断。
     stale_source = False
     # 严格小于才算"倒退"：版本相等只是"没有新版本"，不能报 stale_source
     # （否则本地源正常、缓存与已装同版本时也会误报远程不可用）。
@@ -2144,10 +2161,11 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
             except OSError:
                 meta = {}
             src_sig = _diff_signature(src_dir)
-            outdated = bool(src_sig != dst_sig) and (
+            src_v = _ver_tuple(meta.get("version", 1))
+            outdated = bool(src_sig != dst_sig) and not (
+                src_v is not None and inst_v is not None and src_v == inst_v) and (
                 _real_drift(src_sig, dst_sig)
                 or _ver(meta.get("version", 1)) != _ver(inst_meta.get("version", 1)))
-            src_v = _ver_tuple(meta.get("version", 1))
             if outdated and src_v is not None and src_v < inst_v:
                 outdated = False
                 stale_source = True
