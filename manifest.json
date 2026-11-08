@@ -1,9 +1,9 @@
 {
-  "version": "2.84",
+  "version": "2.85",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "e3fcd2e5412e68f955f55315adf69047943331802b031ac929c7f8f35aeacebd",
-      "size": 136517
+      "sha256": "23d5d17ec27b755762d97ced2b1c9afe374248d9acb942fdab572d59c865e60a",
+      "size": 137334
     },
     "README.md": {
       "sha256": "8fd189cb5c9b7526c784ed730053c5d63d7421101a49a84f0cd3e1f1001bc884",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "29759d6e51309816d2166d6c0e92da99db9463e0759163088d2a717d16ad0853",
+      "sha256": "aabefd334c23e316a73d7170778acb6fc7e06c2ae4b2d21d187be7c92a1cfa74",
       "size": 24635
     },
     "assets/panel.html": {
@@ -66,8 +66,8 @@
       "size": 54
     },
     "docs/commands.md": {
-      "sha256": "416d2b81623bd4eb8053669f39d9f3a5193bc69b2f79d43d8a576dff0e3fd2a3",
-      "size": 12988
+      "sha256": "dfb5c21596864c3275c6bff60b7ba9a716d2fa551e9bc6ef44993f698a2fca30",
+      "size": 14051
     },
     "docs/mechanics.md": {
       "sha256": "5743845d8efa8945c3bbae06ac226d3e5ff04886b63fe76b62883d7a5708d946",
@@ -81,12 +81,16 @@
       "sha256": "2cab01a7b824b402bca41d8739d36133265bb8622385876e1b499385aa1aaa99",
       "size": 10172
     },
+    "docs/问题待办-20261108.md": {
+      "sha256": "8caebb9a325798d94ab08b2e3604ba89809409527f40768482ea46dca66b63cc",
+      "size": 10423
+    },
     "index.js": {
       "sha256": "e0dd9b3a8b10907c7359751966a4fd7c92b438caec445f64205361cc2496a8ce",
       "size": 3482
     },
     "package.json": {
-      "sha256": "f34eebd87b7e05bd1c2b4efbb02e7dc8e1f9db17adb6d85c435ea8794d21804e",
+      "sha256": "7dcd8cd6b246c3b5e898694a071bf4f8eb478179f997affcc40285c9e4ec203d",
       "size": 663
     },
     "scripts/brain.py": {

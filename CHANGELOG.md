@@ -9,6 +9,13 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.85 — dsh-market 更新失败根治：市场源改走 gitee
+
+用户 dsh-market 更新两次失败（GitHub 连通预检 5 秒超时；DSH 运行中文件占用导致安装残缺、profile 被迫移除 startup/cron 插件）：
+
+- **index.json 市场源改 gitee**：两条 extension 的 `repo` 从 GitHub 镜像改指 gitee 主仓库 `htmcwy_0/lingshu-skill`——dsh-market 按 `repo` 拉取，走 gitee 不再触发宿主的 github.com 连通预检，从源头绕开超时；`updated` 同步刷新。
+- **FAQ 补排查**：docs/commands.md 新增两条——GitHub 预检超时（`git ls-remote` 验证连通 → 调大 `githubConnectionTimeoutMs` 或改用 gitee 源）、「profile 声明了插件但未安装」（完全退出 DSH → 市场重装；记忆数据在 `~/.brain-memory/` 不受影响）。
+
 ## v2.84 — 体检修复批次：12 项问题清零（P1×1 / P2×2 / P3×9）
 
 全模块静态体检（11 个模块，清单见 docs/问题待办-20261108.md）后集中修复：

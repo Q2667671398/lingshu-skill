@@ -135,3 +135,9 @@ Windows 可双击 `<本技能目录>/start-panel.bat` 启动。
 
 **Q：哪些场景别用灵枢？**
 纯一次性聊天、只想要临时算力不需要记忆、宿主不支持执行脚本、用户明确只想要"记一句话"但不想建库——这些场合灵枢是负担，直接不用。
+
+**Q：dsh-market 更新 lingshu-skill 报 `connection to github.com timed out after 5000ms`？**
+宿主在安装前会自己预检 GitHub 连通性，5 秒连不上就放弃——通常网络本身是通的（`git ls-remote https://github.com/Q2667671398/lingshu-skill.git` 能返回），只是宿主阈值太短。两招任选：① 调大宿主 cordis.yml 里的 `githubConnectionTimeoutMs`（建议 15000–30000）；② v2.85 起 `index.json` 的 `repo` 已指向 gitee 主仓库，更新走 gitee 不再碰 GitHub 预检。
+
+**Q：dsh-market 更新报「profile 声明了这些插件，但它们没有安装： dsh-lingshu-startup, dsh-lingshu-cron」？**
+上次更新时 DSH 还在运行、占用着技能目录文件，pnpm 换不动目录导致安装残缺，市场为防下次启动卡死把这两个 cordis 插件从 profile 移除了（目录还在）。修法：**完全退出 DSH**（不是最小化，确保进程全退）→ 在市场里重新安装 lingshu-skill → 启动 DSH 验证。记忆数据在 `~/.brain-memory/`，重装不会丢。
