@@ -9,6 +9,19 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.84 — 体检修复批次：12 项问题清零（P1×1 / P2×2 / P3×9）
+
+全模块静态体检（11 个模块，清单见 docs/问题待办-20261108.md）后集中修复：
+
+- **P1 panel_server**：POST 写接口防护名单 `_WRITE_ENDPOINTS` 与实际路由脱节——补入 `/api/mind/weigh`、`/api/diagnostics/fix-links`、`/api/seed`，移除死名单项 `/api/persona/restore`，只读门控恢复全覆盖。
+- **P2 panel_server**：`_api_emotion` gain/max_intensity、`_api_link` weight 改用 `_to_num` 统一数值校验，非数字返回 400，风格与其余端点一致。
+- **P3 memory**：`assoc_graph` 改 `r.get("src"/"dst")` 防畸形行 KeyError；`build_injection` dream 文件读取包 OSError 降级。
+- **P3 growth**：note 写操作死名单项 update/delete 移除，只留 write。
+- **P3 桥接插件 main.py**：删除 `_last_capture`/`_background` 死代码；`_load_cron_jobs` 改 `asyncio.to_thread`，不再阻塞事件循环。
+- **P3 tests**：`test_selfupdate_egg.py` / `test_sha_boundary.py` 去硬编码绝对路径（改 `Path(__file__)` 推导），增加 RESULT 输出与退出码，CI 可用。
+- **P3 panel.html**：局部变量 `esc` 遮蔽全局转义函数，改名 `escBtn`/`escEl`。
+- **保留**：cli.py `work done` 两步无锁——影响仅限会话级暂存数据，修复成本高于收益，记为已知风险。
+
 ## v2.83 — 交接工作流升级为「三层落盘」 · 修复图节点透明
 
 - **SKILL.md「75% 干净交接」升级**：压缩替代不了落盘。硬信息（路径/命令/报错/用户纠正原话）必须先写交接笔记，摘要只做路标；交接前同时 `remember`/`work add` 写入本地记忆，recall 可随时补全上下文——落盘→笔记→摘要三层保险。

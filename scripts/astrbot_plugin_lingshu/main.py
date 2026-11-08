@@ -103,8 +103,6 @@ class LingshuPlugin(Star):
         # Persona isolation: the bridge never creates, injects, or edits persona.json.
         self.persona_path = self.data_home / 'persona.json'
         self.persona_state = '未检测'
-        self._last_capture = {}
-        self._background = set()
         # 敏感词：中英文全覆盖 + token 用词边界（"context token" 不会误判，但 "token: abc" 会）。
         # 标签式黑名单：每个条目是 (label, regex) 或（简单子串）。
         # 词表集中在一个常量，可被数据目录 sensitive_words.txt 追加（每行一条正则），
@@ -583,7 +581,9 @@ class LingshuPlugin(Star):
             try:
                 umo = event.unified_msg_origin or ''
                 if umo:
-                    sched = self._format_schedule(self._load_cron_jobs(), umo)
+                    # sqlite3/文件 IO 同步阻塞会卡事件循环，放 to_thread
+                    jobs = await asyncio.to_thread(self._load_cron_jobs)
+                    sched = self._format_schedule(jobs, umo)
                     if sched:
                         base = req.system_prompt or ''
                         cut = base.find(self.SCHEDULE_MARKER)
@@ -693,9 +693,6 @@ class LingshuPlugin(Star):
         self._capture_queue.clear()
         if self._capture_worker_task is not None:
             self._capture_worker_task.cancel()
-        for task in list(self._background):
-            task.cancel()
-        self._background.clear()
         for proc in list(self._processes):
             try:
                 if proc.poll() is None:

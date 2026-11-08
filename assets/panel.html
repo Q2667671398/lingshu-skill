@@ -661,7 +661,7 @@
               <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#e05c4f;display:inline-block"></i>很重要</span>
               <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#d9a441;display:inline-block"></i>较重要</span>
               <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#5fa8a0;display:inline-block"></i>一般</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#5d646e;display:inline-block"></i>不重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#7d8896;display:inline-block"></i>不重要</span>
               <span class="sub" style="color:var(--faint)">颜色=重要程度 · 越近被想起越亮</span>
             </div>
           </div>
@@ -1495,9 +1495,20 @@ function startPhysics(){
         }
       }
     }
-    for (let i = 0; i < n; i++){
+    // 超出物理预算(n)的尾部节点不做两两斥力/弹簧，但要给一个"径向归位"力并照常前进：
+    // 否则它们永远停在初始随机球心附近、位置从不更新，大图中心会挤成一团死点
+    for (let i = n; i < nodes.length; i++){
+      const p = pos[i];
+      const d = Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z) + 1e-6;
+      const f = (d - kk) / d * -0.006;   // 远的往回收、近的往外推，缓慢归位到 kk 半径
+      vel[i].x = (vel[i].x + p.x * f) * 0.9;
+      vel[i].y = (vel[i].y + p.y * f) * 0.9;
+      vel[i].z = (vel[i].z + p.z * f) * 0.9;
+    }
+    // 位置推进遍历全部节点（不能只推前 n 个，否则尾部节点被冻结在初始位置）
+    for (let i = 0; i < nodes.length; i++){
       pos[i].x += vel[i].x; pos[i].y += vel[i].y; pos[i].z += vel[i].z;
-      energy += vel[i].x*vel[i].x + vel[i].y*vel[i].y + vel[i].z*vel[i].z;
+      if (i < n) energy += vel[i].x*vel[i].x + vel[i].y*vel[i].y + vel[i].z*vel[i].z;
     }
     renderGraph();
     // 动能连挂 40 帧都极低 → 休眠；任何交互 autoWake() 重新启动
@@ -1660,6 +1671,7 @@ function renderGraph(){
   // 节点（先画非焦点，再画焦点；近的压在上面）
   const order = nodes.map((n, i) => i).sort((a, b) => proj[a].z - proj[b].z);
   const drawNode = i => {
+    if (!shown.has(i)) return;   // 层筛选/背面/太小的节点不画（否则筛选只隐藏了边，节点还全在）
     const n = nodes[i], p = proj[i];
     const r = (3 + (n.importance || 0.5) * 11) * Math.max(0.4, p.s);
     const base = nodeColor(n);
@@ -1686,7 +1698,7 @@ function renderGraph(){
     ctx.shadowBlur = 0;
     if (focusHit){ ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke(); }
     const labelable = (GRAPH.selected === i || (sel != null && hot.has(i) && i !== sel) || (GRAPH.selected == null && n.importance >= 0.8));
-    if (p.s > 0.45 && labelable && !(dim && false) && shown.has(i)){
+    if (p.s > 0.45 && labelable && shown.has(i)){
       ctx.globalAlpha = dim ? 0.35 : ctx.globalAlpha;
       ctx.font = (GRAPH.selected === i ? "bold 11px" : "10px") + " system-ui,sans-serif";
       ctx.fillStyle = GRAPH.selected === i ? "rgba(240,208,120,.98)" : "rgba(233,230,223,.95)";
@@ -1728,6 +1740,14 @@ function graphSearch(q, advance){
 // 层筛选：只显示选定层的节点（空 = 全部）
 function graphLayerFilter(){
   GRAPH.layerFilter = $("graph-layer").value || null;
+  const node = GRAPH.data && GRAPH.data.nodes[GRAPH.selected];
+  // 切层后焦点/路径可能落在被筛掉的层上：清掉，否则详情卡指着图上看不见的节点、路径线悬空
+  if (GRAPH.layerFilter && node && node.layer !== GRAPH.layerFilter){
+    GRAPH.selected = null;
+    GRAPH.pathEdges = null;
+    $("graph-detail").classList.add("hidden");
+    $("graph-neighbors").innerHTML = "点一个节点，看它连着什么。";
+  }
   renderGraph();
 }
 function docsOf(n){
@@ -1752,19 +1772,25 @@ function findGraphPath(qa, qb){
   if (a == null){ toast("找不到起点：" + qa, true); return null; }
   if (b == null){ toast("找不到终点：" + qb, true); return null; }
   if (a === b){ toast("A 和 B 是同一条记忆", true); return null; }
-  // BFS 记 parent，找到即停（无权图最短路径）
+  // BFS 记 parent + 深度，找到即停；限制 MAX_HOPS 跳——不限制会绕出十几跳的"路径"，
+  // 既看不懂也失去"两跳联想"的意义
+  const MAX_HOPS = 3;
   const prev = new Map([[a, -1]]);
+  const depth = new Map([[a, 0]]);
   const queue = [a];
+  let found = false;
   while (queue.length){
     const cur = queue.shift();
-    if (cur === b) break;
+    if (cur === b){ found = true; break; }
+    const dcur = depth.get(cur) || 0;
+    if (dcur >= MAX_HOPS) continue;
     const ns = GRAPH.nbrs && GRAPH.nbrs.get(cur);
     if (!ns) continue;
     for (const nx of ns){
-      if (!prev.has(nx)){ prev.set(nx, cur); queue.push(nx); }
+      if (!prev.has(nx)){ prev.set(nx, cur); depth.set(nx, dcur + 1); queue.push(nx); }
     }
   }
-  if (!prev.has(b)){ toast("3 跳内没有关联路径", true); return null; }
+  if (!found){ toast("3 跳内没有关联路径", true); return null; }
   // 回溯节点链，再由相邻节点对找到对应边序号
   const chain = [];
   for (let cur = b; cur !== -1; cur = prev.get(cur)) chain.unshift(cur);
@@ -1840,7 +1866,9 @@ function graphHit(x, y){
   let best = null, bestD = 14;
   nodes.forEach((n, i) => {
     if (GRAPH.layerFilter && n.layer !== GRAPH.layerFilter) return;   // 被筛选掉的层点不到
-    const p = proj[i], r = (3 + (n.importance || 0.5) * 11) * Math.max(0.4, p.s);
+    const p = proj[i];
+    if (p.z >= GRAPH.dist * 0.9 || p.s <= 0.12) return;   // 背面/缩得太小的节点同 renderGraph 一样不可见
+    const r = (3 + (n.importance || 0.5) * 11) * Math.max(0.4, p.s);
     const dx = x - (cx + p.x), dy = y - (cy + p.y);
     const d = Math.sqrt(dx * dx + dy * dy);
     if (d < r + 5 && d < bestD){ bestD = d; best = i; }
@@ -1918,7 +1946,7 @@ function initGraphInteractions(){
 // 键盘退出：Esc 回全景（点节点后按 Esc，不用找按钮）
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && GRAPH.selected != null
-      && !$("view-graph").classList.contains("hidden")){
+      && $("view-graph").classList.contains("active")){   // view 用 active 切换，旧写法 hidden 恒为真（在别的 tab 按 Esc 也会误重绘）
     resetGraphView();
     renderGraph();
   }
@@ -4396,23 +4424,23 @@ setTimeout(() => checkUpdate(true), 1200);
     fr.addEventListener("load", () => { ok = true; });
     setTimeout(() => { if (!ok) fallback(pname, "加载超时"); }, 3000);
     // 悬浮逃生口：永远能一键回到默认面板
-    const esc = document.createElement("button");
-    esc.id = "panel-escape";
-    esc.textContent = "⇱ 返回默认面板";
-    esc.style.cssText = "position:fixed;right:14px;top:14px;z-index:850;cursor:pointer;" +
+    const escBtn = document.createElement("button");
+    escBtn.id = "panel-escape";
+    escBtn.textContent = "⇱ 返回默认面板";
+    escBtn.style.cssText = "position:fixed;right:14px;top:14px;z-index:850;cursor:pointer;" +
       "background:#1b2028;color:#e6e1d5;border:1px solid #2a3140;border-radius:9px;padding:7px 14px;font-size:12px";
-    esc.onclick = async () => {
+    escBtn.onclick = async () => {
       try{ await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({action:"deactivate"})}); }catch(e){}
       location.reload();
     };
-    document.body.appendChild(esc);
+    document.body.appendChild(escBtn);
   }
   async function fallback(pname, why){
     const fr = document.getElementById("custom-panel-frame");
     if (fr) fr.remove();
-    const esc = document.getElementById("panel-escape");
-    if (esc) esc.remove();
+    const escEl = document.getElementById("panel-escape");
+    if (escEl) escEl.remove();
     try{ await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({action:"deactivate"})}); }catch(e){}
     toast(`自定义面板「${pname}」${why}，已回退默认面板`, true);

@@ -2,9 +2,12 @@
 """测试：SHA256 规范化哈希的跨 64KB 块边界 CRLF 归一化"""
 import hashlib, sys, tempfile
 from pathlib import Path
-sys.path.insert(0, r'e:\丁厚同\文档\程序\灵枢-skill\scripts')
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'scripts'))
 import growth
 import make_manifest as mm
+
+failures = []
 
 # 构造一个 CRLF 恰好跨 65536 边界的文件：LF*32767 后，65535-65536 字节处放 \r\n
 half = 32767  # 每行 "a\n" 2 字节，32767 行 = 65534 字节
@@ -17,10 +20,10 @@ with tempfile.TemporaryDirectory() as d:
     # 正确形态：全量 replace
     expect = hashlib.sha256(body.replace(b"\r\n", b"\n")).hexdigest()
     got_mm, size = mm.sha256_file(p)
-    # growth 侧 _norm_sha 在 apply_update 内部，这里复刻同逻辑调用：直接测其行为
-    # 通过构造 staging 场景太重，改为导入验证一致性——growth._norm_sha 定义在
-    # apply_update 内部，用 make_manifest 侧对齐 + growth 集成复现兜底
-    print("make_manifest:", "OK" if got_mm == expect else f"FAIL {got_mm[:12]} vs {expect[:12]}")
+    ok = got_mm == expect
+    print("make_manifest:", "OK" if ok else f"FAIL {got_mm[:12]} vs {expect[:12]}")
+    if not ok:
+        failures.append("make_manifest")
 
 # growth 侧：直接跑一个临时目录的 apply_update，源带 manifest
 with tempfile.TemporaryDirectory() as d:
@@ -41,3 +44,7 @@ with tempfile.TemporaryDirectory() as d:
         print("growth apply_update boundary:", "OK")
     except Exception as e:
         print("growth apply_update boundary: FAIL —", e)
+        failures.append("apply_update")
+
+print("RESULT:", "PASS" if not failures else "FAIL")
+sys.exit(0 if not failures else 1)

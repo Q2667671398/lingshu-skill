@@ -2189,7 +2189,7 @@ def assoc_graph(limit: int = 300) -> dict:
     ids = {n["id"] for n in nodes}
     edges = []
     for r in load_assoc():
-        if r["src"] in ids and r["dst"] in ids:
+        if r.get("src") in ids and r.get("dst") in ids:
             edges.append({"src": r["src"], "dst": r["dst"],
                           "relation": r.get("relation", "相关"),
                           "weight": float(r.get("weight", 1))})
@@ -2462,10 +2462,13 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     dream_files = sorted((HOME / "dreams").glob("*.md")) if (HOME / "dreams").exists() else []
     if dream_files:
         digest = []
-        for line in dream_files[-1].read_text(encoding="utf-8").splitlines():
-            s = line.strip()
-            if s and not s.startswith("#"):
-                digest.append(s)
+        try:
+            for line in dream_files[-1].read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    digest.append(s)
+        except OSError:
+            pass
         out.append("\n## 上次睡醒后记得的结论")
         out.extend(digest[:6])
 

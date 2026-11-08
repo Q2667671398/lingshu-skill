@@ -29,7 +29,7 @@ ASSETS = Path(__file__).resolve().parent.parent / "assets"
 
 # 只读门控名单：这些 POST 端点会写数据目录，数据目录不可写时统一 403
 _WRITE_ENDPOINTS = {
-    "/api/remember", "/api/persona", "/api/persona/state", "/api/persona/restore",
+    "/api/remember", "/api/persona", "/api/persona/state",
     "/api/persona/edit", "/api/persona/mind", "/api/persona/interview",
     "/api/persona/self", "/api/persona/rollback", "/api/persona/changes-viewed",
     "/api/memory", "/api/memory/review", "/api/knowledge", "/api/knowledge/review",
@@ -37,6 +37,7 @@ _WRITE_ENDPOINTS = {
     "/api/skill/self-review", "/api/evolve", "/api/dream", "/api/dream/auto",
     "/api/dream/apply", "/api/dream/draft", "/api/memory/bulk",
     "/api/emotion", "/api/mode", "/api/link",
+    "/api/mind/weigh", "/api/diagnostics/fix-links", "/api/seed",
     "/api/forget", "/api/daily", "/api/dream/instruction", "/api/logs",
     "/api/memory/dust",
     # 自定义面板管理：activate/delete/install 等都写数据目录
@@ -1003,11 +1004,19 @@ def _api_emotion(self, path, data):
         if data.get("empathy"):
             updates["empathy"] = {"level": data["empathy"]}
         if data.get("gain") is not None:
+            gain = _to_num(data["gain"], 0.5)
+            if gain is None:
+                self._json({"error": "gain 必须是数字"}, 400)
+                return
             updates["empathy"] = dict(updates.get("empathy", {}),
-                                      gain=max(0.0, min(1.0, float(data["gain"]))))
+                                      gain=max(0.0, min(1.0, gain)))
         if data.get("max_intensity") is not None:
+            mi = _to_num(data["max_intensity"], 0.5)
+            if mi is None:
+                self._json({"error": "max_intensity 必须是数字"}, 400)
+                return
             updates["empathy"] = dict(updates.get("empathy", {}),
-                                      max_intensity=max(0.0, min(1.0, float(data["max_intensity"]))))
+                                      max_intensity=max(0.0, min(1.0, mi)))
         if data.get("suppressed") is not None:
             updates["suppressed"] = data.get("suppressed") or []
         if data.get("notes") is not None:
@@ -1042,9 +1051,13 @@ def _api_emotion(self, path, data):
 def _api_link(self, path, data):
     act = data.get("action", "link")
     if act == "link":
+        weight = _to_num(data.get("weight", 1.0), 1.0)
+        if weight is None:
+            self._json({"error": "weight 必须是数字"}, 400)
+            return
         r = brain.link_memory(data.get("a", ""), data.get("b", ""),
                               data.get("relation", "相关"),
-                              data.get("weight", 1.0), data.get("why", ""))
+                              weight, data.get("why", ""))
     elif act == "unlink":
         r = {"ok": brain.unlink_memory(data.get("a", ""), data.get("b", ""))}
     elif act == "auto":

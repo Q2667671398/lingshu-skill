@@ -3797,7 +3797,7 @@ def _run(argv=None) -> int:
         writing = (
             (args.cmd == "knowledge" and act in ("add", "tidy", "apply", "pin",
                                                  "rm", "confirm", "discard", "verify"))
-            or (args.cmd == "note" and act in ("write", "update", "delete"))
+            or (args.cmd == "note" and act == "write")
             or (args.cmd == "skill" and act in ("new", "edit", "install", "uninstall",
                                                 "rm", "borrow"))
             # skill use 只有 --auto（未全局化自动安装）才写盘；纯读取照常放行
