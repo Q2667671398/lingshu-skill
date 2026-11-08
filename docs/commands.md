@@ -141,3 +141,10 @@ Windows 可双击 `<本技能目录>/start-panel.bat` 启动。
 
 **Q：dsh-market 更新报「profile 声明了这些插件，但它们没有安装： dsh-lingshu-startup, dsh-lingshu-cron」？**
 上次更新时 DSH 还在运行、占用着技能目录文件，pnpm 换不动目录导致安装残缺，市场为防下次启动卡死把这两个 cordis 插件从 profile 移除了（目录还在）。修法：**完全退出 DSH**（不是最小化，确保进程全退）→ 在市场里重新安装 lingshu-skill → 启动 DSH 验证。记忆数据在 `~/.brain-memory/`，重装不会丢。
+
+**Q：退出 DSH 重装后仍报同样警告（残留旧 profile 条目）？**
+这两个插件在旧版（≤v2.7x）是独立 tgz 子包，装过会把 `dsh-lingshu-startup` / `dsh-lingshu-cron` 写进 profile 的 `dsh.profile.bundles`；新版根包已内置挂载它们，商店只装根包，旧条目成了"幽灵声明"永远等不到安装。**删掉残留条目即可**：
+1. 完全退出 DSH；
+2. 编辑 `%USERPROFILE%\.dsh\profile\package.json`（或宿主实际 profile 目录），在 `dsh.profile.bundles` 数组里删除 `"dsh-lingshu-startup"` 和 `"dsh-lingshu-cron"` 两行（保留其他条目）；
+3. 同时在 pnpm store/profile 的 `node_modules` 下若还有 `dsh-lingshu-startup` / `dsh-lingshu-cron` 残留目录，一并删掉；
+4. 重启 DSH → dsh-market 更新 lingshu-skill。新版只声明根包，不会再出现这两个名字。

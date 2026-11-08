@@ -9,6 +9,14 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.86 — FAQ 补充：旧版独立子包残留的 profile「幽灵声明」修法
+
+v2.85 的重装指引对"重装后仍报 profile 声明插件未安装"的情况不够用：旧版（≤v2.7x）的
+`dsh-lingshu-startup` / `dsh-lingshu-cron` 是独立 tgz 子包，装过会把名字写进 profile 的
+`dsh.profile.bundles`；新版根包已内置挂载两者，商店只装根包，旧条目永远等不到安装。
+新增 FAQ：完全退出 DSH → 编辑 profile 的 package.json 删除这两条 bundles 声明
+（及 node_modules 残留目录）→ 重启后再更新。仓库侧无代码变更。
+
 ## v2.85 — dsh-market 更新失败根治：市场源改走 gitee
 
 用户 dsh-market 更新两次失败（GitHub 连通预检 5 秒超时；DSH 运行中文件占用导致安装残缺、profile 被迫移除 startup/cron 插件）：
