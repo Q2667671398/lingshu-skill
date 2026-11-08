@@ -1427,7 +1427,8 @@ function nodeColor(n){
   if (imp >= 0.8) return "#e05c4f";
   if (imp >= 0.6) return "#d9a441";
   if (imp >= 0.35) return "#5fa8a0";
-  return "#5d646e";
+  // 低重要度也用可辨识的灰蓝：太深的灰(#5d646e)在暗背景上像半透明/隐形
+  return "#7d8896";
 }
 
 function hashStr(s){
@@ -1665,8 +1666,8 @@ function renderGraph(){
     const dim = sel != null && !hot.has(i);
     const focusHit = GRAPH.hover === i || GRAPH.selected === i;
     // 焦点/展示中的节点永远实心不透底（否则能透过节点看见后面的连线，像透明玻璃珠）；
-    // 半透明只保留给"选中态下被压暗"的背景节点——普通节点一律实心，近因明暗改由颜色亮度表达
-    ctx.globalAlpha = dim ? 0.14 : 1;
+    // 选中态下背景节点压暗但不至于隐形：0.14 太透像玻璃珠，提到 0.3 保轮廓可辨识
+    ctx.globalAlpha = dim ? 0.3 : 1;
     // 焦点选中：外圈呼吸光环（注意力）
     if (GRAPH.selected === i){
       ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, r + 6, 0, Math.PI * 2);
