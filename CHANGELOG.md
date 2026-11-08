@@ -9,6 +9,19 @@
 > `check_version.py` 只校验两者**次版本号一致**（0.2.x ↔ 2.x），保证发布包内
 > 桥接与本体的兼容世代可对照；请勿把 CHANGELOG 条目里的两个版本混为一谈。
 
+## v2.87 — 修复：package.json 带 UTF-8 BOM 导致 dsh 安装校验失败
+
+dsh-market 报 `installation rejected: Cannot validate installed package
+lingshu-skill: SyntaxError: Unexpected token '﻿'`——根因是根 package.json
+文件头带 UTF-8 BOM（`EF BB BF`），DSH 用严格 `JSON.parse` 读取直接失败。
+之前一直没暴露是因为市场此前从未走到"校验已装包"这步（v2.85/86 两次都
+在更早环节失败）。修复：
+
+- 根 package.json 去 BOM（`WriteAllText` 用无 BOM UTF-8 重写），JSON 解析
+  验证通过；全仓 JSON 扫描无其他 BOM / 无解析错误。
+- manifest 归一化哈希本就忽略 BOM，校验链不受影响。
+- 版本 2.86 → 2.87，manifest 重算。仓库侧无逻辑代码变更。
+
 ## v2.86 — FAQ 补充：旧版独立子包残留的 profile「幽灵声明」修法
 
 v2.85 的重装指引对"重装后仍报 profile 声明插件未安装"的情况不够用：旧版（≤v2.7x）的

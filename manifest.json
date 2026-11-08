@@ -1,9 +1,9 @@
 {
-  "version": "2.86",
+  "version": "2.87",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "24a759447a35742db09439e978527f7e7725900293d770559b9a673f5a153f2c",
-      "size": 137941
+      "sha256": "e1e2bf2e7525c83b512e88239b3ff892e2d41328188af68628dac1d8837e3967",
+      "size": 138707
     },
     "README.md": {
       "sha256": "8fd189cb5c9b7526c784ed730053c5d63d7421101a49a84f0cd3e1f1001bc884",
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "78ef3659da2e956ba84731f5ff6f2ef9f4e08a8b62f18d77b26c731894c0ec61",
+      "sha256": "2b06f39e86be2659472fd49692ed9c7024ae2eaec776d4d02c09da267c006255",
       "size": 24635
     },
     "assets/panel.html": {
@@ -66,8 +66,8 @@
       "size": 54
     },
     "docs/commands.md": {
-      "sha256": "86828786b67f3bf230efcfc57e4c53105278d312c28c977e9bc8f1fc479c02c7",
-      "size": 14920
+      "sha256": "7c52d7c4b725ed5a060f839375a8cb83a007ee785d26f683b4948cba08f58f34",
+      "size": 15291
     },
     "docs/mechanics.md": {
       "sha256": "5743845d8efa8945c3bbae06ac226d3e5ff04886b63fe76b62883d7a5708d946",
@@ -90,7 +90,7 @@
       "size": 3482
     },
     "package.json": {
-      "sha256": "448c24951ac735ef0a40a6d733b88b3c3a371da63da5d597a4bf018c40b57e79",
+      "sha256": "1d23c0270ae26a46210c4a8c6eb01cdafa0245c0578a951c1b7609a3076c2df4",
       "size": 663
     },
     "scripts/brain.py": {

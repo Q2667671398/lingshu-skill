@@ -148,3 +148,6 @@ Windows 可双击 `<本技能目录>/start-panel.bat` 启动。
 2. 编辑 `%USERPROFILE%\.dsh\profile\package.json`（或宿主实际 profile 目录），在 `dsh.profile.bundles` 数组里删除 `"dsh-lingshu-startup"` 和 `"dsh-lingshu-cron"` 两行（保留其他条目）；
 3. 同时在 pnpm store/profile 的 `node_modules` 下若还有 `dsh-lingshu-startup` / `dsh-lingshu-cron` 残留目录，一并删掉；
 4. 重启 DSH → dsh-market 更新 lingshu-skill。新版只声明根包，不会再出现这两个名字。
+
+**Q：dsh-market 报 `installation rejected: Cannot validate installed package lingshu-skill: SyntaxError: Unexpected token '﻿'`？**
+根 package.json 文件头带 UTF-8 BOM，DSH 严格 JSON.parse 读不了。v2.87 起已去除，更新到 ≥v2.87 即可；若手头是旧版，用记事本「另存为 UTF-8（无 BOM）」重存 package.json 也能临时解决。
