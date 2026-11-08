@@ -1,9 +1,9 @@
 {
-  "version": "2.81",
+  "version": "2.82",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "2131bffbe6a9a3fa0c5beb497e37dfde0dceb04794a54a4f1ae02361a42b60a2",
-      "size": 133420
+      "sha256": "7f9edd9f6b4e970a28c64a11bb5215ab51034a3ca7da97cf68a5d748338dc9f0",
+      "size": 134546
     },
     "README.md": {
       "sha256": "8fd189cb5c9b7526c784ed730053c5d63d7421101a49a84f0cd3e1f1001bc884",
@@ -18,12 +18,12 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "764049c3ca4dc4ecafbb8c9979b8046232720c6b0d35a3f67d58f2fe8fc97860",
+      "sha256": "d445b1584170ecd57fa32f05100bca27e6b384b8d0892afdd7105fb349cc85d9",
       "size": 24006
     },
     "assets/panel.html": {
-      "sha256": "bc192632d53972880b336d5093aee7a60160003ad5158ac32b804934075dade8",
-      "size": 233187
+      "sha256": "39987fad73d6d60920a92daa16412a7ccb85dddeb957a90ef1651f273e189e50",
+      "size": 239824
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
@@ -90,8 +90,8 @@
       "size": 3482
     },
     "package.json": {
-      "sha256": "4808273bef89fc0a03a9d79bf587ed371890435fb64ed828bfb947505e2e577b",
-      "size": 661
+      "sha256": "6e21adddaacc339405b14c3bd211acfd6a25e28e74528f9e674bbc587d00a542",
+      "size": 663
     },
     "scripts/brain.py": {
       "sha256": "659be7e951fa6d1505ea5a7c1a7aff7fb3cb182633573a68ae135ccaa4b7f05f",

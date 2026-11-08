@@ -687,11 +687,21 @@
       <div class="card" style="padding:0;overflow:hidden;position:relative">
         <canvas id="graph-canvas" style="display:block;width:100%;height:560px;cursor:grab"></canvas>
         <div id="graph-tip" class="sub" style="position:absolute;left:14px;bottom:12px;pointer-events:none;font-size:11.5px;color:var(--faint)"></div>
+        <div id="graph-loadtip" class="sub hidden" style="position:absolute;left:0;right:0;top:46%;text-align:center;pointer-events:none;font-size:13px;color:var(--faint)"></div>
         <div id="graph-detail" class="card hidden" style="position:absolute;right:14px;top:14px;width:280px;max-height:80%;overflow:auto;background:rgba(17,21,26,.94);backdrop-filter:blur(6px)"></div>
       </div>
       <div class="card" style="margin-top:14px">
         <div class="row"><h2 style="margin:0">关联明细</h2><span class="sub" id="graph-stat" style="margin-left:auto"></span></div>
         <div id="graph-neighbors" class="sub" style="margin-top:10px">点一个节点，看它连着什么。</div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06)">
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <input id="path-a" placeholder="节点 A：id 或 gist 关键词" style="flex:1;min-width:140px">
+            <span class="sub">→</span>
+            <input id="path-b" placeholder="节点 B：id 或 gist 关键词" style="flex:1;min-width:140px">
+            <button class="ghost" id="btn-graph-path">找关联路径</button>
+          </div>
+          <div id="graph-path-out" class="sub" style="margin-top:8px">最多沿 3 跳联想链找两条记忆怎么连起来，基于当前加载的子图。</div>
+        </div>
       </div>
       <div class="card" style="margin-top:14px">
         <h2>手动建立关联</h2>
@@ -1407,7 +1417,7 @@ function renderDailyCards(){
 // ---------------- 记忆联想 · 3D 空间（零依赖力导向） ----------------
 const GRAPH = { data: null, pos: [], yaw: 0.6, pitch: -0.35, dist: 360,
                 focus: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}, targetDist: 360,
-                selected: null, hover: null, loaded: false, nbrs: null, anim: null };
+                selected: null, hover: null, loaded: false, nbrs: null, anim: null, pathEdges: null };
 const LAYER_COLOR = { cortex: "#d9a441", hippo: "#5fa8a0", dust: "#5d646e", archive: "#8f92b8" };
 // 颜色 = 重要程度（与图例一致）：红=很重要 / 金=较重要 / 青=一般 / 灰=不重要；人格星核专属暖金
 const PERSONA_COLOR = "#f0d078";
@@ -1440,6 +1450,8 @@ function startPhysics(){
     if (!nodes || !pos || !vel || !GRAPH.loaded){ GRAPH.phys = null; return; }
     const n = Math.min(nodes.length, 260);
     const kk = 24, rep = 5200;
+    // 防重叠：硬斥力只对"贴在一起"的节点生效，避免大图里互相穿透成一坨；>250 个节点跳过保性能
+    const overlap = nodes.length <= 250;
     let energy = 0;
     for (let i = 0; i < n; i++){
       let fx = 0, fy = 0, fz = 0;
@@ -1466,6 +1478,23 @@ function startPhysics(){
       vel[i].x = (vel[i].x + fx * 0.06) * 0.86;
       vel[i].y = (vel[i].y + fy * 0.06) * 0.86;
       vel[i].z = (vel[i].z + fz * 0.06) * 0.86;
+    }
+    // 防重叠碰撞步：两两距离小于"半径和+4"时沿连线推开（0.5 阻尼），直接改位置不进速度，避免震荡
+    if (overlap){
+      for (let i = 0; i < nodes.length; i++){
+        const ri = 3 + (nodes[i].importance || 0.5) * 11;
+        for (let j = i + 1; j < nodes.length; j++){
+          const dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y, dz = pos[i].z - pos[j].z;
+          const d2 = dx*dx + dy*dy + dz*dz;
+          const minD = ri + 3 + (nodes[j].importance || 0.5) * 11 + 4;
+          if (d2 >= minD * minD || d2 === 0) continue;   // d2===0 时跳过：方向向量未定义，硬推会出 NaN
+          const d = Math.sqrt(d2), push = (minD - d) / d * 0.5;
+          pos[i].x += dx * push; pos[i].y += dy * push; pos[i].z += dz * push;
+          pos[j].x -= dx * push; pos[j].y -= dy * push; pos[j].z -= dz * push;
+        }
+      }
+    }
+    for (let i = 0; i < n; i++){
       pos[i].x += vel[i].x; pos[i].y += vel[i].y; pos[i].z += vel[i].z;
       energy += vel[i].x*vel[i].x + vel[i].y*vel[i].y + vel[i].z*vel[i].z;
     }
@@ -1508,9 +1537,12 @@ async function loadGraph(limit){
   $("graph-neighbors").innerHTML = "点一个节点，看它连着什么。";
   $("graph-detail").classList.add("hidden");
   GRAPH.selected = null; GRAPH.hover = null; GRAPH.nbrs = null;
-  GRAPH.searchHits = null; GRAPH.searchPos = 0;
+  GRAPH.searchHits = null; GRAPH.searchPos = 0; GRAPH.pathEdges = null;
   stopGraphAnim();
   stopPhysics();
+  // 加载/空态提示：画布是异步数据，先给"在做了"的反馈，避免像卡死
+  const loadTip = $("graph-loadtip");
+  if (loadTip){ loadTip.textContent = "正在构建联想空间…"; loadTip.classList.remove("hidden"); }
   GRAPH.focus = {x: 0, y: 0, z: 0}; GRAPH.target = {x: 0, y: 0, z: 0};
   GRAPH.targetDist = 360;
   try {
@@ -1524,6 +1556,7 @@ async function loadGraph(limit){
     });
     // 弹簧表：物理模拟用；邻接表：选中时"激活扩散"高亮
     const nodes = GRAPH.data.nodes, edges = GRAPH.data.edges;
+    edges.forEach((e, i) => { e._ei = i; });   // 边序号：路径高亮按序号记录，重载后失效自动清空
     const idx = new Map(nodes.map((x, i) => [x.id, i]));
     GRAPH.springs = Array.from({length: nodes.length}, () => []);
     edges.forEach(e => { const a = idx.get(e.src), b = idx.get(e.dst);
@@ -1537,10 +1570,12 @@ async function loadGraph(limit){
     renderGraph();
     // 库里没有可画的记忆时给明确的空态引导，别让一片空白被当成"加载失败"
     if (!nodes.length){
+      if (loadTip){ loadTip.textContent = "还没有可联想的记忆节点"; loadTip.classList.remove("hidden"); }
       $("graph-hint").textContent = "还没有可展示的记忆（或都在淡忘区/归档层）。先聊几句让它记点东西，或到「梦」页做一次做梦沉淀。";
       $("graph-stat").textContent = "";
       $("graph-neighbors").innerHTML = "";
     } else {
+      if (loadTip) loadTip.classList.add("hidden");
       const nAuto = edges.filter(e => e.auto).length;
       $("graph-hint").textContent = `${nodes.length} 条记忆 · ${edges.length} 条关联（${nAuto} 条自动联想）· 点节点：以它为中心 + 激活相邻记忆`;
       $("graph-stat").textContent = `${nodes.length} 节点 · ${edges.length} 关联边 · 手动 ${edges.length - nAuto} / 自动 ${nAuto}`;
@@ -1601,14 +1636,20 @@ function renderGraph(){
     if (!shown.has(ai) || !shown.has(bi)) return;
     const pa = proj[ai], pb = proj[bi];
     const touchSel = sel != null && (ai === sel || bi === sel);
+    // hover 高亮：未选中节点时点亮与 hover 节点相连的边（选中态优先，hover 不覆盖）
+    const touchHover = sel == null && GRAPH.hover != null && (ai === GRAPH.hover || bi === GRAPH.hover);
+    // 联想路径边：找关联路径的结果临时高亮，帮助看清"A 怎么到 B"
+    const onPath = GRAPH.pathEdges != null && GRAPH.pathEdges.includes(e._ei);
     const edgeHot = sel == null || touchSel || (hot.has(ai) && hot.has(bi));
     const w = Math.min(1.8, 0.3 + e.weight * 0.35);
-    ctx.lineWidth = touchSel ? w + 1.4 : (w + 0.5) * (edgeHot ? 1 : 0.55);
-    // 手动关联实线；自动联想虚线更淡（一眼区分"记下的联系"与"推出来的联系"）
-    ctx.setLineDash(e.auto ? [3, 5] : []);
-    ctx.strokeStyle = touchSel
-      ? "rgba(233,196,106,.95)"
-      : e.auto
+    ctx.lineWidth = (touchSel || onPath) ? w + 1.4 : (w + 0.5) * (edgeHot || touchHover ? 1 : 0.55);
+    // 路径边必须看清走向，用实线盖过自动联想的虚线
+    ctx.setLineDash(e.auto && !onPath ? [3, 5] : []);
+    ctx.strokeStyle = onPath
+      ? "rgba(233,196,106,.9)"
+      : touchSel || touchHover
+        ? "rgba(233,196,106,.85)"
+        : e.auto
         ? "rgba(120,140,170," + (edgeHot ? 0.04 + Math.min(0.28, e.weight * 0.07) : 0.025 + Math.min(0.12, e.weight * 0.03)) + ")"
         : "rgba(120,140,170," + (edgeHot ? 0.05 + Math.min(0.4, e.weight * 0.1) : 0.03 + Math.min(0.18, e.weight * 0.04)) + ")";
     ctx.beginPath(); ctx.moveTo(cx + pa.x, cy + pa.y); ctx.lineTo(cx + pb.x, cy + pb.y); ctx.stroke();
@@ -1665,7 +1706,7 @@ function renderGraph(){
 function graphSearch(q, advance){
   const data = GRAPH.data; if (!data || !GRAPH.loaded) return;
   q = (q || "").trim().toLowerCase();
-  if (!q){ GRAPH.searchHits = null; GRAPH.searchPos = 0; renderGraph(); return; }
+  if (!q){ GRAPH.searchHits = null; GRAPH.searchPos = 0; GRAPH.pathEdges = null; renderGraph(); return; }
   const hits = [];
   data.nodes.forEach((n, i) => {
     if (GRAPH.layerFilter && n.layer !== GRAPH.layerFilter) return;
@@ -1692,6 +1733,52 @@ function docsOf(n){
   return `${n.gist ? n.gist.slice(0, 40) : ""}${n.kind ? " · " + n.kind : ""} · 重要 ${Math.round((n.importance || 0) * 100)}% · ${LAYER[n.layer] || n.layer || ""}${n.emotion ? ` · ♡ ${n.emotion}` : ""}`;
 }
 
+// 关键词 → 节点索引：与 graphSearch 同款匹配（gist/id 子串），命中多条取第一条
+function graphResolveNode(q){
+  const nodes = GRAPH.data && GRAPH.data.nodes; if (!nodes) return null;
+  q = (q || "").trim().toLowerCase();
+  if (!q) return null;
+  for (let i = 0; i < nodes.length; i++){
+    if ((nodes[i].gist || "").toLowerCase().includes(q) || (nodes[i].id || "").toLowerCase().includes(q)) return i;
+  }
+  return null;
+}
+
+// 联想路径：无权重 BFS，最多 3 跳；返回节点索引链，同时把途经边序号写进 GRAPH.pathEdges 供高亮
+function findGraphPath(qa, qb){
+  const nodes = GRAPH.data.nodes, edges = GRAPH.data.edges;
+  const a = graphResolveNode(qa), b = graphResolveNode(qb);
+  if (a == null){ toast("找不到起点：" + qa, true); return null; }
+  if (b == null){ toast("找不到终点：" + qb, true); return null; }
+  if (a === b){ toast("A 和 B 是同一条记忆", true); return null; }
+  // BFS 记 parent，找到即停（无权图最短路径）
+  const prev = new Map([[a, -1]]);
+  const queue = [a];
+  while (queue.length){
+    const cur = queue.shift();
+    if (cur === b) break;
+    const ns = GRAPH.nbrs && GRAPH.nbrs.get(cur);
+    if (!ns) continue;
+    for (const nx of ns){
+      if (!prev.has(nx)){ prev.set(nx, cur); queue.push(nx); }
+    }
+  }
+  if (!prev.has(b)){ toast("3 跳内没有关联路径", true); return null; }
+  // 回溯节点链，再由相邻节点对找到对应边序号
+  const chain = [];
+  for (let cur = b; cur !== -1; cur = prev.get(cur)) chain.unshift(cur);
+  const edgeIdx = new Map(edges.map(e => {
+    const ai = nodes.findIndex(x => x.id === e.src), bi = nodes.findIndex(x => x.id === e.dst);
+    return [ai + "-" + bi, e._ei != null ? e._ei : edges.indexOf(e)];
+  }));
+  const pathEdges = [];
+  for (let k = 0; k + 1 < chain.length; k++){
+    const ei = edgeIdx.get(chain[k] + "-" + chain[k+1]) ?? edgeIdx.get(chain[k+1] + "-" + chain[k]);
+    if (ei != null) pathEdges.push(ei);
+  }
+  return { chain, pathEdges };
+}
+
 function focusGraphNode(i){
   GRAPH.selected = i;
   const p = GRAPH.pos[i];
@@ -1703,6 +1790,7 @@ function focusGraphNode(i){
 
 function resetGraphView(){
   GRAPH.selected = null;
+  GRAPH.pathEdges = null;   // 退出全景时清掉路径高亮，星图回到干净状态
   GRAPH.target = {x: 0, y: 0, z: 0};
   GRAPH.targetDist = 360;
   startGraphAnim();
@@ -2868,6 +2956,23 @@ $("graph-search").addEventListener("keydown", e => {
   if (e.key === "Escape"){ e.target.value = ""; graphSearch("", false); e.target.blur(); }
 });
 $("graph-layer").addEventListener("change", graphLayerFilter);
+// 关联路径查找：在当前已加载子图上 BFS，路径渲染成可点节点链 + 边高亮
+$("btn-graph-path").addEventListener("click", () => {
+  if (!GRAPH.loaded || !GRAPH.data){ toast("图谱还没加载完", true); return; }
+  const qa = $("path-a").value, qb = $("path-b").value;
+  const out = $("graph-path-out");
+  const r = findGraphPath(qa, qb);
+  if (!r){ GRAPH.pathEdges = null; renderGraph(); return; }
+  GRAPH.pathEdges = r.pathEdges;
+  const nodes = GRAPH.data.nodes;
+  // 节点链渲染成可点元素：点一下 pickGraphNode 聚焦，和邻居卡片的跳转手感一致
+  out.innerHTML = `<div class="sub" style="margin-bottom:4px">找到 ${r.chain.length - 1} 跳的联想链（基于当前加载的 ${nodes.length} 节点子图）：</div>`
+    + `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">` + r.chain.map((j, k) =>
+      `<span class="mem" data-node="${j}" style="display:inline-block;padding:4px 10px;cursor:pointer;font-size:12px">${esc(nodes[j].gist || nodes[j].id || ("#" + j))}</span>`
+      + (k + 1 < r.chain.length ? `<span class="sub">→</span>` : "")
+    ).join("") + `</div>`;
+  renderGraph();
+});
 // 邻居明细卡片：点卡片=跳到那个节点（不在图里就提示去记忆页搜）
 $("graph-neighbors").addEventListener("click", e => {
   const card = e.target.closest(".mem[data-node]");
@@ -2881,6 +2986,13 @@ $("graph-neighbors").addEventListener("click", e => {
   } else if (card.dataset.mid){
     toast("该记忆不在当前图中（不在前 " + $("graph-limit").value + " 条），去「记忆」页搜索它的 id 查看");
   }
+});
+// 路径链上的节点可点：复用邻居卡片的跳转逻辑（点一下聚焦那条记忆）
+$("graph-path-out").addEventListener("click", e => {
+  const el = e.target.closest(".mem[data-node]");
+  if (!el || !GRAPH.data) return;
+  const j = Number(el.dataset.node);
+  if (GRAPH.data.nodes[j]) pickGraphNode(j);
 });
 
 $("btn-dream").addEventListener("click", async () => {
