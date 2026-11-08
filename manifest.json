@@ -1,4 +1,165 @@
 {
-  "schema_version": 1,
-  "version": "2.92"
+  "version": "2.92",
+  "files": {
+    "CHANGELOG.md": {
+      "sha256": "af994224aa507b70239a912f2a8b73e45c90171bedd2f226c5bc224ae94cc97b",
+      "size": 141285
+    },
+    "README.md": {
+      "sha256": "31de6570a9dd5a19fb6b326f5ec789276853c9557554b0bc6733631a5f54df33",
+      "size": 52600
+    },
+    "SKILL-lite.md": {
+      "sha256": "055fa7bc54f273e5fa16517c38b2a7d25f0726ece43428b68fbf60d276f197a3",
+      "size": 3272
+    },
+    "SKILL-tiny.md": {
+      "sha256": "e7d1848efc4b3b7ee324d44c77cf0690848993ef83f3c9a52cb0dcce19e59178",
+      "size": 1635
+    },
+    "SKILL.md": {
+      "sha256": "36efd2d9310805efc9b00cb128380ededdd6b11aaec43358d4b8fba443d2768c",
+      "size": 24635
+    },
+    "assets/panel.html": {
+      "sha256": "2002673ecfb87a1fbcf7c78eddcc919df88eb3e8f408c1d90c7aebc4af334349",
+      "size": 245105
+    },
+    "cordis-plugin/lingshu-cron/cordis.patch.yml": {
+      "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
+      "size": 58
+    },
+    "cordis-plugin/lingshu-cron/index.js": {
+      "sha256": "f10373bbd1fee62caf53ba40946996f9fa0df57755a1e24fbb1de56d03abbb40",
+      "size": 311
+    },
+    "cordis-plugin/lingshu-cron/package.json": {
+      "sha256": "e353dd7f5f4b0e5e9dbdd0875fc408aff8cdc396547d5cef4c58758093b5b4c3",
+      "size": 1742
+    },
+    "cordis-plugin/lingshu-cron/plugin.js": {
+      "sha256": "e7345637f8f653bd296277f0163e4f4adbe0c3e490eb4174401c31ba990bf229",
+      "size": 22596
+    },
+    "cordis-plugin/lingshu-startup/README.md": {
+      "sha256": "e62016afb05dd910cd1b99fd547b1b5eead2afea43e0b90b96df2d2782c0b386",
+      "size": 8190
+    },
+    "cordis-plugin/lingshu-startup/cordis.patch.yml": {
+      "sha256": "8c125c21e0d742527a5ea951012f25a788abd3417ed0e235961750be3af24f91",
+      "size": 64
+    },
+    "cordis-plugin/lingshu-startup/index.js": {
+      "sha256": "666afdf99e3e37b64745d4052ca13de44d54285f561c60062cf1087da717fb28",
+      "size": 343
+    },
+    "cordis-plugin/lingshu-startup/package.json": {
+      "sha256": "8a1b5d35627cd2a594621fb0baae40bd3d9bb15c2c8e1559a449ea64d2f9e759",
+      "size": 1391
+    },
+    "cordis-plugin/lingshu-startup/plugin.js": {
+      "sha256": "fb8d22ef885e9321dcee7672f872831a27e3d6d7c21ea843a7066688b7681b5a",
+      "size": 12700
+    },
+    "cordis.patch.yml": {
+      "sha256": "f0c18e561c15f2afa40e77ed71ca08a220b11487ccf8975da47b684c6055eead",
+      "size": 54
+    },
+    "docs/commands.md": {
+      "sha256": "7c52d7c4b725ed5a060f839375a8cb83a007ee785d26f683b4948cba08f58f34",
+      "size": 15291
+    },
+    "docs/mechanics.md": {
+      "sha256": "5743845d8efa8945c3bbae06ac226d3e5ff04886b63fe76b62883d7a5708d946",
+      "size": 39443
+    },
+    "docs/models.md": {
+      "sha256": "596bc1a3414f2de5569dcb41a0c494acae7daa534efd5a91dbcc3c4cb308d695",
+      "size": 4624
+    },
+    "docs/panel-api.md": {
+      "sha256": "2cab01a7b824b402bca41d8739d36133265bb8622385876e1b499385aa1aaa99",
+      "size": 10172
+    },
+    "docs/问题待办-20261108.md": {
+      "sha256": "8caebb9a325798d94ab08b2e3604ba89809409527f40768482ea46dca66b63cc",
+      "size": 10423
+    },
+    "index.js": {
+      "sha256": "e0dd9b3a8b10907c7359751966a4fd7c92b438caec445f64205361cc2496a8ce",
+      "size": 3482
+    },
+    "package.json": {
+      "sha256": "f748b1032de6f92f0c60ef1782d323400739aa9ca32b9d4d0605cfdb71f92642",
+      "size": 663
+    },
+    "scripts/brain.py": {
+      "sha256": "659be7e951fa6d1505ea5a7c1a7aff7fb3cb182633573a68ae135ccaa4b7f05f",
+      "size": 1649
+    },
+    "scripts/check_version.py": {
+      "sha256": "0bf0f981fcd94ddd66dcae9a203d7f89ad9053cd85a7ba4c65cf0b9bb8bddf7c",
+      "size": 8996
+    },
+    "scripts/cli.py": {
+      "sha256": "f2a81c0ceec68e0417eb9140c92dafe5c900bc96d163a8d7a08e1a61a4bd6bd3",
+      "size": 154964
+    },
+    "scripts/core.py": {
+      "sha256": "1dbad3e23099d7919f21d69053d06bf3284bea9c9b1f7b5b91d0969a84d3189f",
+      "size": 53019
+    },
+    "scripts/dream.py": {
+      "sha256": "74066b818f5d9f47ba60fa96e2d23013a344194477ac385bbfcc6bdc6ab082e7",
+      "size": 32078
+    },
+    "scripts/emotion.py": {
+      "sha256": "4f0e1eb2cde00918fde38ee3496dcfe60ecf91ccfa2241abdce3bc394f250d6d",
+      "size": 45684
+    },
+    "scripts/growth.py": {
+      "sha256": "abc4dfaa0732e48d988fa44fbdb9c37c7eed8df9f00343db752f72f75614acd4",
+      "size": 215486
+    },
+    "scripts/hooks/pre-commit": {
+      "sha256": "14dafabbfd698f7e510411b144ec624affe41023113b1ffd0f1aa8f3e623a275",
+      "size": 743
+    },
+    "scripts/make_manifest.py": {
+      "sha256": "f7ee18964b5ad22f64985a9a59bccf0b8b4c63a475950c378f7747d3a1a27dc0",
+      "size": 8106
+    },
+    "scripts/make_plugin_zip.py": {
+      "sha256": "f6752d29179dd0a371d56b01656e02b1d5c956fff7f7b4d64b23eaa8006441a3",
+      "size": 1972
+    },
+    "scripts/memory.py": {
+      "sha256": "0ecaa080d75dbc62b2ce6b485c166db78c2fcdb717034c69060c3ffb83c4a670",
+      "size": 129666
+    },
+    "scripts/panel_cloud.py": {
+      "sha256": "fff72888123d45bbf05ab329a06b2126f1c0b972c76283ecff32454bc4155c58",
+      "size": 27516
+    },
+    "scripts/panel_server.py": {
+      "sha256": "b1572f07d0440998d28d76a7ed874bc513cc50dde63f03b8fdce8d93e0b6bf5a",
+      "size": 77884
+    },
+    "scripts/panels.py": {
+      "sha256": "87dfce47693340af7c9bc6010a593256331e32c2e8504a0ac0745cf2ef992fd6",
+      "size": 26593
+    },
+    "scripts/persona.py": {
+      "sha256": "29796dacd41e7c1d32de878cc8de7e2c9951e1b92f55663b8515510f71f5a3d9",
+      "size": 57900
+    },
+    "scripts/sync_engine.py": {
+      "sha256": "82202ac89f1f18aa35fa363f5d5db5bda8945be004dfcb172d4100aa699e169d",
+      "size": 3351
+    },
+    "start-panel.bat": {
+      "sha256": "48dc3d2957b17216788870e7aa1d3afd9ddf304692d8d001682d990e1b90022d",
+      "size": 1475
+    }
+  }
 }
