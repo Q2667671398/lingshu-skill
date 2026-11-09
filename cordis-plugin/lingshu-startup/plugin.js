@@ -148,6 +148,10 @@ function runStartup(pythonExe, pythonCmdFallback, brainPy, budget, timeoutMs) {
         child = spawn(pythonExe, args, {
           windowsHide: true,
           env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          // 显式把工作目录挪到用户主目录：绝不继承宿主 cwd。宿主 cwd 若在插件
+          // 目录内，Windows 会因"目录被进程占用"拒绝 pnpm 的目录 rename，
+          // 导致市场更新（remove+add）报"文件被占用、请退出 DSH"。
+          cwd: homedir(),
           // 不用 spawn 的 timeout 选项：它只杀直接子进程，见下方手动兜底说明
         })
       } else {
@@ -161,6 +165,7 @@ function runStartup(pythonExe, pythonCmdFallback, brainPy, budget, timeoutMs) {
           windowsHide: true,
           windowsVerbatimArguments: true, // 命令行已手工加引号，阻止 Node 再转义一层
           env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          cwd: homedir(), // 同上：不把宿主 cwd（可能在插件目录内）占给子进程
         })
       }
     } catch {

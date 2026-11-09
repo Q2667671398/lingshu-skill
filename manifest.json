@@ -1,12 +1,12 @@
 {
-  "version": "2.92",
+  "version": "2.93",
   "files": {
     "CHANGELOG.md": {
       "sha256": "af994224aa507b70239a912f2a8b73e45c90171bedd2f226c5bc224ae94cc97b",
       "size": 141285
     },
     "README.md": {
-      "sha256": "31de6570a9dd5a19fb6b326f5ec789276853c9557554b0bc6733631a5f54df33",
+      "sha256": "a2a05807df4e48c303988004689f3f9c592ccb21ea828decd3906ac517afd2f6",
       "size": 52600
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1635
     },
     "SKILL.md": {
-      "sha256": "36efd2d9310805efc9b00cb128380ededdd6b11aaec43358d4b8fba443d2768c",
+      "sha256": "fbe37200ad03da4b37fcca301a2d6b93ed7bac908ded5feb273c25377db3c739",
       "size": 24635
     },
     "assets/panel.html": {
@@ -38,8 +38,8 @@
       "size": 1742
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "e7345637f8f653bd296277f0163e4f4adbe0c3e490eb4174401c31ba990bf229",
-      "size": 22596
+      "sha256": "e3bb8d73d7b42b55257fcb6447516546cbccc136340519f36e0c86a03b702f1d",
+      "size": 23010
     },
     "cordis-plugin/lingshu-startup/README.md": {
       "sha256": "e62016afb05dd910cd1b99fd547b1b5eead2afea43e0b90b96df2d2782c0b386",
@@ -58,12 +58,16 @@
       "size": 1391
     },
     "cordis-plugin/lingshu-startup/plugin.js": {
-      "sha256": "fb8d22ef885e9321dcee7672f872831a27e3d6d7c21ea843a7066688b7681b5a",
-      "size": 12700
+      "sha256": "92305def06ff9466dc34c92a7efa25c7d4c03bf4aa573d24b94c6d43037bd93e",
+      "size": 13114
     },
     "cordis.patch.yml": {
       "sha256": "f0c18e561c15f2afa40e77ed71ca08a220b11487ccf8975da47b684c6055eead",
       "size": 54
+    },
+    "docs/astrbot_integration_todo.md": {
+      "sha256": "a0cc461922068727978e92c2a7959be78bb8d9c03885ea612297e0e42e72eb28",
+      "size": 49066
     },
     "docs/commands.md": {
       "sha256": "7c52d7c4b725ed5a060f839375a8cb83a007ee785d26f683b4948cba08f58f34",
@@ -90,7 +94,7 @@
       "size": 3482
     },
     "package.json": {
-      "sha256": "f748b1032de6f92f0c60ef1782d323400739aa9ca32b9d4d0605cfdb71f92642",
+      "sha256": "5339ca751f21ae87076cd39ff602075ed394c611df70cc53c8134ac4bcc59458",
       "size": 663
     },
     "scripts/brain.py": {
@@ -156,6 +160,10 @@
     "scripts/sync_engine.py": {
       "sha256": "82202ac89f1f18aa35fa363f5d5db5bda8945be004dfcb172d4100aa699e169d",
       "size": 3351
+    },
+    "scripts/update_dsh_copy.ps1": {
+      "sha256": "b65a29483a92185bf4454e654ad3bb648efed1551e808d20b16aacc9ee6f09cb",
+      "size": 1109
     },
     "start-panel.bat": {
       "sha256": "48dc3d2957b17216788870e7aa1d3afd9ddf304692d8d001682d990e1b90022d",

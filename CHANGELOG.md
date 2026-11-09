@@ -1,5 +1,10 @@
 # 更新日志
 
+## v2.93（2026-11-09）
+
+- 修复市场更新被"文件占用"卡死的核心根因：lingshu-startup / lingshu-cron 的 Python 子进程 spawn 未传 cwd，继承宿主（DSH）的工作目录；宿主 cwd 落在插件目录内时，Windows 拒绝 pnpm 的目录 rename，市场点「更新」报"请完全退出 DSH"
+- 现在 spawn 显式 `cwd: homedir()`（用户主目录，永不在插件目录内），超时兜底本就用 taskkill /T /F 杀整棵进程树——其他用户从市场安装后可直接在市场内更新，无需重启 DSH
+
 ## v2.92（2026-11-09）
 
 - 仓库侧无代码变更；发新版本号供 dsh-market 检测更新测试

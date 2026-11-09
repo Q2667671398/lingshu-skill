@@ -167,6 +167,10 @@ function runBrain(pythonExe, pythonCmdFallback, brainPy, argv, timeoutMs) {
         child = spawn(pythonExe, args, {
           windowsHide: true,
           env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          // 显式把工作目录挪到用户主目录：绝不继承宿主 cwd。宿主 cwd 若在插件
+          // 目录内，Windows 会因"目录被进程占用"拒绝 pnpm 的目录 rename，
+          // 导致市场更新（remove+add）报"文件被占用、请退出 DSH"。
+          cwd: homedir(),
         })
       } else {
         const comspec = process.env.ComSpec ?? 'cmd.exe'
@@ -176,6 +180,7 @@ function runBrain(pythonExe, pythonCmdFallback, brainPy, argv, timeoutMs) {
           windowsHide: true,
           windowsVerbatimArguments: true,
           env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          cwd: homedir(), // 同上：不把宿主 cwd（可能在插件目录内）占给子进程
         })
       }
     } catch {
