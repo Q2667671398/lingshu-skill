@@ -1,4 +1,4 @@
-﻿<!doctype html>
+﻿﻿<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1066,9 +1066,24 @@ async function api(path, opts){
   opts = opts || {};
   opts.headers = Object.assign({}, opts.headers || {}, {Authorization: "Bearer " + PANEL_TOKEN});
   if (!opts.signal) opts.signal = AbortSignal.timeout(15000); // 网络挂起不能死等，15s 兜底
-  const r = await fetch(path, opts);
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+  let r, data;
+  try {
+    r = await fetch(path, opts);
+    data = await r.json().catch(() => ({}));
+  } catch (err) {
+    // 网络层错误统一中文化：TimeoutError/AbortError 是超时中断，TypeError 是断网/服务挂了
+    if (err && (err.name === "TimeoutError" || err.name === "AbortError"))
+      throw new Error("请求超时——服务可能正忙（如拉取远程更新源），稍后再试");
+    if (err instanceof TypeError)
+      throw new Error("无法连接面板服务（可能已关闭或网络断开）");
+    throw err;
+  }
+  if (!r.ok || data.error) {
+    // 403 readonly 响应里 error="readonly" 不可读，message 才是人话——优先用 message
+    const msg = data.message || data.error;
+    if (data.error === "readonly") throw new Error(msg || "数据目录当前只读，写操作已被禁用");
+    throw new Error(msg || ("HTTP " + r.status));
+  }
   return data;
 }
 
@@ -3740,7 +3755,15 @@ $("skill-list").addEventListener("click", async (e) => {
     if (ins) {
       let r;
       try {
-        r = await post("/api/skill", {action: "install", name: ins.dataset.skinstall, force: false});
+        try {
+          r = await post("/api/skill", {action: "install", name: ins.dataset.skinstall, force: false},
+                        {signal: AbortSignal.timeout(630000)});   // 整包安装超时对齐更新（> 后端 600s）
+        } catch (netErr) {
+          // 网络抖动/限流重试一次：原子部署保证重试不会装到一半
+          if (!confirm("安装请求失败：" + (netErr.message || "网络错误") + "\n\n要自动重试一次吗？")) throw netErr;
+          r = await post("/api/skill", {action: "install", name: ins.dataset.skinstall, force: false},
+                        {signal: AbortSignal.timeout(630000)});
+        }
       } catch (err) {
         // 只对"已存在/冲突"弹覆盖确认，403 readonly、文件占用等直接 toast
         if (!/已存在|exists|already/.test(err.message || "")) {
@@ -3912,6 +3935,10 @@ async function checkUpdate(auto){
   // 注意：按钮里嵌了 upd-dot 红点 span，绝不能 btn.textContent=…（会把红点整个抹掉，
   // 之后 $("upd-dot") 变 null 报 "Cannot read properties of null"）——只改 upd-label。
   const setLabel = (t) => { const l = $("upd-label"); if (l) l.textContent = t; };
+  // 并发互斥：手动检查与开面板自动检查撞车时（auto 检查 1.2s 后触发，用户手快点了按钮），
+  // auto 让位于手动；手动检查进行中再点按钮直接忽略，防止两次 refresh=1 叠加把拉取链路跑两遍
+  if (checkUpdate._busy) { if (auto) return; return; }
+  checkUpdate._busy = true;
   try {
     if (!auto) { btn.disabled = true; btn.classList.add("loading"); setLabel("检查中…"); }
     // auto=开面板静默检查：只读服务启动时检测好的缓存（服务启动才真正联网检测，
@@ -3996,6 +4023,8 @@ async function checkUpdate(auto){
     console.error("检查更新:", e);
     progress.done();
     if (!auto) { btn.disabled = false; btn.classList.remove("loading"); setLabel("检查更新"); toast(e.message, true); }
+  } finally {
+    checkUpdate._busy = false;   // 无论成败都释放互斥，绝不能卡死后续检查
   }
 }
 function showUpdModal(title, detail, canApply){
@@ -4060,8 +4089,13 @@ $("upd-dsh-repair").addEventListener("click", async () => {
     btn.textContent = "一键修复 DSH 副本";
   }
 });
+// 更新互斥标志（模块级）：apply 进行中不允许重复点击（弹窗关了请求还在跑的情况也会被拦住）
+let updApplyBusy = false;
 $("upd-apply").addEventListener("click", async () => {
   const btn = $("upd-apply");
+  // 注意不能用 updApply._busy：updApply 不是已声明的全局变量，浏览器严格模式直接 ReferenceError。
+  if (updApplyBusy) return;
+  updApplyBusy = true;
   try {
     // 更新前确认：明确标注来源类型与目标路径，杜绝"有更新但点了无响应"的疑虑
     const kindTxt = updLastCheck.source_kind === "dev" ? "从本地开发仓库同步"
@@ -4074,21 +4108,36 @@ $("upd-apply").addEventListener("click", async () => {
                  + "\n\n（更新采用原子化部署：先备份再替换，失败自动回滚，记忆数据不受影响）")) return;
     btn.disabled = true;
     btn.classList.add("loading");
-    btn.textContent = "下载中…";
+    btn.textContent = "更新中…";
     progress.fake(5, 85);   // 后端整包返回拿不到真实进度，用缓慢爬升假进度告诉用户"在动"
-    // 第一次不带 yes：风险告知未接受时后端返回 risk_required，弹窗展示风险后
-    // 第二次点击才带 yes=true 真正继续——不让风险确认被静默跳过
-    // 更新是"下载整包+备份+替换"的大动作，远超 api() 默认 15s 兜底，单独放宽到 5 分钟
-    const r = await post("/api/skill", {action: "install", name: "lingshu",
-                                        force: true, yes: updRiskAccepted ? true : undefined},
-                        {signal: AbortSignal.timeout(300000)});
+    // 前端超时必须 > 后端安装子进程超时（600s）：前端先断的话后台还在装，
+    // 状态就不一致了。这里 10 分钟（600s）+ 30s 缓冲，覆盖最坏路径。
+    const APPLY_TIMEOUT = 630000;
+    let r;
+    try {
+      r = await post("/api/skill", {action: "install", name: "lingshu",
+                                    force: true, yes: updRiskAccepted ? true : undefined},
+                    {signal: AbortSignal.timeout(APPLY_TIMEOUT)});
+    } catch (netErr) {
+      // 网络层失败（超时/断连）：给一次自动重试的机会——远程源拉取对匿名风控
+      // 很敏感，偶发抖动重试常能过。成功后端是原子替换，重试不会装到一半。
+      if (!confirm("更新请求失败：" + (netErr.message || "网络错误") +
+                   "\n\n可能是网络抖动或匿名限流。要自动重试一次吗？（点取消放弃本次更新）")) throw netErr;
+      btn.textContent = "重试中…";
+      r = await post("/api/skill", {action: "install", name: "lingshu",
+                                    force: true, yes: updRiskAccepted ? true : undefined},
+                    {signal: AbortSignal.timeout(APPLY_TIMEOUT)});
+    }
     const st = r.result && r.result.state;
     if (st === "risk_required") {
+      // 风险告知分支：不是失败——按钮必须恢复可点，让用户看完风险后点「立即更新」继续
       progress.done();
       updRiskAccepted = true;
       const risks = (r.result.risks || []).map(x => "  · " + esc(x)).join("\n");
       $("upd-detail").innerHTML = "首次更新灵枢本体前请先了解它能做什么：<br><br>" +
-        (risks || "灵枢会自动读写记忆数据目录。") + "<br><br>确认接受并继续更新吗？";
+        (risks || "灵枢会自动读写记忆数据目录。") + "<br><br>确认接受并继续更新吗？<br>" +
+        "<i>看完后点下方「立即更新」继续。</i>";
+      $("upd-apply").textContent = "立即更新";
       return;
     }
     if (st === "failed" || r.ok === false) throw new Error((r.result && r.result.error) || "更新失败");
@@ -4101,12 +4150,19 @@ $("upd-apply").addEventListener("click", async () => {
     checkUpdate(false);        // 更新完复查一次：确认显示"已是最新"而非靠猜
   } catch (e) {
     console.error("执行更新:", e);
-    toast(e.message || "更新失败", true);
+    const msg = e.message || "更新失败";
+    // 失败提示要留给用户看清（toast 只活 2.4s），同时常驻写进弹窗详情区
+    toast(msg, true);
+    $("upd-detail").innerHTML = "<b style='color:#dda49b'>✗ 更新失败</b><br><br>" +
+      esc(msg) + "<br><br><i>更新采用原子化部署，失败已自动回滚，现有版本与数据不受影响。" +
+      "可关闭本窗口后点右上角「检查更新」重试。</i>";
+    $("upd-modal").classList.remove("hidden");
   } finally {
     progress.done();
     btn.disabled = false;
     btn.classList.remove("loading");
     btn.textContent = "立即更新";
+    updApplyBusy = false;
   }
 });
 // 开面板 1.2s 后自动查一次（避开启动时的并发请求高峰）

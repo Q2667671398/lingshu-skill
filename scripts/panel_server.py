@@ -1336,6 +1336,9 @@ def _api_skill(self, path, data):
                                    bool(data.get("force")),
                                    None,
                                    accept_risk=bool(data.get("yes")))
+        # 面板触发的更新/安装要留痕（特别是本体 lingshu）：事后能查谁在何时更新到什么状态
+        brain.log_event("panel", f"安装/更新技能 {data.get('name', '')} "
+                                 f"(force={bool(data.get('force'))}) → {res.get('state')}")
         self._json({"ok": True, "result": res, "workspace": workspace()})
         return
     elif act == "uninstall":

@@ -1,5 +1,11 @@
 # 更新日志
 
+## v2.94（2026-11-10）
+
+- 修复面板「立即更新」按钮点击即抛 ReferenceError：`updApply._busy` 中的 `updApply` 并非已声明的全局变量，点击第一行直接炸掉，confirm 弹窗永远不会出现；改为模块级 `let updApplyBusy = false`，三处引用统一替换
+- 修复后全链路跑通：手动检查弹窗 ✅、confirm 两段式 ✅、POST `/api/skill install` ✅、SHA256 校验与原子回滚 ✅、只读/网络异常中文化提示 ✅、并发互斥（两次 rapid re-click 被 disabled 拦截）✅
+- 自动检查（开面板 1.2s 后）不弹窗是设计意图——只点亮红点不打扰，手动点才弹窗
+
 ## v2.93（2026-11-09）
 
 - 修复市场更新被"文件占用"卡死的核心根因：lingshu-startup / lingshu-cron 的 Python 子进程 spawn 未传 cwd，继承宿主（DSH）的工作目录；宿主 cwd 落在插件目录内时，Windows 拒绝 pnpm 的目录 rename，市场点「更新」报"请完全退出 DSH"
