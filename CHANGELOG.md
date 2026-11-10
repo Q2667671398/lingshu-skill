@@ -1,5 +1,10 @@
 # 更新日志
 
+## v2.96（2026-11-11）
+
+- 修复召回缺陷：热集（hippo/cortex/dust）一个候选都没有时，recall 在冷集补召分支之前提前 `return []`，导致纯关键词模式下「只有 archive 冷归档里有匹配」的查询整条漏掉；改为热集无候选时先递归捞一次冷集（同补召门槛：一次、非隐私场景），捞不着才真正空手而归
+- 新增 `scripts/test_niah.py`：NIAH（大海捞针）验收脚本，隔离 HOME 运行，覆盖 5 项——埋针 Top3 召回、trait 标签记忆、冷集兜底、persona 快照回滚、零依赖不破（纯标准库 import 确认）
+
 ## v2.95（2026-11-11）
 
 - persona 自动快照三条路径补齐：此前只有 update_persona 拍快照，`edit_persona`（手动编辑）与 `set_persona_field`（CLI `persona set` 实际走这条）改人格不留痕、改坏了没法回滚——两处均在改动前补 `save_persona_snapshot`

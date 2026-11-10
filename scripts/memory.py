@@ -1339,6 +1339,17 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             log_event("recall", f"Dense 召回失败，退回纯关键词：{e}", level="warn")
             dense_scores = {}
         if not records:
+            # 热集一个候选都没有时，冷集补召分支（下方 avg<0.1）永远到不了——
+            # 纯关键词模式下"只有 archive 里有匹配"的查询会整条漏掉。这里先递归
+            # 捞一次冷集（补召同款门槛：一次、非隐私场景），捞不着才真的空手而归。
+            if (not include_archive and _archive_pass < 1 and q_terms
+                    and not target_user):
+                try:
+                    return recall(query, k, layers, strengthen, include_dust, True,
+                                  channel, group_id, user, target_user, asker,
+                                  _archive_pass=_archive_pass + 1)
+                except Exception as e:
+                    log_event("recall", f"冷集兜底（热集空候选）失败：{e}", level="warn")
             return []
     # 无查询词（startup 注入等场景）不构建 terms/idf：relevance 恒为 0，省掉上万条的整库分词
     all_terms = {m["id"]: terms(_hay(m)) for m in records} if q_terms else {}
