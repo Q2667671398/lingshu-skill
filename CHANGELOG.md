@@ -1,5 +1,12 @@
 # 更新日志
 
+## v2.95（2026-11-11）
+
+- persona 自动快照三条路径补齐：此前只有 update_persona 拍快照，`edit_persona`（手动编辑）与 `set_persona_field`（CLI `persona set` 实际走这条）改人格不留痕、改坏了没法回滚——两处均在改动前补 `save_persona_snapshot`
+- 修复 `_next_snapshot_version` 缺陷：旧实现用 seek 读文件末尾判断 version，多行文件下永远得到 v1；重写为逐行读全文件取最后非空行，版本号严格递增（实测 v2/v3/v4）
+- 面板人格页新增「自动快照」卡片：列出最近 50 份快照（版本/时间/动作/来源/原因），每条带「回滚到此」；回滚走 POST `/api/persona/snapshots/rollback`，回滚前服务端自动再存一份"回滚前"快照，可再回回；切到人格页自动刷新列表
+- CLI persona 子命令已有 `auto-snapshots` / `auto-rollback`，与面板共用同一套快照体系
+
 ## v2.94（2026-11-10）
 
 - 修复面板「立即更新」按钮点击即抛 ReferenceError：`updApply._busy` 中的 `updApply` 并非已声明的全局变量，点击第一行直接炸掉，confirm 弹窗永远不会出现；改为模块级 `let updApplyBusy = false`，三处引用统一替换

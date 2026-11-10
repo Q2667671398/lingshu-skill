@@ -473,6 +473,12 @@
         <div id="persona-diff" style="margin-top:10px"></div>
       </div>
       <div class="card" style="margin-top:14px">
+        <h2>自动快照 · 按时间可回滚</h2>
+        <div class="sub" style="margin-bottom:8px">每次改人格（AI 或手动）都会先存一份完整快照。改坏了点「回滚到此」回到那一刻；回滚前会再存一份"回滚前"快照，可以再回回。</div>
+        <div style="margin-bottom:8px"><button class="ghost" id="btn-snapshots" style="padding:3px 12px;font-size:12px">刷新快照列表</button></div>
+        <div id="snapshots"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
         <h2>演化历史</h2>
         <div id="history"></div>
       </div>
@@ -2625,6 +2631,7 @@ function switchTab(tab){
   else { stopPhysics(); stopGraphAnim(); }   // 离开联想页即停模拟，不空耗 CPU
   if (tab === "logs") loadLogs();
   if (tab === "diag") loadDiagnostics();
+  if (tab === "persona") loadSnapshots();  // 切到人格页时顺手刷快照列表
   if (["knowledge", "notes", "skills", "growth"].includes(tab)) {
     if (S.ws) { renderKnowledge(); renderNotes(); renderSkills(); renderDshPlugins(); renderGrowth(); renderOnboarding(); }
     else loadWS();
@@ -2837,6 +2844,45 @@ document.addEventListener("click", async (e) => {
 
 const pdBtn = $("btn-persona-diff");
 if (pdBtn) pdBtn.addEventListener("click", togglePersonaDiff);
+
+// ---- 自动快照：列出 + 按版本回滚（对应 persona_snapshots.jsonl）
+async function loadSnapshots(){
+  const box = $("snapshots");
+  if (!box) return;
+  try {
+    const rows = await api("/api/persona/snapshots?limit=50");
+    if (!rows.length){ box.innerHTML = `<div class="sub">还没有快照——改一次人格就会有了</div>`; return; }
+    box.innerHTML = rows.map(s => `
+      <div class="mem" style="padding:9px 12px">
+        <div class="mem-body">
+          <div class="mem-top">
+            <span class="badge">${esc("v" + s.version)}</span>
+            <span class="badge">${esc(s.action || "update")}</span>
+            ${s.source ? `<span class="badge">${esc(s.source)}</span>` : ""}
+            <span class="date">${s.ts ? new Date(s.ts * 1000).toLocaleString("zh-CN").slice(5, 17) : "??"}</span>
+          </div>
+          ${s.why ? `<p style="font-size:12.5px;color:var(--muted)">${esc(s.why)}</p>` : ""}
+        </div>
+        <button class="ghost" style="padding:3px 10px;font-size:11.5px;flex-shrink:0" data-snap-rollback="${s.version}">回滚到此</button>
+      </div>`).join("");
+  } catch (e) { box.innerHTML = `<div class="sub">${esc(e.message)}</div>`; }
+}
+const snapBtn = $("btn-snapshots");
+if (snapBtn) snapBtn.addEventListener("click", loadSnapshots);
+document.addEventListener("click", async (e) => {
+  const b = e.target && e.target.closest && e.target.closest("[data-snap-rollback]");
+  if (!b) return;
+  const version = Number(b.dataset.snapRollback);
+  if (!confirm(`确定回滚到快照 v${version} 吗？回滚前会先存一份"回滚前"快照，改坏了还能再回回。`)) return;
+  b.disabled = true;
+  try {
+    await api("/api/persona/snapshots/rollback", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({version})});
+    toast(`已回到 v${version} 那一刻`);
+    loadSnapshots();
+    load();  // 刷新人格表单等显示
+  } catch (err) { console.error("快照回滚:", err); toast(err.message, true); b.disabled = false; }
+});
 
 const emoBtn = $("btn-emo-feel");
 if (emoBtn) emoBtn.addEventListener("click", async () => {

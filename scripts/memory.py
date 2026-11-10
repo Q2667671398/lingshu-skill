@@ -904,6 +904,13 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
                 m["tags"] = _dedupe(m.get("tags", []) + [t.strip().lstrip("#") for t in (tags or [])])
                 m["entities"] = _dedupe(m.get("entities", []) + (entities or []))
                 save_all(records)
+                # P1：异步补/更新 embedding（文本变了或还没有向量才调度；
+                # 未配置 embed 服务时 _embed_wanted 直接 False，零开销跳过）
+                try:
+                    if _embed_wanted(m, text_changed=(len(text) > len(old))):
+                        _schedule_embed(m["id"], str(m.get("text") or ""))
+                except Exception:
+                    pass          # embedding 是增强，绝不影响记事
                 _remember_desire_nudge(m, imp)
                 return m, "merged"
 
@@ -1006,8 +1013,142 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
         except Exception:
             pass          # 建链是锦上添花，绝不能让记事本身失败
         save_all(records)
+        # P1：新记忆异步生成 embedding（未配置 embed 服务时零开销跳过）
+        try:
+            if _embed_wanted(rec, True):
+                _schedule_embed(rec["id"], str(rec.get("text") or ""))
+        except Exception:
+            pass          # embedding 是增强，绝不影响记事
         _remember_desire_nudge(rec, rec.get("importance"))
         return rec, ("superseded" if superseded else ("conflict" if conflicts else "created"))
+
+
+# ---------------------------------------------------------------- P1 可选 embedding
+# 设计约束（零依赖铁律）：
+#   * 未配置 embed 服务时，_embed_wanted 一律 False——不调 API、不起线程、零开销；
+#   * 网络调用全在 daemon 线程里做，remember 主链路永远不阻塞；
+#   * 回写重新进 _locked + load_all + save_all，与并发写互斥，不覆盖别人的新写入；
+#   * 文本在嵌入期间又被改写（合并路径）就不回写旧向量，等下一轮调度自然修正。
+
+_EMBED_INFLIGHT: set = set()
+_EMBED_INFLIGHT_LOCK = threading.Lock()
+
+
+def _embed_wanted(m: dict, text_changed: bool = False) -> bool:
+    """这条记忆是否需要（重新）生成 embedding：配了 embed 服务，且文本变了或还没向量。"""
+    try:
+        if READONLY or not _embed_cfg():
+            return False
+    except Exception:
+        return False
+    return bool(text_changed) or not m.get("embedding")
+
+
+def _schedule_embed(rec_id: str, text: str) -> None:
+    """起 daemon 线程异步嵌入 + 回写；同一条记忆同时在飞只跑一个。"""
+    if not rec_id or not text:
+        return
+    with _EMBED_INFLIGHT_LOCK:
+        if rec_id in _EMBED_INFLIGHT:
+            return
+        _EMBED_INFLIGHT.add(rec_id)
+    try:
+        threading.Thread(target=_embed_worker, args=(rec_id, text), daemon=True).start()
+    except Exception:
+        with _EMBED_INFLIGHT_LOCK:
+            _EMBED_INFLIGHT.discard(rec_id)
+
+
+def _embed_worker(rec_id: str, text: str) -> None:
+    try:
+        vecs = embed_texts([text])
+        if not vecs:
+            return
+        # 4 位小数截断：cosine 精度损失可忽略，JSONL 体积省 ~3 倍
+        vec = [round(x, 4) for x in vecs[0]]
+        with _locked(HOME / "hippocampus.jsonl"):
+            records = load_all()
+            for m in records:
+                if m.get("id") != rec_id:
+                    continue
+                if str(m.get("text") or "") == text:
+                    m["embedding"] = vec
+                    save_all(records)
+                return
+    except Exception as exc:
+        log_event("embed", f"embedding 回写失败：{exc}", level="warn")
+    finally:
+        with _EMBED_INFLIGHT_LOCK:
+            _EMBED_INFLIGHT.discard(rec_id)
+
+
+def embed_backfill(limit: int = 0) -> int:
+    """给已有但没向量的记忆补 embedding（同步、限量），返回成功补写的条数。
+
+    覆盖历史数据与 cortex 层（cortex 由做梦 consolidate 写入，不经过 remember 调度）。
+    未配置 embed 服务返回 0；默认一次补 cfg.embed.batch_size 条。
+    """
+    cfg = _embed_cfg()
+    if not cfg or READONLY:
+        return 0
+    todo = [m for m in load_all()
+            if m.get("layer") != "dust" and not m.get("embedding")
+            and str(m.get("text") or "").strip()]
+    if not todo:
+        return 0
+    todo = todo[: max(1, int(limit or cfg.get("batch_size") or 8))]
+    vecs = embed_texts([str(m.get("text") or "") for m in todo])
+    if not vecs or len(vecs) != len(todo):
+        return 0
+    n = 0
+    try:
+        with _locked(HOME / "hippocampus.jsonl"):
+            records = load_all()
+            by_id = {m.get("id"): [round(x, 4) for x in v] for m, v in zip(todo, vecs)}
+            for m in records:
+                v = by_id.get(m.get("id"))
+                if v is not None:
+                    m["embedding"] = v
+                    n += 1
+            if n:
+                save_all(records)
+    except Exception as exc:
+        log_event("embed", f"embed_backfill 失败：{exc}", level="warn")
+        return 0
+    return n
+
+
+def _dense_recall(query: str, records_by_id: dict, top_n: int = 10,
+                  floor: float = 0.30) -> dict:
+    """Dense 召回：query 向量与记忆 embedding 算 cosine，返回 {id: sim} 的 Top-N。
+
+    只对已有 embedding 字段的记忆生效；embed 服务未配置/不可达/无人过 floor 时
+    返回 {}——调用方按"无 Dense 能力"退回纯关键词。纯标准库算内积：
+    五千条 × 768 维约几十毫秒，不需要 numpy。floor 砍噪声（无关对通常 <0.3）。
+    """
+    cands = [(mid, m["embedding"]) for mid, m in records_by_id.items()
+             if isinstance(m.get("embedding"), list) and m["embedding"]]
+    if not cands:
+        return {}
+    qv = embed_texts([query])
+    if not qv:
+        return {}
+    q = qv[0]
+    qlen = len(q)
+    qn = math.sqrt(sum(x * x for x in q)) or 1.0
+    sims = {}
+    for mid, vec in cands:
+        if len(vec) != qlen:        # 跨模型/跨版本维度不符：跳过，不混算
+            continue
+        vn = math.sqrt(sum(x * x for x in vec)) or 1.0
+        dot = sum(a * b for a, b in zip(q, vec))
+        sim = dot / (qn * vn)
+        if sim >= floor:
+            sims[mid] = sim
+    if not sims:
+        return {}
+    top = sorted(sims.items(), key=lambda kv: kv[1], reverse=True)[: max(1, top_n)]
+    return dict(top)
 
 
 def _remember_desire_nudge(rec: dict, imp) -> None:
@@ -1122,7 +1263,8 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
            include_archive: bool = False,
            channel: str | None = None, group_id: str | None = None,
            user: str | None = None,
-           target_user: str | None = None, asker: str | None = None) -> list:
+           target_user: str | None = None, asker: str | None = None,
+           _archive_pass: int = 0) -> list:
     """模糊回忆：相关度 + 近期性 + 重要性 + 联想扩散。返回 [(record, score, parts), ...]
 
     channel/group_id/user 任一给出即进入通道上下文：
@@ -1167,6 +1309,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         return []
     now = now_ts()
     q_terms = terms(query)
+    dense_scores = {}   # P1 Dense 召回结果（id -> cosine）；无 embed 服务/无向量时恒空
     # 第一道预筛：带查询词时先做廉价的子串包含测试，只对可能相关的记忆做正则分词与打分。
     # 上万条记忆时这一刀把"全量 terms + 全量 idf"砍成"候选集 terms"；数学上不丢召回
     # （relevance>0 ⇔ 共享 term，而共享 term 必是本文档文本的连续子串）。
@@ -1180,6 +1323,21 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         # 若 id_map 只从候选集建，links 指向的邻居会被误判成"不存在"。
         full_index = {m["id"]: m for m in records}
         records = cand
+        # —— P1-1c Dense 召回：把"词面不重叠但语义相关"的记忆捞回候选集 ——
+        # 关键词子串预筛是召回瓶颈：稀疏词面没交集的记忆（"之前那个并发方案"）
+        # 会被上面一刀切掉。有 embedding 的记忆与 query 向量算 cosine，Top-N 并回
+        # 候选集参与后续打分；未配置 embed 服务/无向量数据/调用失败时
+        # dense_scores 为空，行为与纯关键词版本完全一致。
+        try:
+            dense_scores = _dense_recall(query, full_index, top_n=max(k * 2, 10))
+            if dense_scores:
+                have = {m["id"] for m in records}
+                for mid in dense_scores:
+                    if mid not in have:
+                        records.append(full_index[mid])
+        except Exception as e:
+            log_event("recall", f"Dense 召回失败，退回纯关键词：{e}", level="warn")
+            dense_scores = {}
         if not records:
             return []
     # 无查询词（startup 注入等场景）不构建 terms/idf：relevance 恒为 0，省掉上万条的整库分词
@@ -1187,10 +1345,40 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     idf = build_idf(list(all_terms.values())) if q_terms else {}
 
     scored = []
+    # —— persona core 关键词：永久规则加权——
+    # persona.traits 里每条 trait 的 name（如"专注"、"耐心"）+ drives 的 key，
+    # 形成一个"核心规则关键词集"。记忆 tags/entities/kind 命中这些关键词时，
+    # 追加 (1 + w.core_bias) 加权，让核心规则不被临时记录挤下去。
+    # 懒加载：只读 persona.json 的 traits keys 和 drives keys，不做深拷贝。
+    try:
+        _p = load_persona()
+        _core_terms = set()
+        for t in (_p.get("traits") or {}).keys():
+            _core_terms.add(str(t).lower())
+        for d in (_p.get("drives") or {}).keys():
+            _core_terms.add(str(d).lower())
+        for e in (_p.get("identity") or {}).values():
+            if e and isinstance(e, str):
+                _core_terms.add(e.lower())
+        # 底线/价值观/关系等 persona 顶层字段
+        for key in ("values", "likes", "dislikes"):
+            for v in (_p.get(key) or []) if isinstance(_p.get(key), list) else []:
+                if v and isinstance(v, str):
+                    _core_terms.add(v.lower())
+        _has_core_bias = bool(_core_terms) and w.get("core_bias", 0) > 0
+    except Exception:
+        _core_terms = set()
+        _has_core_bias = False
+
     # 首因效应：同一片记忆里最早留下的印象占权更高（第一次的印象比后来补的更深）
     oldest = max((now - _num(m.get("created"), now) for m in records), default=0)
     for m in records:
         rel = relevance(q_terms, all_terms[m["id"]], idf) if q_terms else 0.0
+        # Dense 语义分托底：向量说"像"但词面没重叠（rel=0）时用语义分当 relevance；
+        # 词面已命中时取两者较大值，语义只增不减。
+        _ds = dense_scores.get(m["id"]) if dense_scores else None
+        if _ds is not None and _ds > rel:
+            rel = _ds
         rec = retention(m, now)
         imp = _num(m.get("importance"), 0.5)
         score = w["relevance"] * rel + w["recency"] * rec + w["importance"] * imp
@@ -1205,15 +1393,30 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             hits += sum(1 for t in m.get("tags", []) if str(t).lower() in q_low)
             hits += sum(1 for e in m.get("entities", []) if str(e).lower() in q_low)
         score += min(0.30, 0.12 * hits)
-        # 时效软加权（借鉴 dsh-prime-memory）：检索排序里再叠一层"相关性随时间半衰"，
-        # 与按 last_access 衰减的 recency 互补——recency 管"多久没被想起"，
-        # 这层管"这件事本身过去多久了"，让旧事实不至于永远霸榜、新事实能浮上来。
-        # 地板 0.5：长期事实（生日、架构决定）不因老而沉底。
+        # —— persona core 加权——
+        # 记忆 kind=identity 或 tags/entities/kind 命中 persona 核心关键词时，
+        # 追加 core_bias 比例加权；identity 是核心身份类，权重更高一点。
+        if _has_core_bias:
+            m_tags = set(str(t).lower() for t in (m.get("tags") or []))
+            m_ents = set(str(e).lower() for e in (m.get("entities") or []))
+            m_kind = str(m.get("kind") or "").lower()
+            hits_core = m_tags & _core_terms or m_ents & _core_terms
+            if m_kind in ("identity", "preference") or hits_core:
+                boost = 1.0 + (w.get("core_bias", 0.20) * (1.5 if m_kind == "identity" else 1.0))
+                score *= boost
+        # —— 永久记忆：不再做"时间半衰"压分——
+        # 原 score *= max(0.5, 0.5 ** (age_days / 30.0)) 让 3 个月前的核心偏好被压到
+        # 50%，每月衰减、没有底板。永久记忆的"这件事本身过去多久"不该直接压分：
+        # 语义匹配、重要性、重要标签命中、persona core 加权——这几样足够。
+        # 原 age_boost 字段保留在 debug 里，但不再参与乘法压分。
         age_days = (now - _num(m.get("created"), now)) / DAY
-        score *= max(0.5, 0.5 ** (age_days / 30.0))
-        scored.append([m, score, {"relevance": round(rel, 3), "recency": round(rec, 3),
-                                  "importance": imp, "hits": hits,
-                                  "age_boost": round(max(0.5, 0.5 ** (age_days / 30.0)), 2)}])
+        # （以上保留 age_days 只是给下方 age_boost debug 用，不乘进 score）
+        _parts = {"relevance": round(rel, 3), "recency": round(rec, 3),
+                  "importance": imp, "hits": hits,
+                  "age_boost": 1.0}
+        if _ds is not None:
+            _parts["dense"] = round(_ds, 3)   # 透明化：这条是向量语义捞回来的
+        scored.append([m, score, _parts])
 
     # 情绪一致性提取（mood-congruent recall）：心情会偏向勾起同调性的记忆
     # ——难过时更容易想起难过的事，开心时更容易想起开心的事（Bower 1981）。
@@ -1259,7 +1462,43 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
                         item[1] += min(0.12, 0.04 * w)
 
     scored.sort(key=lambda x: x[1], reverse=True)
+
+    # —— P1-2 rerank 可插拔：粗排 Top-N 交外部 reranker 精排 ——
+    # 配了 rerank.url 才调用；未配置/失败/返回为空都保持加权合并原顺序。
+    # 重排语义：reranker 返回的索引序作为新顺序，没返回的条目按原加权序跟在后面，
+    # 绝不丢条——精排只影响顺序，不影响召回集合。
+    if q_terms and len(scored) > 1:
+        try:
+            _n = min(len(scored), max(k * 3, 10))
+            _head = scored[:_n]
+            _pairs = rerank_docs(
+                query,
+                [str(x[0].get("text") or x[0].get("gist") or "") for x in _head],
+                top_n=_n)
+            if _pairs:
+                _used = {i for i, _ in _pairs}
+                scored = ([_head[i] for i, _ in _pairs]
+                          + [x for j, x in enumerate(_head) if j not in _used]
+                          + scored[_n:])
+        except Exception as e:
+            log_event("recall", f"rerank 精排失败，保持加权序：{e}", level="warn")
+
     result = scored[: max(k, 1)]
+
+    # —— 永久记忆：热集空了自动捞冷集（archive）——
+    # 如果热集 Top-K 的均分普遍很低（relevance/importance 都没沾边），说明当前
+    # 会话窗口里根本没有相关记录——但 archive 里可能躺着很久以前的、永久保存
+    # 的、语义完全正确的旧记忆。自动补召 1 次，不递归。
+    if (not include_archive and _archive_pass < 1 and result and q_terms
+            and not target_user):          # 隐私/通道过滤的场景不走自动补召，留给显式开关
+        avg = sum(x[1] for x in result) / max(1, len(result))
+        if avg < 0.10:                      # 热集里 Top-K 均分 < 0.1，普遍没沾边
+            try:
+                return recall(query, k, layers, strengthen, include_dust, True,
+                              channel, group_id, user, target_user, asker,
+                              _archive_pass=_archive_pass + 1)
+            except Exception as e:
+                log_event("recall", f"冷集自动补召失败：{e}", level="warn")
 
     # 沿 links 显式联想扩散一跳：命中的记忆通过 relink/裁决挂上的关联边，
     # 把直接邻居追加成"关联记忆"（linked: true），上限 5 条。

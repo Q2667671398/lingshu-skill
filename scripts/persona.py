@@ -170,6 +170,119 @@ def save_persona(p: dict) -> None:
         atomic_json(HOME / "persona.json", p)
 
 
+def _snapshot_path() -> Path:
+    return HOME / "persona_snapshots.jsonl"
+
+
+def _next_snapshot_version() -> int:
+    """快照版本号：读 jsonl 最后一行 + 1；空文件从 1 开始。
+
+    并发 race 容忍：两个线程同时读到 N 并都写 N+1 是允许的，rollback 时按
+    version+ts 匹配最接近目标版本的那一个即可。
+    """
+    path = _snapshot_path()
+    if not path.exists():
+        return 1
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = [ln for ln in f if ln.strip()]
+        if rows:
+            d = json.loads(rows[-1])
+            return int(d.get("version", 0)) + 1
+    except (OSError, ValueError, TypeError):
+        pass
+    return 1
+
+
+def save_persona_snapshot(p_before: dict, action: str = "update",
+                          source: str = "", why: str = "") -> int | None:
+    """把当前 persona 完整快照追加进 persona_snapshots.jsonl。
+
+    调用时机：update_persona 里在 load_persona() 后、改字段前。任何改 persona
+    的路径（dream/面板/CLI）自动覆盖。返回快照版本号，失败返回 None（不阻断
+    主流程——快照丢了不应该让人格更新也丢）。
+    """
+    if READONLY:
+        return None
+    try:
+        path = _snapshot_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        version = _next_snapshot_version()
+        row = {
+            "version": version,
+            "ts": now_ts(),
+            "action": action,
+            "source": source,
+            "why": why,
+            "persona": json.loads(json.dumps(p_before, ensure_ascii=False)),  # 深拷贝
+        }
+        with _locked(path):
+            with open(path, "a", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return version
+    except Exception as exc:
+        log_event("persona", f"保存 persona 快照失败：{exc}", level="warn")
+        return None
+
+
+def list_persona_snapshots(limit: int = 50) -> list:
+    """列出最近的快照（新的在前）。每条含 version / ts / action / source / why，
+    不含完整 persona 数据（避免面板一次塞进大对象）。"""
+    path = _snapshot_path()
+    if not path.exists():
+        return []
+    try:
+        rows = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                    rows.append({k: d.get(k) for k in ("version", "ts", "action", "source", "why")})
+                except ValueError:
+                    continue
+        return list(reversed(rows[-limit:]))
+    except OSError:
+        return []
+
+
+def rollback_persona_snapshot(version: int) -> dict | None:
+    """按版本号回溯 persona.json 到指定快照。返回回溯后的完整 persona，找不到
+    返回 None。找不到或异常都不抛——rollback 是用户选的安全兜底。"""
+    if READONLY:
+        return None
+    path = _snapshot_path()
+    if not path.exists():
+        return None
+    target = None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                    if int(d.get("version", 0)) == int(version):
+                        target = d
+                        break
+                except (ValueError, TypeError):
+                    continue
+    except OSError:
+        return None
+    if not target or not isinstance(target.get("persona"), dict):
+        return None
+    # 先存一份"回滚前"的快照，这样用户回滚错了还能再回回来
+    try:
+        save_persona_snapshot(load_persona(), action="pre_rollback", source="rollback",
+                              why=f"即将回滚到 v{version}")
+    except Exception:
+        pass
+    p = target["persona"]
+    save_persona(p)
+    return p
+
+
 def _is_locked(p: dict, label: str) -> bool:
     locks = set(p.get("locked", []))
     if not locks:
@@ -286,6 +399,11 @@ def _num_or_none(val):
 def _update_persona_inner(updates: dict, why: str, source: str,
                           evidence: list | None) -> list:
     p = load_persona()
+    # —— 永久记忆：改人格前先存快照——
+    # 任何 update_persona 路径（dream / 面板 / CLI / 回滚）都会进这里，
+    # 改前先深拷贝一份快照进 persona_snapshots.jsonl。改砸了能回滚。
+    save_persona_snapshot(json.loads(json.dumps(p, ensure_ascii=False)),
+                          action="update", source=source or "unknown", why=why)
     rejected = []
     now = now_ts()
     st = p.setdefault("state", {})
@@ -420,6 +538,8 @@ def set_persona_field(path: str, value: str) -> dict:
 
 def _set_persona_field_inner(path: str, value: str) -> dict:
     p = load_persona()
+    # 自动快照：CLI/面板单字段改写也会动人格，改坏了要能回滚
+    save_persona_snapshot(p, action="edit", source="字段改写", why=f"set {path}")
     root = path.split(".")[0]
     if root not in _PERSONA_ROOTS:
         raise ValueError(f"不认识的字段：{path}（可用 identity.* / traits.* / drives.* / state.* / "
@@ -832,6 +952,8 @@ def edit_persona(identity: dict | None = None, traits: dict | None = None,
                  why: str = "自我编辑") -> dict:
     """直接改写人格档案（绝对值，不是增量）。每次变更都写入演化历史，可回滚。"""
     p = load_persona()
+    # 自动快照：手动编辑也会改人格，改坏了要能一键回到这一刻之前
+    save_persona_snapshot(p, action="edit", source="手动编辑", why=why)
     now = now_ts()
     hist = p.setdefault("history", [])
     ident = p.setdefault("identity", {})

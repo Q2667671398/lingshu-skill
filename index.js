@@ -54,6 +54,10 @@ export function apply(ctx) {
       '需要持久记忆、人格设定、成长记录或跨会话待办时使用；' +
       '需 Python 3，缺 Python 时 startup 注入不可用但技能文档仍可读。',
     content,
+    // DSH validateDefinition 要求 source/provider 必须是 string，缺失时
+    // `skill(name="lingshu")` 会抛 "source must be a string"（改进清单 #2）。
+    source: 'bundled:lingshu',
+    provider: 'lingshu-skill',
     invocation: { modelInvocable: true, userInvocable: true },
   })
 

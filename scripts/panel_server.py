@@ -32,6 +32,7 @@ _WRITE_ENDPOINTS = {
     "/api/remember", "/api/persona", "/api/persona/state",
     "/api/persona/edit", "/api/persona/mind", "/api/persona/interview",
     "/api/persona/self", "/api/persona/rollback", "/api/persona/changes-viewed",
+    "/api/persona/snapshots/rollback",  # 自动快照按 version 回滚（persona_snapshots.jsonl）
     "/api/memory", "/api/memory/review", "/api/knowledge", "/api/knowledge/review",
     "/api/note", "/api/skill",
     "/api/skill/self-review", "/api/skill/dsh-repair", "/api/evolve", "/api/dream", "/api/dream/auto",
@@ -674,6 +675,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/persona/diff":
             self._json(brain.persona_diff())
             return
+        if path == "/api/persona/snapshots":
+            limit = _int_param(url, "limit", 50, 1, 200)
+            self._json(brain.list_persona_snapshots(limit=limit))
+            return
         if path == "/api/logs":
             limit = _int_param(url, "limit", 200, 1, 2000)
             level = (parse_qs(url.query).get("level") or [""])[0] or None
@@ -771,6 +776,15 @@ class Handler(BaseHTTPRequestHandler):
         if data is None:
             return
         # 只读门控：写接口在数据目录不可写时直接 403（展示/预览接口放行）
+        # 自愈合：面板是长驻进程，启动那一下探测失败可能只是杀软/索引器短暂占用——
+        # 写请求真正到来时复探一次，可写就摘掉只读状态，不用重启面板。
+        if brain.READONLY and path in _WRITE_ENDPOINTS and not _readonly_allowed(path, data):
+            try:
+                if brain._home_writable(max_attempts=1):
+                    brain.READONLY = False
+                    brain._sync_state()
+            except Exception:
+                pass
         if brain.READONLY and path in _WRITE_ENDPOINTS and not _readonly_allowed(path, data):
             self.close_connection = True
             self._json({"error": "readonly", "message": "数据目录当前只读，写操作已被禁用。"}, 403)
@@ -1439,6 +1453,19 @@ def _api_persona_rollback(self, path, data):
     self._json({"ok": True, "persona": p})
 
 
+def _api_persona_snapshot_rollback(self, path, data):
+    """按自动快照 version 回滚 persona.json（回滚前自动再存一份"回滚前"快照，可再回回）。"""
+    version = _to_int(data.get("version"))
+    if version is None or version <= 0:
+        self._json({"error": "version 必须是正整数"}, 400)
+        return
+    p = brain.rollback_persona_snapshot(int(version))
+    if p is None:
+        self._json({"error": f"找不到快照 version={version}，或快照文件损坏"}, 404)
+        return
+    self._json({"ok": True, "persona": p, "rolled_back_to": int(version)})
+
+
 
 def _api_memory_review(self, path, data):
     mid, act = data.get("id", ""), data.get("action", "")
@@ -1651,6 +1678,7 @@ _POST_ROUTES = {
         "/api/persona/interview": _api_persona_interview,
         "/api/persona/self": _api_persona_self,
         "/api/persona/rollback": _api_persona_rollback,
+        "/api/persona/snapshots/rollback": _api_persona_snapshot_rollback,
         "/api/mind/weigh": _api_mind_weigh,
         "/api/emotion": _api_emotion,
         # 关联 / 整理 / 模式

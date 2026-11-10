@@ -2148,6 +2148,11 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
     if outdated and src_v is not None and inst_v is not None and src_v < inst_v:
         outdated = False
         stale_source = True
+    # 改进清单 #3：源版本严格大于已装版本 ⇒ 一律 outdated（不再受签名/漂移启发式
+    # 干扰）。以前"installed 2.91 / source 2.94 却 outdated:false"就是因为
+    # _real_drift 没抓到差异、判定被两道启发式闸门拦掉了。
+    if src_v is not None and inst_v is not None and src_v > inst_v:
+        outdated = True
     if stale_source and out_src in ("gitee", "github") and not force_pull:
         # 缓存源比已装还旧：说明刚才拉取全链路失败、复用的旧缓存。静默再 force
         # 拉一次（内部有整体重试），拿到真源就正常对比；仍失败才报 stale。

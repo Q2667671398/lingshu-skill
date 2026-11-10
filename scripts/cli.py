@@ -1036,7 +1036,8 @@ def _main(argv=None) -> int:
     p_per.add_argument("action", nargs="?", default="show",
                        choices=["show", "set", "sync", "path", "interview", "self", "onboarding",
                                 "lock", "unlock", "history", "rollback", "check",
-                                "snapshot", "snapshots", "restore", "drift"])
+                                "snapshot", "snapshots", "restore", "drift",
+                                "auto-snapshots", "auto-rollback"])
     p_per.add_argument("pair", nargs="?", default=None, help="例如 traits.幽默=70 / rollback 的序号")
     p_per.add_argument("--json", action="store_true")
     p_per.add_argument("--name", default="", help="interview：用户给你起的名字")
@@ -1676,6 +1677,32 @@ def _main(argv=None) -> int:
             for i, r in enumerate(rows, 1):
                 print(f"  {i}. {fmt_time(r['ts'])}  {r['label']}  [{r['name']}]")
             print("还原：persona restore <名字>")
+            return 0
+        if args.action == "auto-snapshots":
+            # 自动快照（persona_snapshots.jsonl，P0-3a 体系）：每次改人格前自动落一份，
+            # 与 persona snapshot（手动命名快照）并存。列表 + 按 version 回滚。
+            rows = list_persona_snapshots(getattr(args, "limit", 50) or 50)
+            if not rows:
+                print("还没有自动快照。任何一次人格修改（面板/CLI/做梦）都会自动拍一张。")
+                return 0
+            print(f"自动快照（最新在前，共 {len(rows)} 张，存 persona_snapshots.jsonl）：")
+            for r in rows:
+                print(f"  v{r['version']}  {fmt_time(r['ts'])}  [{r['action']}]"
+                      f"  {r.get('why') or r.get('source') or ''}")
+            print("回滚：persona auto-rollback <版本号>")
+            return 0
+        if args.action == "auto-rollback":
+            try:
+                ver = int(args.pair or 0)
+            except ValueError:
+                print("用法：persona auto-rollback <版本号>（用 persona auto-snapshots 看版本）", file=sys.stderr)
+                return 2
+            p = rollback_persona_snapshot(ver)
+            if p is None:
+                print(f"没找到版本 v{ver} 的快照，或当前只读。", file=sys.stderr)
+                return 2
+            print(f"已按自动快照 v{ver} 回滚人格（回滚前的状态也已另存快照）。")
+            print(persona_brief(load_persona()))
             return 0
         if args.action == "restore":
             if not args.pair:
