@@ -52,8 +52,9 @@ _WRITE_ENDPOINTS = {
     "/api/extensions",
     # 云端面板市场：发布/下载/配置（token 写 config.json）
     "/api/panels/cloud",
-    # Ollama 扩展：下载写 zip / 安装写程序目录与 config.json
+    # Ollama 扩展：下载写 zip / 安装写程序目录与 config.json / setup 一键全流程
     "/api/extensions/ollama/download", "/api/extensions/ollama/install",
+    "/api/extensions/ollama/enable", "/api/extensions/ollama/setup",
     # 数据目录迁移：写指针文件 + 复制数据（迁移目标在数据目录之外，单独放行只读门控）
     "/api/home/migrate",
 }
@@ -702,6 +703,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/extensions/ollama/status":
             # Ollama 扩展状态：安装/服务/模型/配置 + 下载安装进度（轮询用）
+            # 顺带触发一次自动探测接管（后台线程、幂等、失败静默）：
+            # 本机已有 Ollama 在跑 → 无感接入 + 自动拉模型，用户无感知
+            _ollama_auto_probe_async()
             self._json(ollama_status())
             return
         if path == "/api/panels/market":
@@ -1883,10 +1887,19 @@ def _ollama_embed_configured() -> bool:
         return False
 
 
+def _fallback_embed_enabled() -> bool:
+    try:
+        import fallback_embed
+        return fallback_embed.cfg() is not None
+    except Exception:
+        return False
+
+
 def ollama_status() -> dict:
-    """状态汇总（GET）：installed/serving/model_ready/embed_configured + 下载安装进度。"""
+    """状态汇总（GET）：installed/serving/model_ready/embed_configured + 下载安装进度。
+    附带降级向量兜底（fallback_embed）开关状态：无 Ollama 时语义召回靠它兜底。"""
     state = _ollama_state_read()
-    return {
+    st = {
         "ok": True,
         "installed": _ollama_exe() is not None,
         "serving": _ollama_serving(),
@@ -1897,6 +1910,173 @@ def ollama_status() -> dict:
         "percent": int(state.get("percent") or 0),
         "detail": str(state.get("detail") or ""),
     }
+    st["fallback_enabled"] = _fallback_embed_enabled()
+    # 语义召回综合状态：Ollama 就绪（服务+模型+已接入）或降级兜底开启，都算可用
+    st["semantic_ready"] = (
+        st["serving"] and st["model_ready"] and st["embed_configured"]
+    ) or st["fallback_enabled"]
+    return st
+
+
+def _api_ollama_enable(self, path, data):
+    """自动探测接管：Ollama 已在跑但没接入灵枢时，一键写好 embed 配置。
+    模型没拉则先拉（同步，拉模型耗时可观但属于用户显式点按钮）。"""
+    try:
+        if not _ollama_serving():
+            self._json({"ok": False, "error": "Ollama 服务未运行（11434 无响应）"}, 400)
+            return
+        if not (_OLLAMA_MODEL in " ".join(_ollama_tags())):
+            if not _ollama_pull_model():
+                self._json({"ok": False, "error": f"模型 {_OLLAMA_MODEL} 拉取失败"}, 502)
+                return
+        cfg = brain.load_config()
+        embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
+        embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
+        embed["model"] = _OLLAMA_MODEL
+        cfg["embed"] = embed
+        brain.atomic_json(brain.HOME / "config.json", cfg)
+        self._json({"ok": True, "stage": "done"})
+    except Exception as exc:
+        self._log_write_failure("ollama enable", exc, 500)
+        self._json({"ok": False, "error": "接入失败，详情见运行日志"}, 500)
+
+
+def _api_ollama_setup(self, path, data):
+    """一键开启向量记忆（v2.99 ②）：串联「已装跳过 → 未装复用 download/install
+    → 起 serve → 拉模型 → 写 embed 配置」。所有长耗时步骤都丢进后台线程，
+    HTTP 只负责启动任务并立即返回（前端轮询 status 看进度，规避 15s 超时）。"""
+    try:
+        # 幂等：上一轮流水线还在飞就直接拒绝，避免两个线程同时 pull/写 config
+        stage = str(_ollama_state_read().get("stage") or "idle")
+        if stage in ("downloading", "extracting", "starting", "pulling"):
+            self._json({"ok": True, "already": True, "stage": stage})
+            return
+        threading.Thread(target=_ollama_setup_async,
+                         name="ollama-setup", daemon=True).start()
+        self._json({"ok": True, "stage": "started"})
+    except Exception as exc:
+        self._log_write_failure("ollama setup", exc, 500)
+        self._json({"ok": False, "error": "一键任务启动失败，详情见运行日志"}, 500)
+
+
+def _ollama_setup_async() -> None:
+    """一键流水线（后台线程）：每一步前先探测，能用现成的绝不重复折腾。"""
+    try:
+        # ① 已装 Ollama → 跳过下载/解压；未装但 zip 已在 → 只解压；都没有 → 先下载
+        if _ollama_exe() is None:
+            zip_path = _ollama_zip_path()
+            if not zip_path.is_file():
+                _ollama_state_write("downloading", percent=0, detail="下载 Ollama（约1GB）")
+                _ollama_download_sync()
+                if not _ollama_zip_path().is_file():
+                    _ollama_state_write("error", detail="Ollama 下载失败（网络问题），降级向量兜底仍在生效")
+                    return
+            _ollama_state_write("extracting", detail="解压到程序目录")
+            _OLLAMA_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(_ollama_zip_path()) as zf:
+                zf.extractall(_OLLAMA_INSTALL_DIR)
+            if _ollama_exe() is None:
+                _ollama_state_write("error", detail="解压后找不到 ollama.exe")
+                return
+        # ② 确保 serve 在跑（已在跑则 _ollama_start_serve 直接返回 True）
+        _ollama_state_write("starting", detail="启动 ollama serve")
+        if not _ollama_start_serve():
+            _ollama_state_write("error", detail="ollama serve 启动失败（可稍后在面板重试）")
+            return
+        # ③ 拉模型（tags 里已有 → 跳过，避免重复下载）
+        if _OLLAMA_MODEL not in " ".join(_ollama_tags()):
+            _ollama_state_write("pulling", detail=f"拉取模型 {_OLLAMA_MODEL}（首次较慢）")
+            if not _ollama_pull_model():
+                _ollama_state_write("error", detail=f"模型 {_OLLAMA_MODEL} 拉取失败（网络或磁盘问题）")
+                return
+        # ④ 写 embed 配置启用向量（与 enable/install 同款读-改-写）
+        cfg = brain.load_config()
+        embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
+        embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
+        embed["model"] = _OLLAMA_MODEL
+        cfg["embed"] = embed
+        brain.atomic_json(brain.HOME / "config.json", cfg)
+        _ollama_state_write("done", percent=100, detail="语义召回已就绪（真模型向量）")
+    except Exception as exc:
+        _ollama_state_write("error", detail=f"一键流程失败：{exc}")
+
+
+def _ollama_download_sync() -> None:
+    """同步下载 zip（只在 setup 后台线程里调）：复用 _ollama_download_async 的
+    流式写盘逻辑但阻塞到完成——setup 本来就在后台线程，串行更简单可控。"""
+    dest = _ollama_zip_path()
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(_OLLAMA_URL,
+                                     headers={"User-Agent": "lingshu-panel"})
+        with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as f:
+            total = int(resp.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                chunk = resp.read(1024 * 256)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                pct = int(got * 100 / total) if total > 0 else 0
+                _ollama_state_write("downloading", percent=pct,
+                                    detail=f"{got // (1024 * 1024)}MB")
+    except Exception:
+        try:
+            dest.unlink(missing_ok=True)   # 半截 zip 没用，删掉防误装
+        except OSError:
+            pass
+        raise
+
+
+# --------------------------------------------------------------- ① 自动探测接管
+# 面板启动/状态轮询时静默探测 127.0.0.1:11434：本机已有 Ollama 在跑 → 无感接入；
+# 在跑但模型没拉 → 后台自动 pull（只拉一次）；探测失败（没装/没跑）→ 静默退出，
+# 降级向量兜底照常工作，绝不弹窗、绝不阻塞、绝不报错打扰用户。
+_AUTO_PROBE_STATE = {"pulled": False, "lock": threading.Lock()}
+
+
+def _ollama_auto_probe() -> None:
+    """一次探测接管（探测 + 后台 pull + 写 config）。任何异常吞掉，不留痕也不崩。"""
+    if not _AUTO_PROBE_STATE["lock"].acquire(blocking=False):
+        return  # 已有探测在飞：不重复，也不排队
+    try:
+        if not _ollama_serving():
+            return  # 没装/没跑：静默退出，降级向量兜底照常
+        # 服务在跑但灵枢还没接入 → 接管写配置
+        if not _ollama_embed_configured():
+            if _OLLAMA_MODEL in " ".join(_ollama_tags()):
+                cfg = brain.load_config()
+                embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
+                embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
+                embed["model"] = _OLLAMA_MODEL
+                cfg["embed"] = embed
+                brain.atomic_json(brain.HOME / "config.json", cfg)
+                return
+            # 模型没拉：整个生命周期只自动 pull 一次（避免反复打扰/重复下载）
+            if _AUTO_PROBE_STATE["pulled"]:
+                return
+            _AUTO_PROBE_STATE["pulled"] = True
+            if _ollama_pull_model():
+                cfg = brain.load_config()
+                embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
+                embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
+                embed["model"] = _OLLAMA_MODEL
+                cfg["embed"] = embed
+                brain.atomic_json(brain.HOME / "config.json", cfg)
+    except Exception:
+        pass  # 探测接管是锦上添花：任何失败都静默，降级兜底照常
+    finally:
+        _AUTO_PROBE_STATE["lock"].release()
+
+
+def _ollama_auto_probe_async() -> None:
+    """后台线程跑探测：绝不阻塞 HTTP 请求（探测失败还会等 2s 网络超时）。"""
+    try:
+        threading.Thread(target=_ollama_auto_probe,
+                         name="ollama-auto-probe", daemon=True).start()
+    except Exception:
+        pass
 
 
 def _ollama_download_async() -> None:
@@ -1947,13 +2127,15 @@ def _ollama_start_serve() -> bool:
 
 
 def _ollama_pull_model() -> bool:
-    """ollama pull nomic-embed-text（首次下载模型可能要几分钟，超时 600s）。"""
+    """ollama pull nomic-embed-text（首次下载模型可能要几分钟，超时 600s）。
+    CREATE_NO_WINDOW：面板进程拉模型不弹黑窗（Windows 控制台程序默认会开窗）。"""
     try:
         exe = _ollama_exe()
         if exe is None:
             return False
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         r = subprocess.run([str(exe), "pull", _OLLAMA_MODEL], capture_output=True,
-                           text=True, timeout=600)
+                           text=True, timeout=600, creationflags=flags)
         return r.returncode == 0
     except Exception:
         return False
@@ -2086,6 +2268,8 @@ _POST_ROUTES = {
         "/api/extensions/ollama/status": _api_ollama_status,
         "/api/extensions/ollama/download": _api_ollama_download,
         "/api/extensions/ollama/install": _api_ollama_install,
+        "/api/extensions/ollama/enable": _api_ollama_enable,
+        "/api/extensions/ollama/setup": _api_ollama_setup,
 }
 
 
@@ -2114,6 +2298,9 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
     brain.ensure_home()
     brain._resolve_readonly(False)   # 面板也要探测只读：数据目录不可写时 POST 写接口返回 403
     _startup_update_check()
+    # ① 自动探测接管（启动即探一次，后台线程、失败静默）：本机已有 Ollama 在跑
+    # → 无感接入 embed 配置；模型没拉 → 后台自动 pull（整个生命周期只一次）。
+    _ollama_auto_probe_async()
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError as exc:

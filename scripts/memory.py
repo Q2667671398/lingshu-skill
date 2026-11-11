@@ -1040,10 +1040,19 @@ _EMBED_INFLIGHT_LOCK = threading.Lock()
 
 
 def _embed_wanted(m: dict, text_changed: bool = False) -> bool:
-    """这条记忆是否需要（重新）生成 embedding：配了 embed 服务，且文本变了或还没向量。"""
+    """这条记忆是否需要（重新）生成 embedding：embed 服务或降级向量可用，且文本变了或还没向量。
+
+    降级向量兜底（config embed.fallback.enabled，默认开）：没有 Ollama 时
+    embed_texts 会返回纯 stdlib hash 向量（256 维），照常写 m["embedding"]；
+    维度不同（768 vs 256）由 _dense_recall 的 len 校验天然隔离，不混算。
+    """
     try:
-        if READONLY or not _embed_cfg():
+        if READONLY:
             return False
+        if not _embed_cfg():
+            import fallback_embed
+            if not fallback_embed.cfg():
+                return False
     except Exception:
         return False
     return bool(text_changed) or not m.get("embedding")
@@ -1094,8 +1103,18 @@ def embed_backfill(limit: int = 0) -> int:
     未配置 embed 服务返回 0；默认一次补 cfg.embed.batch_size 条。
     """
     cfg = _embed_cfg()
-    if not cfg or READONLY:
+    if READONLY:
         return 0
+    if not cfg:
+        # 无真嵌入服务时看降级向量兜底是否开启（embed_texts 内部会自动接管）
+        try:
+            import fallback_embed
+            if not fallback_embed.cfg():
+                return 0
+        except Exception:
+            return 0
+    if not cfg:
+        cfg = {"batch_size": 8}
     todo = [m for m in load_all()
             if m.get("layer") != "dust" and not m.get("embedding")
             and str(m.get("text") or "").strip()]

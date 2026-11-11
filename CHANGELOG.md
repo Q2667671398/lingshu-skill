@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.99（2026-11-11）
+
+- 向量记忆三层自动化，所有用户开箱即用：
+  - ③ 纯 Python 降级向量兜底（scripts/fallback_embed.py）：字符 n-gram 哈希向量（纯 hashlib，零依赖），Ollama 未配置/不可用时自动接管 recall 语义相似度，比原 IDF+二元组更稳；修了 embed 未配置时提前 return None 走不到兜底的缺陷；坏输入（None/空串）安全降级不抛异常
+  - ① 自动探测接管：面板启动与 status 轮询时静默探测 127.0.0.1:11434——检测到 Ollama 服务在跑就自动写 embed 配置无感启用真向量；模型未拉取时后台自动 `ollama pull nomic-embed-text`（整个生命周期只拉一次，CREATE_NO_WINDOW 防黑窗）；探测失败完全静默
+  - ② 面板扩展页「一键开启向量记忆」：新端点 POST `/api/extensions/ollama/setup` 秒回 + 后台线程串联全流程（已装跳过下载→解压→起 serve→pull 模型→写配置），前端单按钮 + 轮询 GET status 展示进度，规避长操作 HTTP 超时
+  - SKILL.md 注入引导：向量服务不可用是正常降级状态，想提精度引导用户开面板扩展页一键开启；装了不用也无妨（Ollama 空闲约 5 分钟自动卸载模型）
+
 ## v2.98（2026-11-11）
 
 - 修复数据目录迁移超时：面板 api() 的 15s 硬超时导致大数据目录迁移（POST /api/home/migrate）必然报「请求超时」——超时改为可传 timeoutMs 放宽，迁移走 10 分钟超时

@@ -170,6 +170,12 @@ DEFAULT_CONFIG = {
         "timeout_sec": 8,           # 单次调用超时
         "max_chars": 3000,          # 超过就截断（长记忆全文 embed 慢）
         "batch_size": 8,            # 异步批量写 embedding 时的条数
+        # —— 纯 Python 降级向量兜底（零依赖 hash trick，见 fallback_embed.py）——
+        # Ollama 不可用/未配置时自动接管，给语义召回一个纯 stdlib 的 Dense 通道
+        "fallback": {
+            "enabled": True,
+            "dims": 256,
+        },
     },
     # reranker（可选）：LINGSHU_RERANK_URL / config.rerank.url 配了才用
     "rerank": {
@@ -1343,6 +1349,30 @@ def _rerank_cfg() -> dict | None:
     }
 
 
+def fallback_encode_cached(text: str, dims: int) -> list | None:
+    """fallback_embed.encode 的进程内 LRU 缓存（查询/旧记忆在线编码时避免重复 hash）。
+    任何异常返回 None，不炸。"""
+    global _FB_EMBED_CACHE
+    try:
+        key = (dims, str(text or ""))
+        hit = _FB_EMBED_CACHE.get(key)
+        if hit is not None:
+            return hit
+        import fallback_embed
+        v = fallback_embed.encode(text, dims)
+        if v is not None:
+            if len(_FB_EMBED_CACHE) >= _FB_EMBED_CACHE_MAX:
+                _FB_EMBED_CACHE.clear()   # 简单粗暴防膨胀；缓存命中是纯优化，丢了不伤正确性
+            _FB_EMBED_CACHE[key] = v
+        return v
+    except Exception:
+        return None
+
+
+_FB_EMBED_CACHE: dict = {}
+_FB_EMBED_CACHE_MAX = 2000
+
+
 def embed_texts(texts: list) -> list | None:
     """批量生成 embedding（Ollama /api/embeddings）。
 
@@ -1350,8 +1380,25 @@ def embed_texts(texts: list) -> list | None:
     一律静默返回 None——调用方按"无 Dense 能力"降级，不做半吊子混合。
     """
     cfg = _embed_cfg()
-    if not cfg or not texts:
+    if not texts:
         return None
+    # 未配置真嵌入服务时，先看降级向量兜底能不能接管（embed.fallback 默认开）；
+    # 兜底也关了才真正返回 None（调用方按"无 Dense 能力"降级）。
+    if not cfg:
+        try:
+            import fallback_embed
+            fb = fallback_embed.cfg()
+        except Exception:
+            fb = None
+        if not fb:
+            return None
+        out = []
+        for t in texts:
+            v = fallback_encode_cached(str(t or "")[:3000], fb["dims"])
+            if v is None:
+                return None    # 批量里有空文本等坏输入：整体按"无向量"处理
+            out.append(v)
+        return out
     import urllib.request  # 标准库，延迟 import：不用 Dense 时不付加载成本
     out = []
     try:
@@ -1371,8 +1418,23 @@ def embed_texts(texts: list) -> list | None:
             out.append([float(x) for x in vec])
         return out
     except Exception as exc:
-        log_event("embed", f"embedding 调用失败，退回纯关键词召回：{exc}", level="warn")
-        return None
+        log_event("embed", f"embedding 调用失败，尝试降级向量兜底：{exc}", level="warn")
+    # 降级兜底：真嵌入不可用（未配置/不可达）时用纯 stdlib hash 嵌入接管
+    # （config embed.fallback.enabled 默认开）。批量语义：返回等长列表。
+    try:
+        import fallback_embed  # 同目录模块，零依赖
+        fb = fallback_embed.cfg()
+        if fb:
+            out = []
+            for t in texts:
+                v = fallback_encode_cached(str(t or "")[:3000], fb["dims"])
+                if v is None:
+                    return None    # 批量里有空文本等坏输入：整体按"无向量"处理
+                out.append(v)
+            return out
+    except Exception:
+        pass
+    return None
 
 
 def rerank_docs(query: str, docs: list, top_n: int | None = None) -> list | None:

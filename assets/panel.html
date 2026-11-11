@@ -2675,6 +2675,7 @@ function renderExtOllama(st){
   if (st.serving) badges += " " + extBadge("服务运行中", "#38a169");
   if (st.model_ready) badges += " " + extBadge("模型就绪", "#38a169");
   if (st.embed_configured) badges += " " + extBadge("已接入灵枢", "#38a169");
+  if (st.fallback_enabled) badges += " " + extBadge("降级向量兜底开启", "#3182ce");
   let body = "", btn = "";
   // 下载/安装进行中：进度条
   if (["downloading", "extracting", "starting", "pulling"].includes(st.stage)) {
@@ -2688,13 +2689,17 @@ function renderExtOllama(st){
     body = `<div style="margin-top:10px;color:#c53030;font-size:13px">✕ ${st.detail || "操作失败"}</div>`;
   } else if (st.installed && st.serving && st.model_ready) {
     body = `<div style="margin-top:10px;color:#38a169;font-size:13px">✓ 已就绪：语义召回已启用</div>`;
+  } else if (!st.installed && st.fallback_enabled) {
+    body = `<div style="margin-top:10px;font-size:13px;color:var(--sub,#888)">未安装 Ollama：语义召回由纯 Python 降级向量兜底（无需安装即可用）；安装 Ollama 可获得真模型向量，召回更准。</div>`;
   }
-  // 按钮：按状态给下一步动作
+  // 按钮：v2.99 一键化——不管装没装，统一一个「一键开启向量记忆」按钮，
+  // 服务端 setup 端点自己判断「已装跳过/未装先下载→解压→起服务→拉模型→写配置」
   if (!["downloading", "extracting", "starting", "pulling"].includes(st.stage)) {
-    if (!st.installed && !st.zip_exists) btn = `<button class="primary" id="btn-ollama-dl">下载安装</button>`;
-    else if (st.zip_exists && !st.installed) btn = `<button class="primary" id="btn-ollama-install">安装并启动</button>`;
-    else if (st.installed && !st.serving) btn = `<button class="primary" id="btn-ollama-install">启动服务</button>`;
-    else if (st.installed && st.serving && !st.embed_configured) btn = `<button class="primary" id="btn-ollama-install">接入灵枢</button>`;
+    if (st.semantic_ready && st.embed_configured) {
+      // 全就绪：不需要按钮（右上角徽章已表达状态）
+    } else {
+      btn = `<button class="primary" id="btn-ollama-setup">一键开启向量记忆</button>`;
+    }
   }
   box.innerHTML = `
     <div class="row" style="flex-wrap:wrap">
@@ -2704,19 +2709,14 @@ function renderExtOllama(st){
       </div>
       <div class="row" style="margin-left:auto;align-items:center">${btn}</div>
     </div>`;
-  const dl = $("btn-ollama-dl");
-  if (dl) dl.addEventListener("click", async () => {
-    if (!confirm("将下载 Ollama（约1GB），确认？")) return;
+  const setup = $("btn-ollama-setup");
+  if (setup) setup.addEventListener("click", async () => {
+    if (!st.installed && !st.serving) {
+      if (!confirm("将自动下载并安装 Ollama（约1GB）+ 拉取向量模型，全程自动，请耐心等待。确认？")) return;
+    }
     try {
-      await post("/api/extensions/ollama/download", {});
-      pollExtOllama();
-    } catch (err) { toast(err.message, true); }
-  });
-  const inst = $("btn-ollama-install");
-  if (inst) inst.addEventListener("click", async () => {
-    try {
-      await post("/api/extensions/ollama/install", {});
-      pollExtOllama();
+      await post("/api/extensions/ollama/setup", {});
+      pollExtOllama();   // 立即开始轮询进度（setup 端点秒回，长活在后台线程）
     } catch (err) { toast(err.message, true); }
   });
 }
