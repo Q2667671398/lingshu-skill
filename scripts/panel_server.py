@@ -10,10 +10,13 @@ import json
 import os
 import secrets
 import shutil
+import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
+import zipfile
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -47,6 +50,8 @@ _WRITE_ENDPOINTS = {
     "/api/extensions",
     # 云端面板市场：发布/下载/配置（token 写 config.json）
     "/api/panels/cloud",
+    # Ollama 扩展：下载写 zip / 安装写程序目录与 config.json
+    "/api/extensions/ollama/download", "/api/extensions/ollama/install",
     # 数据目录迁移：写指针文件 + 复制数据（迁移目标在数据目录之外，单独放行只读门控）
     "/api/home/migrate",
 }
@@ -692,6 +697,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/extensions":
             # 拓展商店清单：内置宿主适配插件 + 自定义已装拓展
             self._json(panels.list_extensions())
+            return
+        if path == "/api/extensions/ollama/status":
+            # Ollama 扩展状态：安装/服务/模型/配置 + 下载安装进度（轮询用）
+            self._json(ollama_status())
             return
         if path == "/api/panels/market":
             # 本机市场目录扫描（无云端）：列出市场面板 + zip 安装包
@@ -1662,9 +1671,240 @@ def _api_panels_scaffold(self, path, data):
     return
 
 
+# --------------------------------------------------------------- 扩展：Ollama 一键安装
+# 下载 URL 固定常量：绝不接受前端传入 URL，避免被当成任意下载代理滥用
+_OLLAMA_URL = "https://ollama.com/download/ollama-windows-amd64.zip"
+_OLLAMA_INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA")
+                           or str(Path.home() / "AppData/Local")) / "Programs/Ollama"
+_OLLAMA_PORT = 11434
+_OLLAMA_MODEL = "nomic-embed-text"
+
+
+def _ollama_state_path() -> Path:
+    return brain.HOME / "downloads" / "ollama_state.json"
+
+
+def _ollama_zip_path() -> Path:
+    return brain.HOME / "downloads" / "ollama-windows-amd64.zip"
+
+
+def _ollama_state_write(stage: str, **extra) -> None:
+    """分阶段状态落盘：前端轮询 /api/extensions/ollama/status 时读这份。
+    阶段名（状态机）：idle → downloading(带 percent) → downloaded
+    → extracting → starting → pulling → done；任何一步失败 → error(带 detail)。
+    """
+    try:
+        _ollama_state_path().parent.mkdir(parents=True, exist_ok=True)
+        payload = {"stage": stage, "ts": time.time()}
+        payload.update(extra)
+        _ollama_state_path().write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass  # 状态文件写失败只影响进度展示，不中断安装流程
+
+
+def _ollama_state_read() -> dict:
+    try:
+        obj = json.loads(_ollama_state_path().read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _ollama_exe() -> Path | None:
+    """找 ollama.exe：PATH 上的优先（where.exe），其次默认安装目录。"""
+    try:
+        out = subprocess.run(["where.exe", "ollama"], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+        first = out.splitlines()[0].strip() if out else ""
+        if first.lower().endswith(".exe") and Path(first).is_file():
+            return Path(first)
+    except Exception:
+        pass
+    if (_OLLAMA_INSTALL_DIR / "ollama.exe").is_file():
+        return _OLLAMA_INSTALL_DIR / "ollama.exe"
+    return None
+
+
+def _ollama_serving() -> bool:
+    """11434 是否已有服务在跑（GET /api/tags，2 秒超时）。"""
+    try:
+        with urllib.request.urlopen(
+                f"http://localhost:{_OLLAMA_PORT}/api/tags", timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _ollama_tags() -> list:
+    try:
+        with urllib.request.urlopen(
+                f"http://localhost:{_OLLAMA_PORT}/api/tags", timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return [str(m.get("name") or "") for m in data.get("models") or []]
+    except Exception:
+        return []
+
+
+def _ollama_embed_configured() -> bool:
+    try:
+        embed = brain.load_config().get("embed") or {}
+        return ("11434" in str(embed.get("url") or "")
+                and str(embed.get("model") or "") == _OLLAMA_MODEL)
+    except Exception:
+        return False
+
+
+def ollama_status() -> dict:
+    """状态汇总（GET）：installed/serving/model_ready/embed_configured + 下载安装进度。"""
+    state = _ollama_state_read()
+    return {
+        "ok": True,
+        "installed": _ollama_exe() is not None,
+        "serving": _ollama_serving(),
+        "model_ready": _OLLAMA_MODEL in " ".join(_ollama_tags()),
+        "embed_configured": _ollama_embed_configured(),
+        "zip_exists": _ollama_zip_path().is_file(),
+        "stage": str(state.get("stage") or "idle"),
+        "percent": int(state.get("percent") or 0),
+        "detail": str(state.get("detail") or ""),
+    }
+
+
+def _ollama_download_async() -> None:
+    """后台线程流式下载 zip，进度写状态文件（约 1GB，绝不阻塞 HTTP 线程）。"""
+    dest = _ollama_zip_path()
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(_OLLAMA_URL,
+                                     headers={"User-Agent": "lingshu-panel"})
+        with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as f:
+            total = int(resp.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                chunk = resp.read(1024 * 256)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                pct = int(got * 100 / total) if total > 0 else 0
+                _ollama_state_write("downloading", percent=pct,
+                                    detail=f"{got // (1024 * 1024)}MB")
+        _ollama_state_write("downloaded", percent=100, detail=str(dest))
+    except Exception as exc:
+        try:
+            dest.unlink(missing_ok=True)   # 半截 zip 没用，删掉防误装
+        except OSError:
+            pass
+        _ollama_state_write("error", detail=f"下载失败：{exc}")
+
+
+def _ollama_start_serve() -> bool:
+    """启动 ollama serve（DETACHED）；端口已被占用（服务已在跑）则直接算成功。"""
+    if _ollama_serving():
+        return True
+    exe = _ollama_exe()
+    if exe is None:
+        return False
+    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP：脱离面板进程，面板关了它也不死
+    flags = 0x00000008 | 0x00000200
+    subprocess.Popen([str(exe), "serve"], creationflags=flags,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, close_fds=True)
+    for _ in range(20):    # 最多等 10 秒，轮询 tags 而不是死等固定时间
+        if _ollama_serving():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _ollama_pull_model() -> bool:
+    """ollama pull nomic-embed-text（首次下载模型可能要几分钟，超时 600s）。"""
+    try:
+        exe = _ollama_exe()
+        if exe is None:
+            return False
+        r = subprocess.run([str(exe), "pull", _OLLAMA_MODEL], capture_output=True,
+                           text=True, timeout=600)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _ollama_install_async() -> None:
+    """后台安装流水线：解压 → 起 serve → 拉模型 → 写 embed 配置 → done。"""
+    try:
+        zip_path = _ollama_zip_path()
+        if not zip_path.is_file():
+            _ollama_state_write("error", detail="zip 不存在，请先下载")
+            return
+        _ollama_state_write("extracting", detail="解压到程序目录")
+        _OLLAMA_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(_OLLAMA_INSTALL_DIR)
+        if _ollama_exe() is None:
+            _ollama_state_write("error", detail="解压后找不到 ollama.exe")
+            return
+        _ollama_state_write("starting", detail="启动 ollama serve")
+        if not _ollama_start_serve():
+            _ollama_state_write("error", detail="ollama serve 启动失败（进程异常，可稍后手动重试）")
+            return
+        _ollama_state_write("pulling", detail=f"拉取模型 {_OLLAMA_MODEL}（首次较慢）")
+        if not _ollama_pull_model():
+            _ollama_state_write("error", detail=f"模型 {_OLLAMA_MODEL} 拉取失败（网络或磁盘问题）")
+            return
+        # 写 embed 配置：config_set 是扁平键，embed 是嵌套对象，读-改-写整段 config.json
+        cfg = brain.load_config()
+        embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
+        embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
+        embed["model"] = _OLLAMA_MODEL
+        cfg["embed"] = embed
+        brain.atomic_json(brain.HOME / "config.json", cfg)
+        _ollama_state_write("done", percent=100, detail="语义召回已就绪")
+    except Exception as exc:
+        _ollama_state_write("error", detail=f"安装失败：{exc}")
+
+
+def _api_ollama_status(self, path, data):
+    self._json(ollama_status())
+
+
+def _api_ollama_download(self, path, data):
+    try:
+        if _ollama_serving():
+            # 服务已在跑就不必再折腾 zip：跳到安装/配置阶段
+            self._json({"ok": True, "skipped": True, "stage": "serving"})
+            return
+        if _ollama_zip_path().is_file():
+            self._json({"ok": True, "skipped": True, "stage": "downloaded"})
+            return
+        if _ollama_state_read().get("stage") == "downloading":
+            self._json({"ok": True, "skipped": True, "stage": "downloading"})
+            return
+        threading.Thread(target=_ollama_download_async,
+                         name="ollama-download", daemon=True).start()
+        self._json({"ok": True, "stage": "downloading"})
+    except Exception as exc:
+        self._log_write_failure("ollama download", exc, 500)
+        self._json({"ok": False, "error": "下载任务启动失败，详情见运行日志"}, 500)
+
+
+def _api_ollama_install(self, path, data):
+    try:
+        if not _ollama_zip_path().is_file() and _ollama_exe() is None:
+            self._json({"ok": False, "error": "尚未下载 Ollama，请先点「下载安装」"}, 400)
+            return
+        threading.Thread(target=_ollama_install_async,
+                         name="ollama-install", daemon=True).start()
+        self._json({"ok": True, "stage": "extracting"})
+    except Exception as exc:
+        self._log_write_failure("ollama install", exc, 500)
+        self._json({"ok": False, "error": "安装任务启动失败，详情见运行日志"}, 500)
+
+
 # POST 分发表：路由 -> Handler 处理方法（参数统一为 handler(self, path, data)）
 # 按路由家族分组：首页/记忆写入 → 人格/心智/情绪 → 关联/整理/模式 → 做梦
-# → 记忆管理/知识/笔记 → 技能/种子 → 日志 → 面板与拓展商店
+# → 记忆管理/知识/笔记 → 技能/种子 → 日志 → 面板与拓展商店 → 扩展（Ollama）
 _POST_ROUTES = {
         # 首页与记忆写入
         "/api/home/migrate": _api_home_migrate,
@@ -1713,6 +1953,10 @@ _POST_ROUTES = {
         "/api/panels/cloud": _api_panels_cloud,
         "/api/panels/scaffold": _api_panels_scaffold,
         "/api/extensions": _api_extensions,
+        # 扩展：Ollama 一键下载/安装（下载 URL 固定在服务端，不接受外部传入）
+        "/api/extensions/ollama/status": _api_ollama_status,
+        "/api/extensions/ollama/download": _api_ollama_download,
+        "/api/extensions/ollama/install": _api_ollama_install,
 }
 
 

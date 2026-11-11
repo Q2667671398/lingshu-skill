@@ -1,5 +1,11 @@
 # 更新日志
 
+## v2.97（2026-11-11）
+
+- 记忆详密度提升：注入预算 budget_tokens 1400→2400，新增可调项 `inject_max_chars`（单条记忆注入正文截断上限，默认 600）与 `remember_max_chars`（remember 写入正文截断上限，默认 1200）；embed 编码截断 max_chars 1500→3000——记忆保留与注入的细节显著变多，三项均可在 config.json / 面板设置调整
+- 面板新增「扩展」页：首个扩展为 Ollama 本地向量检索——未安装时一键从官网下载（约1GB，后台线程流式下载+进度条轮询）、再点「安装并启动」自动解压到本地程序目录、启动 serve、拉取 nomic-embed-text 模型并自动写入 config 的 embed 配置；状态机 idle→downloading→downloaded→extracting→starting→pulling→done/error，全程面板可视化；已装未跑时提供「启动服务」按钮
+- 新 API：GET/POST `/api/extensions/ollama/status|download|install`，状态落盘 `~/.brain-memory/downloads/ollama_state.json`
+
 ## v2.96（2026-11-11）
 
 - 修复召回缺陷：热集（hippo/cortex/dust）一个候选都没有时，recall 在冷集补召分支之前提前 `return []`，导致纯关键词模式下「只有 archive 冷归档里有匹配」的查询整条漏掉；改为热集无候选时先递归捞一次冷集（同补召门槛：一次、非隐私场景），捞不着才真正空手而归

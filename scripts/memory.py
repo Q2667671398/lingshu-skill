@@ -824,6 +824,11 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
     text = (text or "").strip()
     if not text:
         raise ValueError("记忆内容为空")
+    # 单条记忆原文上限（config.remember_max_chars，默认 1200）：超长截断保主干，
+    # 只影响写入上限，不改变近重复合并等逻辑。
+    _rmax = _cfg_num(load_config(), "remember_max_chars", 1200, int)
+    if _rmax > 0 and len(text) > _rmax:
+        text = text[:_rmax].rstrip() + "…"
     if emotion and emotion not in EMOTIONS:
         raise ValueError(f"没有这种情绪：{emotion}"
                          f"（可用：开心/生气/难过/焦虑/感动…共 {len(EMOTIONS)} 种，"
@@ -2531,8 +2536,11 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     ensure_home()
     cfg = load_config()
     # budget 0/负数按 1 兜底：`budget_tokens or ...` 会把 0 静默吞掉，负数则算出负 char_budget
-    budget = budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else _cfg_num(cfg, "budget_tokens", 1400, int)
+    budget = budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else _cfg_num(cfg, "budget_tokens", 2400, int)
     char_budget = int(budget * 1.8)
+    # 每条记忆注入时的正文截断上限（可调）：budget 提高后单条也别无限长，
+    # 默认 600 字符，够 AI "记得详细点"，又不让一条记忆独吞预算。
+    inject_max = _cfg_num(cfg, "inject_max_chars", 600, int)
     p = load_persona()
     session_mode = resolve_mode(query)
 
@@ -2687,8 +2695,12 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         header = "\n## 最近的记忆"
     lines, kept_mems = [], []
     for m, score, _ in mems:
+        _body = display_text(m)
+        # 单条正文按 inject_max_chars 截断：只放宽上限，一条整记忆不切半的规则不变
+        if inject_max > 0 and len(_body) > inject_max:
+            _body = _body[:inject_max].rstrip() + "…"
         line = (f"- [{fmt_date(m.get('created', 0))} "
-                f"{'★' * max(1, round(_num(m.get('importance'), 0.5) * 5))}] {display_text(m)}")
+                f"{'★' * max(1, round(_num(m.get('importance'), 0.5) * 5))}] {_body}")
         # append 之后累计再判：append 前判会把"当前这行自身"的长度漏算，实际可超预算一行
         lines.append(line)
         if used + lines_join_len(lines) > char_budget * 0.75:
@@ -2706,7 +2718,10 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     if not query and new_mem:
         out.append("\n## 刚刚发生（本会话新增）")
         for m in new_mem:
-            out.append(f"- {display_text(m)}")
+            _body = display_text(m)
+            if inject_max > 0 and len(_body) > inject_max:
+                _body = _body[:inject_max].rstrip() + "…"
+            out.append(f"- {_body}")
 
     # 上一次梦的结论
     dream_files = sorted((HOME / "dreams").glob("*.md")) if (HOME / "dreams").exists() else []

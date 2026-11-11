@@ -119,7 +119,12 @@ TOPIC_SPAWN_THRESHOLD = 0.30 # 权重低于此 + 用户敷衍 → 满足自发�
 TOPIC_TTL = 7 * 24 * HOUR    # 7 天没被重提的话题彻底退栈
 
 DEFAULT_CONFIG = {
-    "budget_tokens": 1400,
+    "budget_tokens": 2400,
+    # 每条记忆注入时的正文截断上限（字符）：放宽默认值让 AI 记得"再详细点"。
+    # 用户嫌注入太短时调大即可；budget_tokens 仍是总量硬约束，超了照样截行。
+    "inject_max_chars": 600,
+    # remember 写入时的正文截断上限（字符）：单条记忆原文最长保留多少。
+    "remember_max_chars": 1200,
     # 上下文水位三级防线（比例，0-1）：
     #   review  清点：先补记本轮漏掉的，不急着压缩
     #   dream   做梦：重放→压缩→巩固
@@ -163,7 +168,7 @@ DEFAULT_CONFIG = {
         "url": "",                  # 例：http://localhost:11434/api/embeddings
         "model": "nomic-embed-text",
         "timeout_sec": 8,           # 单次调用超时
-        "max_chars": 1500,          # 超过就截断（长记忆全文 embed 慢）
+        "max_chars": 3000,          # 超过就截断（长记忆全文 embed 慢）
         "batch_size": 8,            # 异步批量写 embedding 时的条数
     },
     # reranker（可选）：LINGSHU_RERANK_URL / config.rerank.url 配了才用
@@ -407,7 +412,8 @@ def load_loose_json(path, label: str = "JSON") -> dict | list:
 
 
 _NUMERIC_CONFIG_KEYS = {"budget_tokens", "review_threshold", "dream_threshold",
-                        "escape_threshold", "panel_port"}
+                        "escape_threshold", "panel_port",
+                        "inject_max_chars", "remember_max_chars"}
 _BOOLEAN_CONFIG_KEYS = {"extensions_enabled"}   # 布尔开关：值能当 JSON 布尔解析，或 true/false/1/0 文本
 
 
@@ -437,10 +443,10 @@ def config_set(key: str, value: str) -> dict:
             if not (0.0 <= num <= 1.0):
                 raise ValueError(f"{key} 需要在 0~1 之间，收到：{value!r}")
             val = num
-        elif key == "budget_tokens":
+        elif key in ("budget_tokens", "inject_max_chars", "remember_max_chars"):
             num = int(num)
             if num <= 0:
-                raise ValueError(f"budget_tokens 需要是正整数，收到：{value!r}")
+                raise ValueError(f"{key} 需要是正整数，收到：{value!r}")
             val = num
         elif key == "panel_port":
             num = int(num)
@@ -1313,7 +1319,7 @@ def _embed_cfg() -> dict | None:
         "url": url,
         "model": str(cfg.get("model") or "nomic-embed-text"),
         "timeout_sec": float(cfg.get("timeout_sec") or 8),
-        "max_chars": int(cfg.get("max_chars") or 1500),
+        "max_chars": int(cfg.get("max_chars") or 3000),
         "batch_size": int(cfg.get("batch_size") or 8),
     }
 

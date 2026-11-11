@@ -1,4 +1,4 @@
-﻿﻿<!doctype html>
+﻿﻿﻿﻿<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -278,6 +278,7 @@
       <button data-tab="logs" aria-label="日志"><span class="ic">☰</span><span>日志</span></button>
       <button data-tab="diag" aria-label="自诊断"><span class="ic">✚</span><span>诊断</span></button>
       <button data-tab="store" aria-label="拓展商店"><span class="ic">⇘</span><span>拓展</span></button>
+      <button data-tab="ext" aria-label="扩展"><span class="ic">⬢</span><span>扩展</span></button>
       <button id="btn-panels" aria-label="面板管理"><span class="ic">▧</span><span>面板</span></button>
     </nav>
     <div class="sidefoot" id="sidefoot"></div>
@@ -901,6 +902,21 @@
           </div>
         </div>
         <div id="store-list" style="margin-top:12px"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-ext">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">扩展</h2>
+            <div class="sub">给灵枢加装本地能力：装好的扩展自动接入，卸载只需删目录。</div>
+          </div>
+          <div class="row" style="margin-left:auto">
+            <button class="ghost" id="btn-ext-refresh">刷新</button>
+          </div>
+        </div>
+        <div id="ext-ollama" style="margin-top:12px"><div class="empty">加载中…</div></div>
       </div>
     </section>
   </main>
@@ -2620,13 +2636,15 @@ function switchTab(tab){
     dream: ["梦", "把经历压缩成长期记忆"],
     logs: ["日志", "运行记录：锁冲突 / 内部异常 / 解析报错"],
     diag: ["自诊断", "归因异常：死链 / 冲突未裁决 / 数据膨胀 / 来源归属"],
-    store: ["拓展商店", "AstrBot / cordis 等宿主适配插件，点安装导出后接入宿主"]
+    store: ["拓展商店", "AstrBot / cordis 等宿主适配插件，点安装导出后接入宿主"],
+    ext: ["扩展", "本地能力一键安装：Ollama 语义召回等"]
   };
   const t = titles[tab] || titles.overview;   // 未知 tab（旧缓存/坏链接）兜底，别在标题上抛 TypeError
   $("pageTitle").textContent = t[0];
   $("pageSub").textContent = t[1];
   if (tab === "memories") renderMemoryList();
   if (tab === "store") renderStore();
+  if (tab === "ext") loadExtensionOllama();
   if (tab === "graph") loadGraph(Number($("graph-limit").value || 300));
   else { stopPhysics(); stopGraphAnim(); }   // 离开联想页即停模拟，不空耗 CPU
   if (tab === "logs") loadLogs();
@@ -2640,6 +2658,91 @@ function switchTab(tab){
 
 // ---- 事件绑定
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+
+// ---- 扩展页：Ollama 一键安装（状态机 idle→downloading→downloaded→extracting→starting→pulling→done / error）
+let _ollamaPollTimer = null;   // 轮询句柄：离开页面或到终态即停，不空转
+
+function extBadge(text, color){
+  return `<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;` +
+         `background:${color}22;color:${color};border:1px solid ${color}55">${text}</span>`;
+}
+
+function renderExtOllama(st){
+  const box = $("ext-ollama");
+  const sub = st.installed || st.serving ? "本地向量检索，记忆语义召回增强" : "本地向量检索，记忆语义召回增强（未安装）";
+  let badges = "";
+  if (st.serving) badges += " " + extBadge("服务运行中", "#38a169");
+  if (st.model_ready) badges += " " + extBadge("模型就绪", "#38a169");
+  if (st.embed_configured) badges += " " + extBadge("已接入灵枢", "#38a169");
+  let body = "", btn = "";
+  // 下载/安装进行中：进度条
+  if (["downloading", "extracting", "starting", "pulling"].includes(st.stage)) {
+    const pct = st.stage === "downloading" ? (st.percent || 0) : 100;
+    const label = {downloading: "下载中", extracting: "解压中", starting: "启动服务中", pulling: "拉取模型中"}[st.stage];
+    body = `<div style="margin-top:10px">
+      <div style="font-size:13px;margin-bottom:6px">${label}… ${pct}% ${st.detail ? "（" + st.detail + "）" : ""}</div>
+      <div style="height:8px;border-radius:4px;background:var(--line,#8884);overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:#3182ce;transition:width .4s"></div></div></div>`;
+  } else if (st.stage === "error") {
+    body = `<div style="margin-top:10px;color:#c53030;font-size:13px">✕ ${st.detail || "操作失败"}</div>`;
+  } else if (st.installed && st.serving && st.model_ready) {
+    body = `<div style="margin-top:10px;color:#38a169;font-size:13px">✓ 已就绪：语义召回已启用</div>`;
+  }
+  // 按钮：按状态给下一步动作
+  if (!["downloading", "extracting", "starting", "pulling"].includes(st.stage)) {
+    if (!st.installed && !st.zip_exists) btn = `<button class="primary" id="btn-ollama-dl">下载安装</button>`;
+    else if (st.zip_exists && !st.installed) btn = `<button class="primary" id="btn-ollama-install">安装并启动</button>`;
+    else if (st.installed && !st.serving) btn = `<button class="primary" id="btn-ollama-install">启动服务</button>`;
+    else if (st.installed && st.serving && !st.embed_configured) btn = `<button class="primary" id="btn-ollama-install">接入灵枢</button>`;
+  }
+  box.innerHTML = `
+    <div class="row" style="flex-wrap:wrap">
+      <div>
+        <strong>Ollama</strong> <span class="sub" style="margin-left:8px">${sub}</span>${badges}
+        ${body}
+      </div>
+      <div class="row" style="margin-left:auto;align-items:center">${btn}</div>
+    </div>`;
+  const dl = $("btn-ollama-dl");
+  if (dl) dl.addEventListener("click", async () => {
+    if (!confirm("将下载 Ollama（约1GB），确认？")) return;
+    try {
+      await post("/api/extensions/ollama/download", {});
+      pollExtOllama();
+    } catch (err) { toast(err.message, true); }
+  });
+  const inst = $("btn-ollama-install");
+  if (inst) inst.addEventListener("click", async () => {
+    try {
+      await post("/api/extensions/ollama/install", {});
+      pollExtOllama();
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+async function pollExtOllama(){
+  if (_ollamaPollTimer) { clearTimeout(_ollamaPollTimer); _ollamaPollTimer = null; }
+  // 只在扩展页时继续轮询，切走即停
+  if (S.tab !== "ext") return;
+  const busy = ["downloading", "extracting", "starting", "pulling"];
+  try {
+    const st = await api("/api/extensions/ollama/status");
+    renderExtOllama(st);
+    if (busy.includes(st.stage)) _ollamaPollTimer = setTimeout(pollExtOllama, 1500);
+  } catch (err) { /* 轮询失败静默，下次手动刷新 */ }
+}
+
+async function loadExtensionOllama(){
+  try {
+    const st = await api("/api/extensions/ollama/status");
+    renderExtOllama(st);
+    if (["downloading", "extracting", "starting", "pulling"].includes(st.stage)) pollExtOllama();
+  } catch (err) {
+    $("ext-ollama").innerHTML = `<div class="empty">状态获取失败：${err.message}</div>`;
+  }
+}
+
+$("btn-ext-refresh").addEventListener("click", loadExtensionOllama);
 
 // 告警卡「去处理 →」链接：切到对应页签（事件委托，卡片内容每次重渲染）
 document.addEventListener("click", (e) => {
