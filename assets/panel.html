@@ -1027,6 +1027,7 @@ const progress = topProgress();
       <div id="upd-dsh-detail" style="font-size:13px;color:#5a4a1f;line-height:1.6"></div>
       <div class="row" style="margin-top:10px">
         <button class="btn" id="upd-dsh-repair" style="background:#c47f17">一键修复 DSH 副本</button>
+        <button class="btn hidden" id="upd-dsh-force" style="background:#b03030">强制更新 DSH 副本</button>
       </div>
     </div>
     <div class="row" style="margin-top:16px">
@@ -1087,7 +1088,7 @@ const PANEL_TOKEN = "/*__PANEL_TOKEN__*/";
 async function api(path, opts){
   opts = opts || {};
   opts.headers = Object.assign({}, opts.headers || {}, {Authorization: "Bearer " + PANEL_TOKEN});
-  if (!opts.signal) opts.signal = AbortSignal.timeout(15000); // 网络挂起不能死等，15s 兜底
+  if (opts.signal == null) opts.signal = AbortSignal.timeout(opts.timeoutMs || 15000); // 网络挂起不能死等，15s 兜底；长操作传 timeoutMs 放宽
   let r, data;
   try {
     r = await fetch(path, opts);
@@ -3481,7 +3482,7 @@ async function migrateHome(){
   if (!confirm(`把整个记忆库复制到 ${target} ？\n\n旧目录原样保留，迁移后需重启面板/新会话才生效。`)) return;
   msg.innerHTML = `<span class="chip">迁移中…（数据量大时会稍慢）</span>`;
   try {
-    const r = await api("/api/home/migrate", { target });
+    const r = await api("/api/home/migrate", { target, timeoutMs: 600000 }); // 整库复制放宽到 10 分钟
     msg.innerHTML = `<span class="chip good">✔ ${esc(r.note)}</span>`;
     loadHomeInfo();
   } catch (e) {
@@ -4210,6 +4211,12 @@ function renderDshCopies(copies){
     "<br><i>商店在 DSH 运行时更新会留下空壳目录。点下方按钮从本机源补全文件并恢复声明，"
     + "DSH 下次启动自动加载，无需手动退出重装。</i>";
   sec.style.display = "block";
+  // 强制更新按钮：与修复按钮同显隐（有异常副本即显示，补版本落后的场景）；只读模式禁用
+  const forceBtn = $("upd-dsh-force");
+  if (forceBtn) {
+    forceBtn.classList.toggle("hidden", !broken.length);
+    if (S.ov && S.ov.readonly) forceBtn.disabled = true;
+  }
 }
 $("upd-dsh-repair").addEventListener("click", async () => {
   const btn = $("upd-dsh-repair");
@@ -4236,6 +4243,38 @@ $("upd-dsh-repair").addEventListener("click", async () => {
     btn.disabled = false;
     btn.classList.remove("loading");
     btn.textContent = "一键修复 DSH 副本";
+  }
+});
+// DSH 副本强制在线更新：先停灵枢后台子进程（解决文件占用），再拉最新源原地覆盖，
+// 无需"完全退出 DSH"。超时放宽到 10 分钟（远程拉取 + 整包覆盖都很耗时）。
+$("upd-dsh-force").addEventListener("click", async () => {
+  const btn = $("upd-dsh-force");
+  if (!confirm("强制更新会先停止灵枢后台子进程，再按最新版本原地覆盖各 DSH profile 的副本。\n\n完成后需重启 DSH 生效。继续吗？")) return;
+  try {
+    btn.disabled = true;
+    btn.classList.add("loading");
+    btn.textContent = "更新中…";
+    const r = await post("/api/skill/dsh-force-update", {}, {timeoutMs: 600000});
+    const killed = (r.killed || []).length;
+    const profs = (r.profiles || []).map(p =>
+      "· " + esc(p.profile) + "：" + DSH_STATE_LABEL[p.state_after] +
+      "（覆盖 " + (p.updated_files || 0) + " 个文件，更新前 " + DSH_STATE_LABEL[p.state_before] + "）"
+    ).join("<br>");
+    $("upd-dsh-detail").innerHTML += "<br><br><b>强制更新结果：</b><br>" +
+      "已停止灵枢子进程 " + killed + " 个<br>" + (profs || "无 profile 变更") +
+      "<br><br><i>" + esc(r.note || "已原地更新，重启 DSH 生效") + "</i>";
+    if (r.ok) {
+      toast("DSH 副本已强制更新（停子进程 " + killed + " 个），重启 DSH 生效");
+      $("upd-dsh-section").style.display = "none";
+    } else {
+      toast("强制更新未完全成功，详见弹窗详情", true);
+    }
+  } catch (e) {
+    toast("强制更新失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("loading");
+    btn.textContent = "强制更新 DSH 副本";
   }
 });
 // 更新互斥标志（模块级）：apply 进行中不允许重复点击（弹窗关了请求还在跑的情况也会被拦住）

@@ -38,7 +38,9 @@ _WRITE_ENDPOINTS = {
     "/api/persona/snapshots/rollback",  # 自动快照按 version 回滚（persona_snapshots.jsonl）
     "/api/memory", "/api/memory/review", "/api/knowledge", "/api/knowledge/review",
     "/api/note", "/api/skill",
-    "/api/skill/self-review", "/api/skill/dsh-repair", "/api/evolve", "/api/dream", "/api/dream/auto",
+    "/api/skill/self-review", "/api/skill/dsh-repair",
+    "/api/skill/dsh-force-update",
+    "/api/evolve", "/api/dream", "/api/dream/auto",
     "/api/dream/apply", "/api/dream/draft", "/api/memory/bulk",
     "/api/emotion", "/api/mode", "/api/link",
     "/api/mind/weigh", "/api/diagnostics/fix-links", "/api/seed",
@@ -1422,6 +1424,132 @@ def _api_skill_dsh_repair(self, path, data):
                 "workspace": workspace()})
 
 
+def _kill_lingshu_children() -> list:
+    """杀掉占用灵枢文件的 python 后台子进程（命令行含 brain.py / lingshu）。
+
+    DSH 运行时 pnpm 无法 rename 被占用的目录，强制更新前先停掉这些子进程。
+    排除面板自身进程；单条失败不影响其余，异常静默记日志。
+    返回 [{pid, cmd}]（cmd 为截断摘要）。
+    """
+    me = os.getpid()
+    procs = []  # (pid, cmdline)
+    try:
+        p = subprocess.run(
+            ["wmic", "process", "where",
+             "name='python.exe' and commandline like '%brain.py%'",
+             "get", "processid,commandline", "/format:list"],
+            capture_output=True, text=True, timeout=30)
+        cur = {}
+        for line in (p.stdout or "").splitlines():
+            line = line.strip()
+            if "=" in line:
+                k, _, v = line.partition("=")
+                cur[k.strip().lower()] = v.strip()
+            elif not line and cur:
+                procs.append((int(cur.get("processid", "0") or 0),
+                              cur.get("commandline", "")))
+                cur = {}
+        if cur:
+            procs.append((int(cur.get("processid", "0") or 0),
+                          cur.get("commandline", "")))
+    except Exception as e:
+        brain.log_event("panel", f"wmic 枚举灵枢子进程失败，改用 PowerShell：{e}", level="warn")
+        procs = []
+        try:
+            ps = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                  "Where-Object {$_.CommandLine -like '*brain.py*'} | "
+                  "Select-Object ProcessId,CommandLine | ConvertTo-Json")
+            p = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                               capture_output=True, text=True, timeout=60)
+            out = (p.stdout or "").strip()
+            if out:
+                items = json.loads(out)
+                if isinstance(items, dict):
+                    items = [items]
+                for it in items:
+                    try:
+                        procs.append((int(it.get("ProcessId") or 0),
+                                      str(it.get("CommandLine") or "")))
+                    except (TypeError, ValueError):
+                        continue
+        except Exception as e2:
+            brain.log_event("panel", f"PowerShell 枚举灵枢子进程也失败：{e2}", level="warn")
+    killed = []
+    for pid, cmd in procs:
+        if not pid or pid == me:
+            continue
+        low = (cmd or "").lower()
+        if "brain.py" not in low and "lingshu" not in low:
+            continue
+        try:
+            r = subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                killed.append({"pid": pid, "cmd": (cmd or "")[:120]})
+            else:
+                brain.log_event("panel", f"taskkill {pid} 失败：{(r.stderr or r.stdout or '').strip()[:120]}",
+                                level="warn")
+        except Exception as e:
+            brain.log_event("panel", f"taskkill {pid} 异常：{e}", level="warn")
+    if killed:
+        brain.log_event("panel",
+                        f"强制更新前停止灵枢子进程 {len(killed)} 个："
+                        + ", ".join(str(k['pid']) for k in killed))
+    return killed
+
+
+def _api_skill_dsh_force_update(self, path, data):
+    """强制在线更新 DSH 副本：停灵枢子进程 → 拉最新源 → 原地覆盖所有 DSH profile。"""
+    import traceback
+    killed, profiles, install_res = [], [], None
+    try:
+        # a) 先检查是否真的需要更新：所有副本已最新就免杀进程
+        try:
+            chk = growth.update_check("lingshu", force_pull=False, auto=True)
+        except Exception:
+            chk = {}
+        src_ver = str(chk.get("source_version") or chk.get("version") or "")
+        states = growth.dsh_lingshu_copy_state()
+        need = any(
+            (c["state"] != "ok" and c["state"] != "not_installed")
+            or (src_ver and c.get("version") and str(c["version"]) != src_ver)
+            for c in states)
+        if not need:
+            self._json({"ok": True, "killed": [], "profiles": [],
+                        "note": "所有 DSH 副本已是最新，无需更新"})
+            return
+        # b) 停掉占用文件的灵枢 python 子进程
+        killed = _kill_lingshu_children()
+        # c) 走既有安装链路拉最新版到本地全局副本（远程源由 install_skill 内部解析）
+        install_res = growth.install_skill("lingshu", True, None, accept_risk=True)
+        brain.log_event("panel", f"DSH 强制更新：全局副本安装 → {install_res.get('state')}")
+        # d) 对每个有 lingshu 目录的 profile 强制覆盖（内容不一致才写）
+        before = {c["profile"]: c["state"] for c in states}
+        rep = growth.repair_dsh_lingshu_copy(None, force=True)
+        after_states = {c["profile"]: c for c in growth.dsh_lingshu_copy_state()}
+        for prof in (rep.get("repaired") or []) + [e["profile"] for e in (rep.get("errors") or [])]:
+            if prof in profiles:
+                continue
+            a = after_states.get(prof) or {}
+            profiles.append({
+                "profile": prof,
+                "state_before": before.get(prof),
+                "state_after": a.get("state"),
+                "updated_files": (rep.get("updated_files") or {}).get(prof, 0),
+            })
+        brain.log_event("panel", f"DSH 副本强制更新完成：killed={len(killed)} "
+                                 f"profiles={[(p['profile'], p['state_after']) for p in profiles]}")
+        self._json({"ok": bool(rep.get("ok")), "killed": killed,
+                    "profiles": profiles,
+                    "install": {"state": install_res.get("state")},
+                    "note": "已原地更新 DSH 副本，重启 DSH 生效"})
+    except Exception as e:
+        brain.log_event("panel", "DSH 副本强制更新失败："
+                        + traceback.format_exc()[-500:], level="warn")
+        self._json({"ok": False, "error": str(e), "killed": killed,
+                    "profiles": profiles}, 500)
+
+
 
 def _api_evolve(self, path, data):
     row = growth.log_evolution(data.get("kind", "self"), data.get("title", ""),
@@ -1945,6 +2073,7 @@ _POST_ROUTES = {
         "/api/skill": _api_skill,
         "/api/skill/self-review": _api_skill_self_review,
         "/api/skill/dsh-repair": _api_skill_dsh_repair,
+        "/api/skill/dsh-force-update": _api_skill_dsh_force_update,
         "/api/seed": _api_seed,
         # 日志
         "/api/logs": _api_logs_post,

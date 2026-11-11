@@ -1,5 +1,10 @@
 # 更新日志
 
+## v2.98（2026-11-11）
+
+- 修复数据目录迁移超时：面板 api() 的 15s 硬超时导致大数据目录迁移（POST /api/home/migrate）必然报「请求超时」——超时改为可传 timeoutMs 放宽，迁移走 10 分钟超时
+- 新增 DSH 副本强制在线更新：面板检测到异常/落后副本时可一键「强制更新 DSH 副本」——先停止灵枢后台 python 子进程（解决运行时文件占用，无需完全退出 DSH），再走既有安装链路拉最新版，最后按 manifest 清单对所有 profile 副本做"内容不一致才覆盖"的原地补全（sha256 比对，缺失照写，恢复 bundles/dependencies 声明），重启 DSH 即生效
+
 ## v2.97（2026-11-11）
 
 - 记忆详密度提升：注入预算 budget_tokens 1400→2400，新增可调项 `inject_max_chars`（单条记忆注入正文截断上限，默认 600）与 `remember_max_chars`（remember 写入正文截断上限，默认 1200）；embed 编码截断 max_chars 1500→3000——记忆保留与注入的细节显著变多，三项均可在 config.json / 面板设置调整
