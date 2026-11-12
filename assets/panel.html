@@ -95,6 +95,9 @@
   .chip{padding:3px 9px;border-radius:999px;background:#1a1f26;border:1px solid var(--line);font-size:11.5px;color:var(--muted)}
   .chip.good{border-color:rgba(95,168,160,.28);color:#9fd2cb;background:rgba(95,168,160,.07)}
   .chip.bad{border-color:rgba(201,107,95,.28);color:#dda49b;background:rgba(201,107,95,.07)}
+  /* 人格未读改动高亮：停留查看期间一直高亮，切走页签或刷新页面才标已读、高亮消失 */
+  tr.unread td{background:rgba(217,164,65,.08)}
+  tr.unread td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
 
   .mem{
     display:flex;gap:14px;align-items:flex-start;padding:14px 16px;border:1px solid var(--line);
@@ -467,10 +470,19 @@
         </div>
       </div>
       <div class="card" style="margin-top:14px">
+        <h2>画像归纳建议</h2>
+        <div class="sub" style="margin-bottom:8px">从最近的记忆里归纳出的候选：喜欢/讨厌/关系。采纳会写进「长出来的部分」并带证据链（可在演化历史里看到证据是哪条记忆）。</div>
+        <div style="margin-bottom:8px"><button class="ghost" id="btn-suggest-scan" style="padding:3px 12px;font-size:12px">扫描最近记忆</button> <button class="ghost" id="btn-suggest-refresh" style="padding:3px 12px;font-size:12px">刷新列表</button></div>
+        <div id="persona-suggest"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
         <h2>AI 近期改动 · 待你过目</h2>
         <div class="sub" style="margin-bottom:8px">做梦/自我总结由 AI 发起的人格变更（手动编辑、回滚、初识回答不算）。不对就点「回滚到此」撤销。</div>
         <div id="ai-changes"></div>
-        <div style="margin-top:10px"><button class="ghost" id="btn-persona-diff" style="padding:3px 12px;font-size:12px">查看变化明细</button></div>
+        <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+          <button class="ghost" id="btn-persona-diff" style="padding:3px 12px;font-size:12px">查看变化明细</button>
+          <button class="ghost" id="btn-changes-viewed" style="padding:3px 12px;font-size:12px">标记已读</button>
+        </div>
         <div id="persona-diff" style="margin-top:10px"></div>
       </div>
       <div class="card" style="margin-top:14px">
@@ -1161,6 +1173,7 @@ function memCard(m){
           : `<button class="iconbtn" title="折叠（原文收起，只留摘要；可随时展开还原）" data-dustact="fold" data-dustid="${esc(m.id)}">⇲</button>`)
           + `<button class="iconbtn" title="复活（还原原文并回到活跃层）" data-dustact="revive" data-dustid="${esc(m.id)}">⤴</button>` : ""}
       <button class="iconbtn ${m.pinned ? "pin" : ""}" title="置顶/取消" data-pin="${esc(m.id)}">◈</button>
+      <button class="iconbtn" title="遗忘纠正：稳定度×1.5，恢复被淡忘的记忆" data-boost="${esc(m.id)}">⚡</button>
       <button class="iconbtn" title="编辑" data-edit="${esc(m.id)}">✎</button>
       <button class="iconbtn" title="忘记" data-forget="${esc(m.id)}">✕</button>
     </div>
@@ -1214,7 +1227,16 @@ function renderOverview(){
   renderLayerBar();
   const rc = ov.review_counts || {};
   const rcTotal = (rc.memories || 0) + (rc.knowledge || 0) + (rc.persona || 0);
-  $("sidefoot").innerHTML = `<b>记忆库</b><br>${esc(ov.home || st.home || "")}<br><br><b>人格档案</b><br>persona.json`
+  const w = ov.water || {};
+  // _water_level 的 pct 是 0-1 小数（--used 65 会被 /100），0-100 口径换算回来
+  const rawPct = Number(w.pct || 0);
+  const wPct = rawPct > 0 && rawPct <= 1 ? Math.round(rawPct * 100) : Math.round(rawPct);
+  const wWarn = wPct >= 85;
+  $("sidefoot").innerHTML = `<b>记忆库</b><br>${esc(ov.home || st.home || "")}<br><br><b>注入水位</b><br>${wPct ? wPct + "%" : "—"}`
+    + (Number.isFinite(w.hours_since_dream) ? `<br>距上次做梦 ${w.hours_since_dream}h` : "")
+    + (wWarn ? ` <b style="color:#e66450">接近上限</b>` : "")
+    + `<br><br><b>人格档案</b><br>persona.json`
+    + (ov.source && ov.source.version ? `<br><br><b>代码版本</b><br>v${esc(ov.source.version)}<br><span style="font-size:10px">${esc(ov.source.script_dir || "")}</span>` : "")
     + `<br><br><b>模型档位</b><br>${esc(tierLabel(ov.model_tier))}`
     + `<br><br><b>会话模式</b><br>${esc(modeLabel(ov.mode))} <a href="javascript:void 0" data-mode-cycle style="color:var(--amber)">切换</a>`
     + (rcTotal ? `<br><br><b style="color:#e66450">待审核 ${rcTotal} 项</b><br>记忆 ${rc.memories || 0} · 知识 ${rc.knowledge || 0} · 人格 ${rc.persona || 0}` : "")
@@ -1247,8 +1269,8 @@ function renderOverview(){
     : `<div class="sub">还没有性格设定：等初识，或由它自己决定。</div>`;
 
   const evo = p.evolved || {};
-  const likesAll = [...new Set([...(p.likes || []), ...(evo.learned_likes || [])])];
-  const dislikesAll = [...new Set([...(p.dislikes || []), ...(evo.learned_dislikes || [])])];
+  const likesAll = [...new Set([...(p.likes || []), ...(evo.learned_likes || [])].map(chipText))];
+  const dislikesAll = [...new Set([...(p.dislikes || []), ...(evo.learned_dislikes || [])].map(chipText))];
   const chips = [];
   likesAll.slice(0, 6).forEach(x => chips.push(`<span class="chip good">喜欢 ${esc(x)}</span>`));
   dislikesAll.slice(0, 4).forEach(x => chips.push(`<span class="chip bad">讨厌 ${esc(x)}</span>`));
@@ -1307,8 +1329,8 @@ function renderPersonaEditor(p){
   $("pf-role").value = ident["身份"] || "";
   $("pf-callme").value = ident["称呼你"] || "";
   $("pf-traits").value = Object.entries(p.traits || {}).map(([k, v]) => `${k}:${tval(v)}`).join("\n");
-  $("pf-likes").value = (p.likes || []).join(", ");
-  $("pf-dislikes").value = (p.dislikes || []).join(", ");
+  $("pf-likes").value = (p.likes || []).map(chipText).join(", ");
+  $("pf-dislikes").value = (p.dislikes || []).map(chipText).join(", ");
   $("pf-cur").value = dr.curiosity ?? "";
   $("pf-reason").value = dr.reason ?? "";
   $("pf-path").textContent = "persona.json · 改动可回滚";
@@ -1997,6 +2019,9 @@ document.addEventListener("keydown", e => {
   }
 });
 
+// learned_likes/dislikes 的条目可能是 {text,evidence,since} 字典（画像归纳带证据链）或旧纯字符串
+function chipText(x){ return (x && typeof x === "object") ? String(x.text || JSON.stringify(x)) : String(x); }
+
 function renderEvolved(p){
   const ev = p.evolved || {};
   const habits = ev.habits || [], insights = ev.insights || [];
@@ -2008,8 +2033,8 @@ function renderEvolved(p){
     insights.slice(-6).map(x => `<li>${esc(x)}</li>`).join("") + `</ul>`;
   if (likes.length || dislikes.length) {
     html += `<div class="chips" style="margin-top:10px">` +
-      likes.map(x => `<span class="chip good">${esc(x)}</span>`).join("") +
-      dislikes.map(x => `<span class="chip bad">${esc(x)}</span>`).join("") + `</div>`;
+      likes.map(x => `<span class="chip good" title="${esc((x && x.evidence) ? "证据：" + x.evidence.join("、") : "")}">${esc(chipText(x))}</span>`).join("") +
+      dislikes.map(x => `<span class="chip bad" title="${esc((x && x.evidence) ? "证据：" + x.evidence.join("、") : "")}">${esc(chipText(x))}</span>`).join("") + `</div>`;
   }
   $("evolved").innerHTML = html || `<div class="sub">还没有长出新东西。每次做梦都可能留下痕迹。</div>`;
 }
@@ -2040,6 +2065,7 @@ function renderHistory(p){
 
 // AI 近期人格改动（审核入口）：review_counts.persona = ai_persona_changes(7)，
 // 这里取明细。回滚序号按演化历史总条数倒推（history 表序号 = 距最新第几条）。
+// 未读高亮在人格页常驻，标已读的时机：切走页签（switchTab）或刷新/关闭页面（beforeunload）。
 function renderAiChanges(ov){
   const box = $("ai-changes");
   if (!box) return;
@@ -2053,6 +2079,7 @@ function renderAiChanges(ov){
   const p = (ov.persona) || {};
   const total = (p.history || []).length;
   const hist = p.history || [];
+  // 未读高亮：ai_changes 本身只含用户没看过的改动（ts > 已读时间戳），所以全表加高亮
   box.innerHTML = rows.length
     ? `<table class="hist"><tbody>${rows.map(x => {
         // 回滚到"这条改动之前"：历史按旧→新存，1-based 倒序序号 = total - 位置。
@@ -2061,15 +2088,29 @@ function renderAiChanges(ov){
         const seq = pos >= 0 ? Math.max(1, total - pos) : null;
         const btn = seq ? `<button class="ghost mini" data-rollback="${seq}">回滚</button>`
                         : `<span class="sub">—</span>`;
-        return renderHistoryRow({
+        const row = renderHistoryRow({
           time: new Date(x.ts * 1000).toLocaleString("zh-CN").slice(5, 16),
           field: x.field,
           change: `${x.from} → ${typeof x.to === "object" ? JSON.stringify(x.to) : x.to}`,
           why: (x.why || "") + (x.source ? ` · ${x.source}` : "")
         }, btn);
+        return row.replace("<tr>", `<tr class="unread">`);
       }).join("")}</tbody></table>`
     : `<div class="sub">近 7 天 AI 没有主动改过人格。做梦微调 traits 会先在漂移账本累积，过门限才会真正改动。</div>`;
+  // 未读高亮常驻：不在这里标已读，由 markAiChangesViewed()（切走/刷新时）统一处理
 }
+// 标已读：切走页签或刷新/关闭页面时调用。navigator.sendBeacon 保证关页也不丢请求。
+function markAiChangesViewed(){
+  try {
+    navigator.sendBeacon("/api/persona/changes-viewed", new Blob(["{}"], {type: "application/json"}));
+  } catch (_) {
+    api("/api/persona/changes-viewed", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}).catch(() => {});
+  }
+}
+// 刷新/关闭页面：只要人格页有未读高亮，离开时就标已读
+window.addEventListener("beforeunload", () => {
+  if (S.tab === "persona" && document.querySelector("#ai-changes tr.unread")) markAiChangesViewed();
+});
 
 // 人格漂移 diff：最早一张快照 vs 当前人格的逐字段对比表（后端 persona_diff）。
 // 点按钮才请求（数据不多但没必要每次刷新都拉），再点一次收起。
@@ -2096,6 +2137,61 @@ async function togglePersonaDiff(){
     btn.textContent = "查看变化明细";
   }
 }
+
+// ---- 画像归纳建议卡（B 清单 b1）----
+// pending 条目：{kind:"like"/"dislike"/"relation", text, evidence:[...], ...}
+async function loadPersonaSuggest() {
+  const box = $("persona-suggest");
+  if (!box) return;
+  const r = await api("/api/persona/suggest");
+  // 兼容两种返回：{suggestions:[...]}（列表/扫描结果）与 {pending:[...]}（旧口径）
+  const arr = (r && Array.isArray(r.suggestions)) ? r.suggestions : (r && Array.isArray(r.pending)) ? r.pending : [];
+  S.suggest = arr;
+  const rows = S.suggest;
+  if (!rows.length) {
+    box.innerHTML = `<div class="sub">暂无候选。点「扫描最近记忆」从最近的对话里归纳，或等每晚例行自动归纳。</div>`;
+    return;
+  }
+  box.innerHTML = rows.map((s, i) => `
+    <div class="mem" style="align-items:center;padding:10px 14px">
+      <span class="badge ${s.field === "likes" ? "hippo" : s.field === "dislikes" ? "dust" : "cortex"}">${esc(s.field === "likes" ? "喜欢" : s.field === "dislikes" ? "讨厌" : s.field || "画像")}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px">${esc(s.text || "")}</div>
+        ${(s.source_ids && s.source_ids.length) ? `<div class="sub">证据记忆：${esc(s.source_ids.join("、"))}</div>` : ""}
+      </div>
+      <button class="btn mini" data-suggest-adopt="${i}">采纳</button>
+      <button class="ghost" style="padding:3px 9px;font-size:11px" data-suggest-discard="${i}">忽略</button>
+    </div>`).join("");
+}
+
+async function personaSuggestAct(idx, action) {
+  // idx 是列表里的 0 起下标；后端 adopt/discard 按 1 起序号取（与 CLI persona suggest adopt 同口径）
+  const s = (S.suggest || [])[idx];
+  if (!s) return;
+  const r = await api("/api/persona/suggest", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({action, index: idx + 1})});
+  if (r && r.ok) {
+    toast(action === "adopt" ? "已采纳（写进「长出来的部分」，带证据链）" : "已忽略");
+    loadPersonaSuggest();
+    load();  // 刷新人格页其余区块
+  } else toast((r && r.error) || "操作失败", true);
+}
+
+$("btn-suggest-scan").addEventListener("click", async (e) => {
+  const b = e.currentTarget;
+  b.disabled = true;
+  $("persona-suggest").innerHTML = `<div class="sub">正在扫描最近记忆……</div>`;
+  const r = await api("/api/persona/suggest", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({action: "scan"})});
+  if (!(r && r.ok)) toast((r && r.error) || "扫描失败", true);
+  b.disabled = false;
+  loadPersonaSuggest();
+});
+$("btn-suggest-refresh").addEventListener("click", loadPersonaSuggest);
+
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("[data-suggest-adopt]"), d = e.target.closest("[data-suggest-discard]");
+  if (a) personaSuggestAct(+a.dataset.suggestAdopt, "adopt");
+  if (d) personaSuggestAct(+d.dataset.suggestDiscard, "discard");
+});
 
 function dreamBlankTemplate(pend){
   return {
@@ -2622,6 +2718,8 @@ async function runInject(){
 
 function switchTab(tab){
   S.tab = tab || "overview";
+  // 从人格页切走且还有未读高亮 → 看过即已读，下次进来不再闪
+  if (S.tab !== "persona" && document.querySelector("#ai-changes tr.unread")) markAiChangesViewed();
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + tab));
   const titles = {
@@ -2650,7 +2748,7 @@ function switchTab(tab){
   else { stopPhysics(); stopGraphAnim(); }   // 离开联想页即停模拟，不空耗 CPU
   if (tab === "logs") loadLogs();
   if (tab === "diag") loadDiagnostics();
-  if (tab === "persona") loadSnapshots();  // 切到人格页时顺手刷快照列表
+  if (tab === "persona") { loadSnapshots(); loadPersonaSuggest(); }  // 切到人格页时顺手刷快照列表与画像归纳建议
   if (["knowledge", "notes", "skills", "growth"].includes(tab)) {
     if (S.ws) { renderKnowledge(); renderNotes(); renderSkills(); renderDshPlugins(); renderGrowth(); renderOnboarding(); }
     else loadWS();
@@ -2809,7 +2907,8 @@ $("edit-save").addEventListener("click", () => {
 document.addEventListener("click", async (e) => {
   const pin = e.target.closest("[data-pin]"), ed = e.target.closest("[data-edit]"), fg = e.target.closest("[data-forget]");
   const rv = e.target.closest("[data-review]");
-  if (!pin && !ed && !fg && !rv) return;
+  const bo = e.target.closest("[data-boost]");
+  if (!pin && !ed && !fg && !rv && !bo) return;
   const findMem = id => (S.memIndex && S.memIndex[id]) || (S.ov && S.ov.memories.find(x => x.id === id));
   // 写操作按钮 loading + disabled：防止网络慢时连点造成重复提交
   const busy = btn => { btn.disabled = true; btn.classList.add("loading"); };
@@ -2836,6 +2935,12 @@ document.addEventListener("click", async (e) => {
       if (r.ok) { toast("已淡忘"); load(); }
       else toast(r.error || "淡忘失败（可能已被删/不存在）", true);
     }
+    if (bo) {
+      busy(bo);
+      const r = await api("/api/memory/boost", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: bo.dataset.boost})});
+      if (r.ok) { toast("已纠正遗忘：这条记忆稳定度提升、访问时间刷新"); load(); }
+      else toast(r.error || "纠正失败", true);
+    }
     if (ed) {
       const m = findMem(ed.dataset.edit);
       if (!m) { toast("数据已变化，请刷新", true); return; }
@@ -2857,6 +2962,7 @@ document.addEventListener("click", async (e) => {
     if (rv) idle(rv);
     if (pin) idle(pin);
     if (fg) idle(fg);
+    if (bo) idle(bo);
   }
 });
 
@@ -2948,6 +3054,15 @@ document.addEventListener("click", async (e) => {
 
 const pdBtn = $("btn-persona-diff");
 if (pdBtn) pdBtn.addEventListener("click", togglePersonaDiff);
+
+// 「标记已读」手动按钮：不想等切走/刷新，当场确认这批改动看过
+const cvBtn = $("btn-changes-viewed");
+if (cvBtn) cvBtn.addEventListener("click", async () => {
+  markAiChangesViewed();
+  document.querySelectorAll("#ai-changes tr.unread").forEach(tr => tr.classList.remove("unread"));
+  cvBtn.disabled = true; cvBtn.textContent = "已标记";
+  setTimeout(() => { cvBtn.disabled = false; cvBtn.textContent = "标记已读"; }, 2500);
+});
 
 // ---- 自动快照：列出 + 按版本回滚（对应 persona_snapshots.jsonl）
 async function loadSnapshots(){

@@ -13,7 +13,7 @@
 //
 // 数据安全：本插件只调用灵枢 CLI 的只读/自维护命令，不改任何会话上下文；
 // 注入类（review / check-context）默认也开启，但只在有内容时注入一次，
-// 且可整体关闭（injectReview / injectCheckContext = false）——
+// 且可整体关闭（injectReview / waterGuard = false）——
 // 保证不影响"人格/记忆/灵魂 + AI 自主自动化"的主功能。
 
 import { spawn } from 'node:child_process'
@@ -31,11 +31,12 @@ const DEFAULTS = {
   dreamTurns: 8,          // 每 N 轮触发 dream --auto
   extractTurns: 4,        // 每 N 轮把攒下的对话文本静默 extract（即记即存）
   extractMinChars: 80,    // 攒的文本短于该值不触发（惊异门控在 brain.py extract 里有第二道）
-  checkContextTurns: 5,   // 每 N 轮触发 check-context 注入
   selfReviewDays: 3,      // 每 N 天触发 skill self-review
   runUsage: true,         // 每轮 turn-stopping 静默跑 usage --reply
   injectReview: true,     // review 有 pending 时注入提醒（每轮有内容才注）
-  injectCheckContext: true, // check-context 建议时注入提醒（每 N 轮）
+  waterGuard: true,       // 水位守卫：pre-step 估真实水位，首次跨 60/75/90 各注一条提醒（v3.01）
+  charsPerToken: 3,       // 中文语境 token 估算：约 3 字符 ≈ 1 token（粗估够用）
+  contextLimit: 131072,   // 模型上下文窗口 token 数（估算分母；宿主给 usage 时用宿主值）
   reviewCacheMs: 30000,   // review --json 结果缓存时长（pre-step 每步都跑，别真跑）
   pruneInjected: true,    // 上下文无感清理：把灵枢自己注入过的旧提醒从消息流里清掉
                           // （原文已被 extract 封存海马体，清掉 = 归档后遗忘，不丢信息）
@@ -229,6 +230,7 @@ export function apply(ctx, config) {
   const running = new Set() // 防并发：同名任务进行中就不重入
   const convo = new Map()   // agent -> { text, seen }（即记即存缓冲 + 已处理消息游标，extract 成功后清空）
   const lastReply = new Map() // agent -> 最后一条 assistant 文本（给 usage --reply 用）
+  const waterState = new Map() // agent -> { max } 水位守卫已提醒的最高档（60/75/90 各提醒一次）
   let state = loadState(statePath())
 
   // 启动时清理崩溃残留的 extract 明文临时文件（超过 1 天的直接删）
@@ -419,6 +421,31 @@ export function apply(ctx, config) {
     } catch {} // turn-stopping 是串行事件，任何异常都不能拖住回合关闭
   })
 
+  // 水位估算：宿主模型在消息元数据里给了 usage.totalTokens 就用真值；
+  // 否则把本会话消息文本字符数按 charsPerToken 折算成 token 再除以窗口（粗估，够触发阈值判断）。
+  // 返回 0-100 整数百分比；拿不到任何依据（无消息无 usage）返回 null。
+  function estimateWater(agent, decision) {
+    try {
+      const msgs = Array.isArray(decision?.messages) ? decision.messages : []
+      // ① 宿主 usage：从最近带 usage 的消息/元数据里取 totalTokens（各家字段名不一，宽松取）
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const u = msgs[i]?.metadata?.usage || msgs[i]?.usage || msgs[i]?.modelUsage
+        const tt = u?.totalTokens ?? u?.outputTokens != null ? (u.totalTokens ?? (u.inputTokens ?? 0) + u.outputTokens) : null
+        if (Number.isFinite(tt) && tt > 0) return Math.min(100, Math.round(tt / cfg.contextLimit * 100))
+      }
+      // ② 字符数估算：只算 text 部分，排除本插件注入的旧提醒（会被 prune 掉，不算真实负载）
+      let chars = 0
+      for (const m of msgs) {
+        if (m?.source?.name === 'lingshu') continue
+        for (const c of (Array.isArray(m?.content) ? m.content : [])) {
+          if (c?.type === 'text' && typeof c.text === 'string') chars += c.text.length
+        }
+      }
+      if (!chars) return null
+      return Math.min(100, Math.round(chars / cfg.charsPerToken / cfg.contextLimit * 100))
+    } catch { return null }
+  }
+
   // 注入类：只在 enter 分支追加消息，有内容才注，缓存 review 查询
   ctx.on('agent/pre-step', async (payload, next) => {
     let decision
@@ -509,15 +536,21 @@ export function apply(ctx, config) {
         }
       }
 
-      // 2) check-context 提醒：每 N 轮查一次，灵枢按 --used 给分级建议
-      if (cfg.injectCheckContext && cfg.checkContextTurns > 0 && n % cfg.checkContextTurns === 0) {
-        // 上下文用量这里拿不到精确值，用保守的"轮次触发 + 让灵枢自己判"
-        const raw = await runBrain(pythonExe, cfg.python, brainPy, ['check-context', '--used', '60'], 15000)
-        const text = raw ? raw.trim() : ''
-        if (text) {
-          return {
-            ...decision,
-            messages: [...decision.messages, notice(text)],
+      // 2) 水位守卫（v3.01 重设计）：不再每 N 轮插一条假 --used 60，
+      //    而是估算本会话真实水位（宿主给 usage 就用宿主值，否则按消息字符数估算），
+      //    首次跨过 60/75/90 阈值时各注入一条带真实数字的提醒（跨过才注，不重复打扰）。
+      if (cfg.waterGuard) {
+        const est = estimateWater(agent, decision)
+        if (est != null) {
+          const step = est >= 90 ? 90 : est >= 75 ? 75 : est >= 60 ? 60 : 0
+          const st = waterState.get(agent) || { max: 0 }
+          if (step > (st.max || 0)) {
+            waterState.set(agent, { max: step })   // 跨过的最高档记下来：60→75→90 只各提醒一次
+            const raw = await runBrain(pythonExe, cfg.python, brainPy, ['check-context', '--used', String(est)], 15000)
+            const text = raw ? raw.trim() : ''
+            if (text) {
+              return { ...decision, messages: [...decision.messages, notice(text)] }
+            }
           }
         }
       }

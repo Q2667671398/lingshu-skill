@@ -575,14 +575,37 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
               "（只读环境可用 --home 指到已有目录）", file=sys.stderr)
         return 2
     print(build_injection(query, budget))
+    # 水位提醒块：与 status 同一实现（memory._water_level），别两套口径。
+    try:
+        wl = memory._water_level()
+        pct = int(wl.get("pct", 0))
+        lines = [f"水位：{pct}%（上次会话结束水位 {wl.get('last_session_pct', '未知')}）",
+                 f"第 {wl.get('wake_count', 1)} 次醒来"]
+        if wl.get("hours_since_dream") is not None:
+            lines.append(f"距上次做梦 {wl['hours_since_dream']:.1f}h")
+        if wl.get("hours_since_handoff") is not None:
+            lines.append(f"距上次交接 {wl['hours_since_handoff']:.1f}h")
+        act = wl.get("action")
+        if act:
+            lines.append(f"建议：{act}")
+        print("── 水位提醒 ──")
+        for ln in lines:
+            print(ln)
+    except Exception:
+        pass  # 提醒失败不阻塞注入
     if not READONLY:
         try:
             with _locked(HOME / "config.json"):
                 cfg = load_config()
                 cfg["last_startup"] = {"ts": now_ts(), "query": (query or "")[:60]}
+                # 第几次醒来：每次 startup 自增（status --json / 面板水位卡读它）
+                cfg["wake_count"] = int(cfg.get("wake_count", 0) or 0) + 1
                 atomic_json(HOME / "config.json", cfg)
         except Exception:
             pass
+        # startup 标记：写入失败可见化的分界线——这条之后出现的 warn/error
+        # 就是"上次会话期间的失败"，注入包顶部会亮出来。
+        log_event("startup", "会话开始，注入完成", level="info")
     return 10 if READONLY else 0
 
 
@@ -1015,6 +1038,14 @@ def _main(argv=None) -> int:
                        help="来源标记：本机亲手记录默认 user；AI 提炼/做梦请显式传 ai/dream")
     p_rem.add_argument("--layer", default="hippo", choices=["hippo", "cortex"])
 
+    p_learn = sub.add_parser("lesson", help="一条命令记教训：memory(mistake) + knowledge(pending) + note 三写"
+                                             "（brain.py learn 已被 growth 组的 learn ask/loop 占用，故名单独成词）")
+    p_learn.add_argument("text", nargs="+", help="教训内容：哪条路走不通、为什么、下次怎么办")
+    p_learn.add_argument("--tags", default="")
+    p_learn.add_argument("--entities", default="")
+    p_learn.add_argument("--importance", type=float, default=0.8,
+                         help="0-1 或 0-10（默认 0.8：教训值得记牢）")
+
     p_rec = sub.add_parser("recall", help="模糊回忆")
     p_rec.add_argument("query", nargs="*", default=[])
     p_rec.add_argument("--k", type=int, default=8)
@@ -1037,8 +1068,13 @@ def _main(argv=None) -> int:
                        choices=["show", "set", "sync", "path", "interview", "self", "onboarding",
                                 "lock", "unlock", "history", "rollback", "check",
                                 "snapshot", "snapshots", "restore", "drift",
-                                "auto-snapshots", "auto-rollback"])
+                                "auto-snapshots", "auto-rollback",
+                                "suggest", "audit", "viewed"])
     p_per.add_argument("pair", nargs="?", default=None, help="例如 traits.幽默=70 / rollback 的序号")
+    p_per.add_argument("tail", nargs="?", default=None,
+                       help="suggest adopt/discard：候选序号（persona suggest adopt 3）")
+    p_per.add_argument("--index", type=int, default=None,
+                       help="suggest adopt/discard：候选序号（--index 3，与 tail 二选一）")
     p_per.add_argument("--json", action="store_true")
     p_per.add_argument("--name", default="", help="interview：用户给你起的名字")
     p_per.add_argument("--traits", default="", help="interview：性格，如 温柔:70,好奇:85")
@@ -1109,6 +1145,14 @@ def _main(argv=None) -> int:
 
     p_stats = sub.add_parser("stats", help="记忆统计")
     p_stats.add_argument("--json", action="store_true")
+
+    p_st = sub.add_parser("status", help="水位体检：各层条数 / 距上次做梦交接 / 阈值 / 醒来次数（唯一水位数据源）")
+    p_st.add_argument("--used", type=float, default=None,
+                      help="当前上下文已用百分比 0-100（缺省用最近一次 check-context 记下的水位）")
+    p_st.add_argument("--json", action="store_true")
+
+    p_doc = sub.add_parser("doctor", help="六合一体检：audit / persona / diagnose / 写权限 / 备份对账 / 日志异常计数")
+    p_doc.add_argument("--json", action="store_true")
 
     p_logs = sub.add_parser("logs", help="运行日志：锁冲突 / 内部异常 / 解析报错（面板「日志」页同源）")
     p_logs.add_argument("--limit", type=int, default=30)
@@ -1248,6 +1292,8 @@ def _main(argv=None) -> int:
                             help="revive 的目标活跃层（默认 cortex）")
     mem_sub.add_parser("diagnose", help="数据自诊断：死链、冲突未裁决、数据膨胀、来源归属完整率、折叠状态")
     mem_sub.add_parser("fix-links", help="一键清理死链：摘除指向不存在 id 的 links/conflicts/superseded_by（不删记忆）")
+    p_mem_boost = mem_sub.add_parser("boost", help="遗忘纠正（v3.01）：判定某条淡忘记忆仍重要时拉回——R 回 1、稳定度 ×1.5")
+    p_mem_boost.add_argument("id", help="记忆 id（如 m_xxx）")
 
     p_res = sub.add_parser("restore", help="从备份恢复记忆库（恢复前自动留现状备份）")
     p_res.add_argument("archive", help="备份 zip 路径（加密备份为 .zip.enc）")
@@ -1449,6 +1495,7 @@ def _main(argv=None) -> int:
                       "上下文可能在积累，跑 `dream --auto` 压缩一下。")
         except Exception:
             pass
+        _wait_embeds()   # 等异步嵌入收尾再退出，防止 daemon 线程持锁被硬杀留残锁
         return 0
 
     if args.cmd == "capture":
@@ -1499,6 +1546,25 @@ def _main(argv=None) -> int:
             return 0
         results = recall(query, args.k, include_archive=args.include_archive)
         record_retrieval(query, results, channel="recall")
+        # 知识条目命中提示：recall 原本只查记忆层，顺带在 knowledge.jsonl 里做
+        # 简单词面匹配——这个问题曾被沉淀成知识时先亮出来（含待审核条目），
+        # 提醒"该问题曾有记录"，避免同一结论反复踩。
+        try:
+            import growth
+            q_terms = {t for t in query.lower().split() if len(t) >= 2}
+            k_hits = []
+            for kb in growth.load_knowledge():
+                if kb.get("status") == "discarded":
+                    continue
+                hay = (str(kb.get("title", "")) + " " + str(kb.get("body", ""))).lower()
+                if q_terms and sum(1 for t in q_terms if t in hay) >= max(1, len(q_terms) // 2):
+                    k_hits.append(kb)
+            if k_hits:
+                st = "、".join(sorted({str(x.get("status")) for x in k_hits}))
+                print(f"  💡 该问题曾有记录：命中知识条目 {len(k_hits)} 条（状态 {st}），"
+                      "brain.py knowledge list 查看；pending 条目需确认后再引用。")
+        except Exception:
+            pass  # 知识提示是加分项，失败不影响回忆
         if args.json:
             print(json.dumps([{"memory": m, "score": s, "parts": p} for m, s, p in results], ensure_ascii=False, indent=2))
         else:
@@ -1744,6 +1810,8 @@ def _main(argv=None) -> int:
                 print(f"对比基准快照：{d['baseline']}（{fmt_time(d['baseline_ts'])}）")
             if not d["changes"] and not d["ai_changes"]:
                 print("没有检测到人格漂移。")
+            print(f"稳定度分：{d.get('stability', 100)}/100（100=纹丝未动；AI 改动与稳定特征变化都会扣分）")
+            if not d["changes"] and not d["ai_changes"]:
                 return 0
             if d["changes"]:
                 print(f"结构变化 {len(d['changes'])} 处：")
@@ -1757,6 +1825,69 @@ def _main(argv=None) -> int:
                           f"（{h['why']}{src}）")
             if d["alert"]:
                 print(" ⚠ 漂移偏大：确认这些变化是不是你想要的；不是就 persona rollback 或 persona restore 快照。")
+            return 0
+        if args.action == "suggest":
+            # 画像候选：list / adopt <序号> / discard <序号>
+            sub_action = (args.pair or "list").strip().lower()
+            import persona as _persona
+            if sub_action == "list":
+                rows = _persona.persona_suggest_list()
+                if args.json:
+                    print(json.dumps(rows, ensure_ascii=False, indent=2))
+                    return 0
+                if not rows:
+                    print("没有待确认的画像候选。手动归纳一轮：persona suggest scan")
+                    return 0
+                print(f"待确认画像候选 {len(rows)} 条（采纳：persona suggest adopt <序号>；忽略：discard <序号>）：")
+                for i, r in enumerate(rows, 1):
+                    src = "、".join(r.get("source_ids") or []) or "无来源"
+                    print(f"  {i}. [{r.get('field')}] {r.get('text', '')}"
+                          f"（来自 {src}）")
+                return 0
+            if sub_action in ("scan",):
+                added = _persona.persona_suggest_scan(getattr(args, "days", 3) or 3)
+                print(f"本轮归纳出 {len(added)} 条新候选（已带证据链，进待确认池）。"
+                      "用 persona suggest list 查看。")
+                return 0
+            if sub_action in ("adopt", "discard"):
+                idx = getattr(args, "index", None) or getattr(args, "tail", None) or 0
+                try:
+                    idx = int(idx)
+                except (TypeError, ValueError):
+                    idx = 0
+                if not idx:
+                    print("用法：persona suggest adopt <序号> / persona suggest discard <序号>（先 list 看序号）",
+                          file=sys.stderr)
+                    return 64
+                try:
+                    r = (_persona.persona_suggest_adopt(idx) if sub_action == "adopt"
+                         else _persona.persona_suggest_discard(idx))
+                except (ValueError, PermissionError) as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 2
+                print(f"已{'采纳' if sub_action == 'adopt' else '忽略'}：[{r.get('field')}] {r.get('text', '')}"
+                      + ("（已写进人格，带来源证据）" if sub_action == "adopt" else "（不写人格，留痕可追溯）"))
+                return 0
+            print("用法：persona suggest [list|scan|adopt <序号>|discard <序号>]", file=sys.stderr)
+            return 64
+        if args.action == "audit":
+            import persona as _persona
+            r = _persona.persona_audit(getattr(args, "days", 30) or 30)
+            if args.json:
+                print(json.dumps(r, ensure_ascii=False, indent=2))
+                return 0
+            print(f"人格变更审计链（最近 {r['days']} 天，共 {r['total']} 条）：")
+            for h in r["timeline"][:30]:
+                ev = "、".join(str(x) for x in (h.get("evidence") or [])[:3]) or "无证据记录"
+                print(f"  · {fmt_time(h.get('ts'))} [{h.get('source') or '?'}] {h.get('field')}: "
+                      f"{h.get('from')} → {h.get('to')}  触发：{h.get('why') or '-'}  证据：{ev}")
+            if not r["timeline"]:
+                print("  该时段内没有人格变更。")
+            return 0
+        if args.action == "viewed":
+            import memory as _memory
+            _memory.mark_persona_changes_viewed()
+            print("人格变动提示已标记为已读（概览「人格有变动」卡关闭）。")
             return 0
         if args.action == "interview":
             p = persona_interview(args.name, args.traits, args.style, args.values,
@@ -2305,6 +2436,147 @@ def _main(argv=None) -> int:
             print(f"  {t} [{r.get('level', 'info')}] {r.get('kind', '?')} · {r.get('msg', '')}")
         return 0
 
+    if args.cmd == "status":
+        # 水位唯一数据源（C 项修正）：面板水位卡 / cron / doctor 全读 memory._water_level
+        try:
+            wl = memory._water_level(args.used)
+        except Exception as e:
+            print(f"[错误] 水位读取失败：{e}", file=sys.stderr)
+            return 3
+        if args.json:
+            print(json.dumps(wl, ensure_ascii=False, indent=2))
+        else:
+            th = wl["thresholds"]
+            print(f"水位 {wl['pct']:.0f}%（清点 {th['review']:.0%} / 做梦 {th['dream']:.0%} / "
+                  f"封存 {th['escape']:.0%}）· 级别 {wl['level']}")
+            print(f"  各层条数：{wl['counts']}")
+            print(f"  距上次做梦 {wl['hours_since_dream']}h，距上次交接 {wl['hours_since_handoff']}h，"
+                  f"第 {wl['wake_count']} 次醒来")
+            print(f"  最近一次 session 结束水位：{wl['last_session_pct']}")
+            if wl.get("action"):
+                print(f"  建议：{wl['action']}")
+        return wl["exit_code"]
+
+    if args.cmd == "doctor":
+        # 六合一体检：已有实现直接复用，不重写逻辑；单项失败不影响其他项
+        checks = []
+        # 1. audit 自查
+        try:
+            a = audit()
+            c = a.get("counts", {})
+            bad = sum(int(c.get(k, 0) or 0) for k in ("memories", "knowledge", "persona"))
+            checks.append(("audit", "PASS" if bad == 0 else "WARN",
+                           f"待审记忆 {c.get('memories', 0)} · 待审知识 {c.get('knowledge', 0)} · "
+                           f"AI 改人格 {c.get('persona', 0)} · 疑似冲突 {c.get('conflicts', 0)}"))
+        except Exception as e:
+            checks.append(("audit", "FAIL", str(e)))
+        # 2. persona check
+        try:
+            import persona as _persona
+            pr = _persona.persona_check()
+            issues = pr.get("issues") or pr.get("problems") or []
+            checks.append(("persona", "PASS" if not issues else "WARN",
+                           "; ".join(map(str, issues)) or "人格完整"))
+        except Exception as e:
+            checks.append(("persona", "FAIL", str(e)))
+        # 3. memory diagnose
+        try:
+            d = diagnose()
+            warns = [f"{k}: {v}" for k, v in d.items()
+                     if isinstance(v, (list, str)) and (v if isinstance(v, list) else [v])]
+            checks.append(("diagnose", "PASS" if not warns else "WARN",
+                           "; ".join(warns[:3]) or "记忆库结构正常"))
+        except Exception as e:
+            checks.append(("diagnose", "FAIL", str(e)))
+        # 4. 数据目录写权限
+        try:
+            ok = _home_writable()
+            checks.append(("writable", "PASS" if ok else "FAIL",
+                           "可写" if ok else "只读降级中（检查磁盘/权限）"))
+        except Exception as e:
+            checks.append(("writable", "FAIL", str(e)))
+        # 5. 备份副本 sha 对比（备份目录存在才查）
+        try:
+            import hashlib
+            backup_dir = HOME / "backups"
+            if backup_dir.exists() and any(backup_dir.glob("*.jsonl")):
+                mismatch = 0
+                for bf in backup_dir.glob("*.jsonl"):
+                    src = HOME / bf.name
+                    if src.exists():
+                        if hashlib.sha256(bf.read_bytes()).hexdigest() != \
+                           hashlib.sha256(src.read_bytes()).hexdigest():
+                            mismatch += 1
+                checks.append(("backup-sha", "PASS" if mismatch == 0 else "WARN",
+                               f"{mismatch} 个备份与当前库不一致（可能是正常更新）"))
+            else:
+                checks.append(("backup-sha", "PASS", "无备份可对账（python scripts/brain.py backup 生成）"))
+        except Exception as e:
+            checks.append(("backup-sha", "FAIL", str(e)))
+        # 6. lingshu.log warn/error 计数
+        try:
+            wcnt = ecnt = 0
+            if LOG_FILE.exists():
+                for ln in LOG_FILE.read_text(encoding="utf-8-sig").splitlines():
+                    try:
+                        lv = str(json.loads(ln).get("level", "")).lower()
+                    except Exception:
+                        continue
+                    if lv in ("warn", "warning"):
+                        wcnt += 1
+                    elif lv == "error":
+                        ecnt += 1
+            checks.append(("log-anomalies", "PASS" if (wcnt + ecnt) < 10 else "WARN",
+                           f"warn {wcnt} 条 / error {ecnt} 条（累计）"))
+        except Exception as e:
+            checks.append(("log-anomalies", "FAIL", str(e)))
+
+        fails = sum(1 for _, s, _ in checks if s == "FAIL")
+        warns = sum(1 for _, s, _ in checks if s == "WARN")
+        if args.json:
+            print(json.dumps({"checks": [{"name": n, "status": s, "detail": dt} for n, s, dt in checks],
+                              "summary": {"pass": len(checks) - fails - warns,
+                                          "warn": warns, "fail": fails}},
+                             ensure_ascii=False, indent=2))
+        else:
+            print("六合一体检：")
+            for n, s, dt in checks:
+                print(f"  [{s:^4}] {n}：{dt}")
+            print(f"汇总：{len(checks) - fails - warns} PASS / {warns} WARN / {fails} FAIL")
+        return 0 if fails == 0 else (1 if warns == 0 else 2)
+
+    if args.cmd == "lesson":
+        # 一条命令三写：memory(kind=mistake) + knowledge(pending, source_ids) + note
+        import growth
+        text = " ".join(args.text)
+        try:
+            rec, how = remember(text, "mistake", args.importance,
+                                [t for t in args.tags.split(",") if t],
+                                [e for e in args.entities.split(",") if e],
+                                "user")
+        except Exception as e:
+            print(f"[错误] 教训写入失败：{e}", file=sys.stderr)
+            return 1
+        print(f"{'已合并' if how == 'merged' else '已写入'}教训：{rec['id']}（mistake，重要性 {rec['importance']}）")
+        kb = None
+        try:
+            kb, khow = growth.add_knowledge("教训 · " + str(rec.get("gist") or text[:18]), text,
+                                            tags=[t for t in args.tags.split(",") if t],
+                                            entities=[e for e in args.entities.split(",") if e],
+                                            source_ids=[rec["id"]], source="user", review="pending")
+            print(f"  知识沉淀：{kb['id']}（status={kb.get('status')}，{khow}）")
+        except Exception as e:
+            print(f"  ⚠ 知识沉淀失败（教训本身已记住）：{e}")
+        try:
+            nt, _ = growth.write_note("growth", "教训 · " + str(rec.get("gist") or text[:18]), text,
+                                      tags=[t for t in args.tags.split(",") if t],
+                                      memory_ids=[rec["id"]])
+            print(f"  成长笔记：{nt['id']}")
+        except Exception as e:
+            print(f"  ⚠ 笔记写入失败（教训本身已记住）：{e}")
+        _wait_embeds()   # 同 remember：等异步嵌入收尾再退出
+        return 0
+
     if args.cmd == "stats":
         s = stats()
         if args.json:
@@ -2521,6 +2793,15 @@ def _main(argv=None) -> int:
             return 0
         cfg = load_config()
         used = float(args.used)
+        # 记下本次水位：status --json / startup 水位提醒块的"最近一次 session 结束水位"
+        if not READONLY:
+            try:
+                with _locked(HOME / "config.json"):
+                    cfg = load_config()
+                    cfg["last_session_pct"] = round(used, 1)
+                    atomic_json(HOME / "config.json", cfg)
+            except Exception:
+                pass
         review = _cfg_num(cfg, "review_threshold", 0.60) * 100
         dream_pct = _cfg_num(cfg, "dream_threshold", 0.75) * 100
         escape = _cfg_num(cfg, "escape_threshold", 0.90) * 100
@@ -2802,8 +3083,19 @@ def _main(argv=None) -> int:
             else:
                 print("没有死链，库里干干净净。")
             return 0
+        if mem_cmd == "boost":
+            try:
+                r = boost(args.id)
+            except (LookupError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            print(f"遗忘纠正完成：{r['id']}（{r.get('layer') or '?'} 层）")
+            print(f"  last_access→现在（R 回 1），稳定度 {r['old_stability']:.0f}s→{r['stability']:.0f}s")
+            if (r.get("layer") or "") == "dust":
+                print("  提示：这条在淡忘区，想整条复活回活跃层用 `memory dust revive <id>`。")
+            return 0
         print("用法：memory dust fold|unfold|revive <id> [--layer cortex|hippo] / "
-              "memory diagnose / memory fix-links",
+              "memory boost <id> / memory diagnose / memory fix-links",
               file=sys.stderr)
         return 64
 

@@ -1,7 +1,7 @@
 ﻿---
 name: lingshu
 title: 灵枢
-version: 2.99
+version: 3.01
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -228,6 +228,16 @@ python scripts/brain.py ext rm <名字>                    # 删除
    ```
    之后 `POST /api/panels/cloud {"action":"publish","name":"面板名","screenshot":"data:image/png;base64,..."}` 发布（截图可选）。用户不愿交令牌时，指引用户自己在面板「市场」标签页填写，不要索要。
 
+## 实时沉淀与画像同步（v3.01）
+
+- **教训三写**：遇到报错/返工，先 `recall`/知识库检索是否遇到过（recall 命中知识条目会提示「该问题曾有记录」）；没有则 `lesson "教训"` 一条命令沉淀三处——memory(mistake) + knowledge(status=pending，带 memory_id 来源) + note。
+- **remember 自动落笔记**：importance≥7 或 kind∈{insight,mistake,fact} 时自动追加一条笔记（带 memory_id 反向引用，fail-open 不阻塞主写入）；insight/mistake 同时进知识库待审闸。
+- **人格画像自动归纳**：`persona suggest scan` 扫描记忆里的偏好/关系/错误/事实与笔记知识，产出候选特征（带证据链）；`persona suggest adopt N` 采纳、`discard N` 忽略——人格从记忆派生、确认后才进 persona，防记忆幻觉污染人格。
+- **人格漂移可度量**：`persona drift` 输出稳定度分（0~100）；mistake/relationship 记忆更抗遗忘（衰减半衰期更长），被误淡忘的重要记忆 `memory boost <id>` 一键拉回。
+- **注入自检行**：注入包尾部带一行人格摘要（性格/喜欢/讨厌），防长会话人格走样；包顶部有「上次会话写入失败 N 次」失败可见化行。
+- **人格未读高亮**：面板人格页「AI 近期改动」改动行常驻 amber 高亮；切走页签、刷新/关闭页面（或点「标记已读」按钮）才标已读、高亮消失。
+- **水位守卫**：`startup` 尾部固定带水位提醒块（本轮轮次/距上次做梦/交接 + 建议动作）；真实水位由 cron pre-step 估算并在首次跨过 60/75/90 时注入提醒；面板概览有水位卡。
+
 ## 拟人闲聊：主动对话纪律（v2.71+）
 
 聊天不是答题。人是会自己挑话头的——话题有冷有热，旧话题聊死了不会硬续，冷场时自然开新话题。灵枢用**话题栈**（`topics.jsonl`，随 `startup` 注入）记我们最近聊过什么、各自还剩多少热度，你按下面三条纪律说话：
@@ -291,6 +301,13 @@ python scripts/brain.py user-rules add "<长期规则>"   # 更新永不覆盖
 python scripts/brain.py ext new|list|edit|run|rm      # 扩展模块（可执行钩子）
 python scripts/brain.py knowledge add|search|review
 python scripts/brain.py work | work done <序号> | work flush
+python scripts/brain.py status --json               # 水位唯一数据源（退出码 0/1=60%/2=75%/3=90%，面板/cron/doctor 都读它）
+python scripts/brain.py doctor [--json]             # 六合一体检（audit/人格/记忆诊断/写权限/副本sha/日志warn）
+python scripts/brain.py lesson "教训内容"            # 一条命令三写：memory(mistake)+knowledge(pending)+note
+python scripts/brain.py persona suggest [list|scan|adopt N|discard N]  # 从记忆/笔记归纳人格画像候选，确认后生效
+python scripts/brain.py persona viewed              # 确认已浏览人格近期改动
+python scripts/brain.py persona audit [--days 30]   # 人格变更审计链（事件→变更→证据）
+python scripts/brain.py memory boost <id>           # 遗忘纠正：把被淡忘但重要的记忆拉回并重置衰减
 python scripts/brain.py serve                        # 可视化面板 :8765
 ```
 

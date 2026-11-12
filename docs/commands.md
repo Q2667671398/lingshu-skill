@@ -26,6 +26,10 @@
 | 人格历史/回滚 | `persona history [--limit N]` → 看来源与依据 → `persona rollback <序号>` |
 | 人格快照/漂移 | `persona snapshot --label "基准"` / `persona snapshots` / `persona restore <名字>` / `persona drift [--days 7] [--json]` |
 | 人格自检 | `persona check [--json]`（校验 traits 溯源结构/数值越界/history 溯源；FAIL 退出码 1） |
+| 画像归纳 | `persona suggest [list\|scan\|adopt <序号>\|discard <序号>]`（从最近记忆归纳候选，采纳时写证据链） |
+| 人格审计链 | `persona audit [--days 30] [--json]`（时间线回看谁改了什么、证据是哪条记忆） |
+| 变动已读 | `persona viewed`（把「先生效后告知」的未读人格变动标为已读） |
+| 遗忘纠正 | `memory boost <记忆id>`（恢复被遗忘/低稳定度的记忆，稳定度×1.5） |
 | 人格编辑 | `persona set traits.幽默=70`（逐字段改，写进历史可回滚） |
 | 初识 | `persona interview [--name ... --traits ...\|--unsure]` → `persona self [--name ... --traits ... --likes ... --dislikes ... --habits ...]` |
 | 理智/好奇 | `mind [state\|weigh "事" --benefit 7 --cost 3\|tune --curiosity +5 --reason -3 --why "..."]` |

@@ -35,6 +35,7 @@ _WRITE_ENDPOINTS = {
     "/api/remember", "/api/persona", "/api/persona/state",
     "/api/persona/edit", "/api/persona/mind", "/api/persona/interview",
     "/api/persona/self", "/api/persona/rollback", "/api/persona/changes-viewed",
+    "/api/persona/suggest",
     "/api/persona/snapshots/rollback",  # 自动快照按 version 回滚（persona_snapshots.jsonl）
     "/api/memory", "/api/memory/review", "/api/knowledge", "/api/knowledge/review",
     "/api/note", "/api/skill",
@@ -46,6 +47,7 @@ _WRITE_ENDPOINTS = {
     "/api/mind/weigh", "/api/diagnostics/fix-links", "/api/seed",
     "/api/forget", "/api/daily", "/api/dream/instruction", "/api/logs",
     "/api/memory/dust",
+    "/api/memory/boost",
     # 自定义面板管理：activate/delete/install 等都写数据目录
     "/api/panels", "/api/panels/scaffold",
     # 拓展商店：导出内置宿主适配插件（写 extensions/installed/）
@@ -84,6 +86,16 @@ def memory_view(m: dict) -> dict:
     out["display"] = brain.display_text(m)
     out["created_text"] = brain.fmt_time(m.get("created", 0))
     return out
+
+
+def _repo_version() -> str:
+    """本服务代码副本的版本号：读仓库 manifest.json（多副本错位排查的锚点）。"""
+    try:
+        mf = ASSETS.parent / "manifest.json"
+        import json as _json
+        return str(_json.loads(mf.read_text(encoding="utf-8-sig")).get("version", ""))
+    except Exception:
+        return ""
 
 
 def overview() -> dict:
@@ -142,6 +154,15 @@ def overview() -> dict:
         "dream_draft": _safe("dream_draft", brain.load_dream_draft, None),
         "mode_detail": _safe("mode_detail", lambda: brain.resolve_mode_detail(""), {}),
         "log_summary": _safe("log_summary", _log_summary, {"warn": 0, "error": 0}),
+        # 水位卡数据：唯一数据源 memory._water_level（与 status --json / cron 同口径）
+        "water": _safe("water", brain._water_level, None),
+        # 来源自检（v3.01 C-②）：报告本服务跑的是哪份代码。
+        # 用户常在系统里装了多份灵枢副本（老 clone / pip 装的旧版），
+        # 打开的面板可能不是仓库最新这份——前端据此亮"代码版本错位"提示。
+        "source": {
+            "script_dir": str(Path(__file__).resolve().parent),
+            "version": _repo_version(),
+        },
         "home": str(brain.HOME),
     }
 
@@ -687,6 +708,19 @@ class Handler(BaseHTTPRequestHandler):
             limit = _int_param(url, "limit", 50, 1, 200)
             self._json(brain.list_persona_snapshots(limit=limit))
             return
+        if path == "/api/persona/changes":
+            # 人格变更时间线（v3.01「先生效后告知」流）：未读 AI 改动 + 全量 history + 漂移度
+            days = _int_param(url, "days", 7, 1, 90)
+            self._json({
+                "unviewed": brain.ai_persona_changes(days),
+                "history": brain.persona_history(50),
+                "drift": brain.persona_drift(days),
+            })
+            return
+        if path == "/api/persona/suggest":
+            # 画像候选（persona_pending.jsonl）：待确认特征 + 证据链
+            self._json({"suggestions": brain.persona_suggest_list()})
+            return
         if path == "/api/logs":
             limit = _int_param(url, "limit", 200, 1, 2000)
             level = (parse_qs(url.query).get("level") or [""])[0] or None
@@ -897,6 +931,30 @@ def _api_persona_update(self, path, data):
 def _api_persona_changes_viewed(self, path, data):
     # 用户点了「AI 近期改过人格」通知去查看：标记已读，通知消失
     self._json(brain.mark_persona_changes_viewed())
+
+
+def _api_persona_suggest(self, path, data):
+    # 画像候选操作（v3.01）：scan=归纳一轮新候选；adopt/discard=按序号（1 起）采纳或忽略
+    action = str(data.get("action") or "").strip()
+    if action == "scan":
+        days = _to_int(data.get("days"), 3)
+        try:
+            added = brain.persona_suggest_scan(days if days and days > 0 else 3)
+        except PermissionError as exc:
+            self._json({"error": str(exc)}, 403)
+            return
+        self._json({"ok": True, "added": added})
+        return
+    idx = _to_int(data.get("index"), 0)
+    if action not in ("adopt", "discard") or idx < 1:
+        self._json({"error": "action 必须是 scan/adopt/discard；adopt/discard 需 index>=1（先 GET /api/persona/suggest 看序号）"}, 400)
+        return
+    try:
+        r = brain.persona_suggest_adopt(idx) if action == "adopt" else brain.persona_suggest_discard(idx)
+    except (ValueError, PermissionError) as exc:
+        self._json({"error": str(exc)}, 400)
+        return
+    self._json({"ok": True, **r})
 
 
 
@@ -1633,6 +1691,23 @@ def _api_memory_bulk(self, path, data):
 
 
 
+def _api_memory_boost(self, path, data):
+    """遗忘纠正：把一条记忆的稳定度×1.5、刷新访问时间。"""
+    mid = str(data.get("id") or "")
+    if not mid:
+        self._json({"error": "缺记忆 id"}, 400)
+        return
+    try:
+        r = brain.boost(mid)
+    except LookupError:
+        self._json({"error": "找不到这条记忆（可能已删除或已归档）"}, 400)
+        return
+    except PermissionError:
+        self._json({"error": "只读模式不能纠正遗忘"}, 403)
+        return
+    self._json({"ok": True, "result": r})
+
+
 def _api_mode(self, path, data):
     mode = str(data.get("mode", "") or "").lower()
     if mode not in ("work", "human", "auto"):
@@ -2222,6 +2297,7 @@ _POST_ROUTES = {
         # 人格 / 心智 / 情绪
         "/api/persona": _api_persona_update,
         "/api/persona/changes-viewed": _api_persona_changes_viewed,
+        "/api/persona/suggest": _api_persona_suggest,
         "/api/persona/state": _api_persona_state,
         "/api/persona/edit": _api_persona_edit,
         "/api/persona/mind": _api_persona_mind,
@@ -2249,6 +2325,7 @@ _POST_ROUTES = {
         "/api/memory/dust": _api_memory_dust,
         "/api/memory/review": _api_memory_review,
         "/api/memory/bulk": _api_memory_bulk,
+        "/api/memory/boost": _api_memory_boost,
         "/api/knowledge": _api_knowledge,
         "/api/note": _api_note,
         # 技能 / 种子

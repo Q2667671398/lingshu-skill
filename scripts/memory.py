@@ -720,7 +720,44 @@ def retention(m: dict, now: int | None = None) -> float:
         last = m.get("created", now)
     dt = max(0.0, now - _num(last, now))
     stability = max(HOUR, _num(m.get("stability"), DEFAULT_STABILITY))
+    # v3.01 遗忘可纠正（借鉴 fish-soul 艾宾浩斯）：mistake/relationship 这类
+    # 成长型记忆默认更抗遗忘——稳定度乘一个大于 1 的系数（等效半衰期更长）。
+    kind = str(m.get("kind") or "")
+    stability *= _KIND_STABILITY_FACTOR.get(kind, 1.0)
     return math.exp(-dt / stability)
+
+
+# 类别稳定度系数：>1 更抗遗忘（半衰期更长），mistake/relationship 是成长地基
+_KIND_STABILITY_FACTOR = {"mistake": 1.5, "relationship": 1.5, "identity": 2.0, "preference": 1.2}
+
+
+def boost(memory_id: str) -> dict:
+    """遗忘纠正：recall 命中后判定某条淡忘记忆仍重要时，一键拉回——
+    last_access 重置为现在（R 回 1、衰减计时归零），稳定度提升一档（×1.5，上限 90 天）。
+
+    走 _strengthen_write 定向补丁（只 patch stability/last_access，带写锁），
+    不整文件重写；不动层归属——在 dust 层要整条复活的走 revive()。
+    archive 层记忆不参与强化（core 约定只读展示），需先 archive restore 回热。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法执行遗忘纠正。")
+    ensure_home()
+    mid = str(memory_id or "").strip()
+    found = None
+    for m in load_all():
+        if str(m.get("id") or "") == mid:
+            found = dict(m)
+            break
+    if not found:
+        raise LookupError(f"没找到记忆 {mid}（活跃层与淡忘区都搜过了）。")
+    old_s = _num(found.get("stability"), DEFAULT_STABILITY)
+    found["last_access"] = now_ts()
+    found["stability"] = min(old_s * 1.5, 90 * DAY)
+    found["boosted_at"] = now_ts()
+    _strengthen_write([found])
+    log_event("memory", f"遗忘纠正 {mid}：last_access→now，stability {old_s:.0f}s→{found['stability']:.0f}s")
+    return {"ok": True, "id": mid, "layer": found.get("layer"),
+            "stability": found["stability"], "old_stability": old_s}
 
 
 def heuristic_importance(text: str, kind: str) -> float:
@@ -813,6 +850,133 @@ def _dedupe(items: list) -> list:
 
 
 # ---------------------------------------------------------------- 写入 / 检索
+
+def _water_level(used_pct: float | None = None) -> dict:
+    """水位结构化信息（唯一数据源）：status --json / startup 提醒块 / 面板 / cron 都读这里。
+
+    used_pct 缺省时用"本会话已落盘记忆条数估算"，没有实时上下文可测，
+    以最近一次 check-context --used 记下的水位（config.last_session_pct）为参考。
+    """
+    cfg = load_config()
+    now = now_ts()
+    # memory 各层条数（只数不取：逐层流式统计，别为水位把全库载进内存）
+    counts = {}
+    for layer, fname in (("hippocampus", "hippocampus.jsonl"), ("cortex", "cortex.jsonl"),
+                         ("dust", "dust.jsonl"), ("archive", "archive.jsonl")):
+        fp = HOME / fname
+        try:
+            counts[layer] = sum(1 for ln in fp.open(encoding="utf-8-sig", errors="replace") if ln.strip())
+        except OSError:
+            counts[layer] = 0
+    # 距上次做梦 / 上次交接
+    try:
+        from dream import load_dream_state
+        last_dream = _num(load_dream_state().get("last_dream"), 0)
+    except Exception:
+        last_dream = 0
+    _h = 0
+    try:
+        from dream import latest_handoff as _lh
+        h = _lh()
+        if h:
+            _h = _num(h.get("at") or h.get("ts") or h.get("created"), 0) or _num(h.get("meta", {}).get("ts"), 0)
+    except Exception:
+        _h = 0
+    if not _h:
+        try:  # 交接 json 没带时间字段时退回文件 mtime（handoffs 目录按文件名排序取最近）
+            hf = HOME / "handoffs"
+            files = sorted(hf.glob("handoff_*.json")) if hf.exists() else []
+            if files:
+                _h = int(files[-1].stat().st_mtime)
+        except Exception:
+            _h = 0
+    hours_since_dream = (now - last_dream) / 3600 if last_dream else None
+    hours_since_handoff = (now - _h) / 3600 if _h else None
+    # 第几次醒来：startup 标记累计（config.wake_count，cmd_startup 自增）
+    wake_count = int(_cfg_num(cfg, "wake_count", 0, int))
+    last_session_pct = cfg.get("last_session_pct")   # 最近一次 check-context --used 记下的水位
+
+    pct = float(used_pct) if used_pct is not None else float(_cfg_num(cfg, "last_session_pct", 0))
+    if pct > 1.0:
+        pct = pct / 100.0   # 兼容 0-100 口径：--used 65 与 0.65 等价
+    review = _cfg_num(cfg, "review_threshold", 0.60)
+    dream_th = _cfg_num(cfg, "dream_threshold", 0.75)
+    escape = _cfg_num(cfg, "escape_threshold", 0.90)
+    if pct >= escape:
+        action = "capture：上下文快满，先原样封存（capture \"<内容>\" --kind episode）"
+        level = "escape"
+    elif pct >= dream_th:
+        action = "dream --auto：该做梦压缩了（重放→合并→沉淀）"
+        level = "dream"
+    elif pct >= review:
+        action = "check-context：进入清点区，先补记本轮漏掉的"
+        level = "review"
+    else:
+        action = ""
+        level = "ok"
+    return {
+        "pct": round(pct, 1),
+        "level": level,
+        "exit_code": 0 if level == "ok" else (1 if level == "review" else (2 if level == "dream" else 3)),
+        "action": action,
+        "thresholds": {"review": review, "dream": dream_th, "escape": escape},
+        "counts": counts,
+        "hours_since_dream": round(hours_since_dream, 1) if hours_since_dream is not None else None,
+        "hours_since_handoff": round(hours_since_handoff, 1) if hours_since_handoff is not None else None,
+        "wake_count": wake_count,
+        "last_session_pct": last_session_pct,
+    }
+
+
+def _remember_side_effects(rec: dict, how: str) -> None:
+    """remember 的边缘写入（note 门槛 + knowledge 审核闸）——fail-open，
+    任何失败只记日志、绝不阻塞主写入（记忆本体已经在库里了）。
+
+    1. note 门槛：importance >= 0.7（10 分制 ≥7）或 kind ∈ {insight, mistake, fact}
+       才追加一条 notes.jsonl（kind=growth，带 memory_id 反向引用）；
+       普通闲聊级记忆不进成长笔记，避免 notes 被流水账灌满。
+    2. knowledge 审核闸：kind ∈ {insight, mistake} 自动写 knowledge.jsonl
+       一律 status="pending" + source_ids=[memory_id]——AI 自己悟出的"道理"
+       可能是幻觉，等做梦合并或人工确认后才生效（去重逻辑在 growth.add_knowledge）。
+    """
+    try:
+        kind = str(rec.get("kind", ""))
+        imp = _num(rec.get("importance"), 0.0)
+        mid = str(rec.get("id", ""))
+        text = str(rec.get("text", ""))
+        if how in ("created", "superseded", "conflict") and (imp >= 0.7 or kind in ("insight", "mistake", "fact")):
+            import growth
+            growth.write_note("growth", "记忆随记 · " + str(rec.get("gist") or text[:18]),
+                              text, tags=rec.get("tags") or [], memory_ids=[mid])
+    except Exception as e:
+        log_event("note-gate", f"随记笔记追加失败（不影响记忆）：{e}", level="warn", file="notes.jsonl")
+    try:
+        kind = str(rec.get("kind", ""))
+        if kind in ("insight", "mistake"):
+            import growth
+            growth.add_knowledge(str(rec.get("gist") or rec.get("text", ""))[:24],
+                                 str(rec.get("text", "")),
+                                 topic=str((rec.get("tags") or ["未分类"])[0]) if rec.get("tags") else "",
+                                 tags=rec.get("tags") or [], entities=rec.get("entities") or [],
+                                 source_ids=[rec["id"]], source="ai", review="pending")
+    except Exception as e:
+        log_event("knowledge-gate", f"知识自动写入失败（不影响记忆）：{e}", level="warn", file="knowledge.jsonl")
+
+
+def _wait_embeds(timeout: float = 3.0) -> None:
+    """等在飞的 embedding 线程收尾（CLI 进程退出前调用）。
+
+    daemon 线程若在持 hippocampus 写锁时被进程退出硬杀，锁文件会残留，
+    下一个进程要等 STALE_LOCK_SECONDS 才能接管。写完记忆后稍等一下，
+    让异步嵌入把回写做完再退出，代价最多几秒。
+    """
+    try:
+        deadline = time.time() + timeout
+        while _EMBED_INFLIGHT and time.time() < deadline:
+            time.sleep(0.05)
+    except Exception:
+        pass
+
 
 def remember(text: str, kind: str = "fact", importance: float | None = None,
              tags=None, entities=None, source: str = "ai", layer: str = "hippo",
@@ -917,6 +1081,7 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
                 except Exception:
                     pass          # embedding 是增强，绝不影响记事
                 _remember_desire_nudge(m, imp)
+                _remember_side_effects(m, "merged")
                 return m, "merged"
 
         rec = make_record(text, kind, importance, tags, entities, source, layer,
@@ -1025,6 +1190,7 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
         except Exception:
             pass          # embedding 是增强，绝不影响记事
         _remember_desire_nudge(rec, rec.get("importance"))
+        _remember_side_effects(rec, "superseded" if superseded else ("conflict" if conflicts else "created"))
         return rec, ("superseded" if superseded else ("conflict" if conflicts else "created"))
 
 
@@ -2551,6 +2717,36 @@ def _time_context() -> str:
     return f"{lt.strftime('%Y-%m-%d %H:%M')}，{seg}。"
 
 
+def _startup_failures() -> dict:
+    """A 失败可见化：读 lingshu.log，统计最近一次 startup 标记之后的 warn/error 条目。
+
+    startup 每次开始都会写一条 kind=startup 的标记（见 cli.cmd_startup），
+    标记之后出现的 warn/error 即"上次会话期间的写入失败"——降级不再静默。
+    日志读不出来时返回空结果，绝不当崩溃源。
+    """
+    try:
+        rows = []
+        if LOG_FILE.exists():
+            for ln in LOG_FILE.read_text(encoding="utf-8-sig").splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    r = json.loads(ln)
+                except Exception:
+                    continue
+                if isinstance(r, dict):
+                    rows.append(r)
+        idx = -1
+        for i, r in enumerate(rows):
+            if r.get("kind") == "startup":
+                idx = i
+        fails = [r for r in rows[idx + 1:] if str(r.get("level", "")).lower() in ("warn", "warning", "error")]
+        return {"count": len(fails), "last": (fails[-1] if fails else None)}
+    except Exception:
+        return {"count": 0, "last": None}
+
+
 def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     ensure_home()
     cfg = load_config()
@@ -2569,6 +2765,38 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
            "## 我是谁", brief]
     used = len(brief) + 60
 
+    # c1c 注入预算动态分配：硬块（人格简介/工作记忆/onboarding/每日例行/水位守则
+    # 等）不参与砍——它们是指令性内容，砍了会话就没法正常跑；软块（犯过的错/
+    # 人际关系/话题栈/梦结论）各给一块占 char_budget 的比例上限，超限整行丢弃、
+    # 不切半；剩余大头留给相关记忆段（下面 recall 循环继续按 0.75 兜底，
+    # 低重要度 × 高衰减的先砍）。
+    def _soft_block(title: str, lines: list, cap_frac: float) -> int:
+        """软块注入：cap_frac 是该块可占 char_budget 的比例上限，超限整行丢。"""
+        cap = char_budget * cap_frac
+        acc = len(title) + 1
+        keep = []
+        for ln in lines:
+            if acc + len(ln) > cap:
+                continue
+            keep.append(ln)
+            acc += len(ln)
+        if keep:
+            out.append(title)
+            out.extend(keep)
+            return acc
+        return 0
+
+    # A 失败可见化：上次会话有写入失败就在包顶亮出来，降级不再静默
+    try:
+        _sf = _startup_failures()
+        if _sf.get("count"):
+            _last = _sf.get("last") or {}
+            out.append(f"⚠ 上次会话写入失败 {_sf['count']} 次"
+                       f"（最近一条：{_last.get('msg') or _last.get('message') or _last.get('error') or '原因未知'}"
+                       f" / {_last.get('file') or _last.get('kind') or '文件未知'}）")
+    except Exception:
+        pass
+
     # mistake / relationship 各取最近 3 条非 dust——一次 recent(40) 全量读盘后分拣
     try:
         _recent40 = recent(40)
@@ -2581,16 +2809,16 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
 
     # 「我犯过的错」：成长型人格的地基（kind=mistake，独立成块注入）
     if _mistakes:
-        out.append("\n## 我犯过的错（遇到类似情境先想起这些）")
-        for m in _mistakes:
-            out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
+        used += _soft_block("\n## 我犯过的错（遇到类似情境先想起这些）",
+                            [f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}" for m in _mistakes],
+                            0.15)
 
     # 「我的人际关系」：kind=relationship 独立成块注入——记得谁是谁、欠了谁、
     # 被谁帮过，关系才有连续性（群聊场景跨群共享同一份画像）。
     if _rels:
-        out.append("\n## 我的人际关系（提到这些人时先想起这些）")
-        for m in _rels:
-            out.append(f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}")
+        used += _soft_block("\n## 我的人际关系（提到这些人时先想起这些）",
+                            [f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}" for m in _rels],
+                            0.15)
 
     # 时段语境：一句话给当下时间定性，让语气/行为与真实时间对齐（克制，不煽情）。
     try:
@@ -2650,19 +2878,20 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     # 话题栈：拟人闲聊的主动对话依据（v2.71）
     topics = load_topics()
     if topics:
-        out.append("\n## 话题栈（我们最近聊过什么）")
+        _topic_lines = []
         strong = [r for r in topics if r["weight"] >= TOPIC_SPAWN_THRESHOLD]
         weak = [r for r in topics if r["weight"] < TOPIC_SPAWN_THRESHOLD]
         if strong:
-            out.append("还热乎的（顺着聊最自然，用户重提时 `topic touch \"...\"` 拉高权重）：")
-            out.extend(f"- {r['name']}（{r['weight']:.2f}，{r.get('type') or 'chat'}）" for r in strong[:5])
+            _topic_lines.append("还热乎的（顺着聊最自然，用户重提时 `topic touch \"...\"` 拉高权重）：")
+            _topic_lines.extend(f"- {r['name']}（{r['weight']:.2f}，{r.get('type') or 'chat'}）" for r in strong[:5])
         if weak:
-            out.append("快聊死了的（权重已衰减，用户也敷衍的话别硬续，"
-                       "可以自然过渡开个新话题——用「对了」「说起来」这类过渡词，"
-                       "新话题低压力生活化，AI 自发话题 `topic touch \"...\" --weight 0.4` 起步）：")
-            out.extend(f"- {r['name']}（{r['weight']:.2f}）" for r in weak[:3])
-        out.append("用户敷衍/转移话题 → `topic feedback \"...\" --bad`（少碰这类）；"
-                   "用户展开多说 → `--good`（多聊）。用户明确说不想聊 → `topic drop \"...\"`。")
+            _topic_lines.append("快聊死了的（权重已衰减，用户也敷衍的话别硬续，"
+                                "可以自然过渡开个新话题——用「对了」「说起来」这类过渡词，"
+                                "新话题低压力生活化，AI 自发话题 `topic touch \"...\" --weight 0.4` 起步）：")
+            _topic_lines.extend(f"- {r['name']}（{r['weight']:.2f}）" for r in weak[:3])
+        _topic_lines.append("用户敷衍/转移话题 → `topic feedback \"...\" --bad`（少碰这类）；"
+                            "用户展开多说 → `--good`（多聊）。用户明确说不想聊 → `topic drop \"...\"`。")
+        used += _soft_block("\n## 话题栈（我们最近聊过什么）", _topic_lines, 0.12)
 
     ob = p.get("onboarding") or {}
     if not ob.get("completed"):
@@ -2713,6 +2942,15 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         mems = [(m, 0, {}) for m in recent(6 + len(new_mem)) if m.get("id") not in _new_ids][:6]
         header = "\n## 最近的记忆"
     lines, kept_mems = [], []
+    # c1c 预算不够时先砍谁：低重要度 × 高衰减（retention 低）的先丢。
+    # 按该键升序重排候选，让"最不抗压"的排尾部最先 pop。
+    mems = sorted(mems, key=lambda x: (
+        _num(x[0].get("importance"), 0.5),
+        retention(x[0], now_ts()),
+    ))
+    # 记忆段可用预算 = 总预算 − 前面软块已用，但至少保留 0.4×char_budget
+    # （软块再多也不许把记忆段吃光；反之记忆段用不完也不返还给别处）。
+    mem_cap = max(char_budget - used, char_budget * 0.4)
     for m, score, _ in mems:
         _body = display_text(m)
         # 单条正文按 inject_max_chars 截断：只放宽上限，一条整记忆不切半的规则不变
@@ -2722,7 +2960,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                 f"{'★' * max(1, round(_num(m.get('importance'), 0.5) * 5))}] {_body}")
         # append 之后累计再判：append 前判会把"当前这行自身"的长度漏算，实际可超预算一行
         lines.append(line)
-        if used + lines_join_len(lines) > char_budget * 0.75:
+        if used + lines_join_len(lines) > mem_cap:
             lines.pop()   # 超预算：这行不放，留一条整记忆不切半
             break
         kept_mems.append(m)
@@ -2742,19 +2980,43 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                 _body = _body[:inject_max].rstrip() + "…"
             out.append(f"- {_body}")
 
-    # 上一次梦的结论
+    # 上一次梦的结论（c1d 可读三行化）：不再把梦报告原文 6 行整段灌进来，
+    # 而是抽成三行——合并了什么 / 哪些被淡忘（可 revive）/ 哪些被防线拦下待复核。
+    # 数据零新增存储：全部来自 dreams/ 目录现成的报告文件。
     dream_files = sorted((HOME / "dreams").glob("*.md")) if (HOME / "dreams").exists() else []
     if dream_files:
-        digest = []
         try:
-            for line in dream_files[-1].read_text(encoding="utf-8").splitlines():
-                s = line.strip()
-                if s and not s.startswith("#"):
-                    digest.append(s)
+            _raw = dream_files[-1].read_text(encoding="utf-8").splitlines()
         except OSError:
-            pass
-        out.append("\n## 上次睡醒后记得的结论")
-        out.extend(digest[:6])
+            _raw = []
+        _section = ""   # 当前所在小节标题
+        _merged, _faded, _blocked = [], [], []
+        for _ln in _raw:
+            _s = _ln.strip()
+            if not _s:
+                continue
+            if _s.startswith("#"):
+                _section = _s.lstrip("#").strip()
+                continue
+            _item = _s.lstrip("- ").strip()
+            if not _item:
+                continue
+            if "主题" in _section or "重放" in _section:
+                _merged.append(_item)
+            elif "淡忘" in _section or "轮廓" in _section:
+                _faded.append(_item)
+            elif "拦下" in _section or "防线" in _section:
+                _blocked.append(_item)
+        _three = []
+        if _merged:
+            _three.append("合并巩固了：" + "；".join(_merged[:3]))
+        if _faded:
+            _three.append(f"淡忘了 {len(_faded)} 条（可 revive <id> 复活）："
+                          + "；".join(x[:40] for x in _faded[:2]))
+        if _blocked:
+            _three.append("被防线拦下待人工复核：" + "；".join(x[:60] for x in _blocked[:2]))
+        if _three:
+            used += _soft_block("\n## 上次睡醒后记得的结论", _three, 0.10)
 
     # 待整理的梦（超过 48h 未整理视为孤儿任务，下次做梦会自动归档）
     pending = HOME / "dreams" / "pending.json"
@@ -2880,6 +3142,33 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                 out.append(f"- [{r['label']}] {r['path']}（{r['count']} 个）")
             out.append("列全部：`python scripts/brain.py skill scan`；照做某个：`skill use <名字>`"
                        "（`--root <宿主名或目录>` 限定来源）；变成自己的版本：`skill borrow <名字>`。")
+    except Exception:
+        pass
+    # 人格一致性自检（language-guard 借鉴）：注入包尾部一行人格摘要，防长会话人格走样。
+    # 只在人格已初始化时注入；一行以内，不占预算。
+    try:
+        import persona as _pmod
+        _pself = _pmod.load_persona()
+        _ob = (_pself.get("onboarding") or {}).get("completed")
+        if _ob:
+            _tv = [f"{k}{_pmod.trait_value(t):.0f}" for k, t in (_pself.get("traits") or {}).items()]
+            _ev = _pself.get("evolved") or {}
+            def _bucket_texts(bucket, cap=3):
+                xs = _ev.get(bucket) or []
+                texts = [str(x.get("text") if isinstance(x, dict) else x) for x in xs]
+                return [t for t in texts if t][:cap]
+            _parts = []
+            if _tv:
+                _parts.append("性格 " + "/".join(_tv[:5]))
+            _lk = _bucket_texts("learned_likes") or [str(x) for x in (_pself.get("likes") or [])][:3]
+            _dk = _bucket_texts("learned_dislikes") or [str(x) for x in (_pself.get("dislikes") or [])][:3]
+            if _lk:
+                _parts.append("喜欢 " + "、".join(_lk))
+            if _dk:
+                _parts.append("讨厌 " + "、".join(_dk))
+            if _parts:
+                out.append("[人格自检] 你还是那个" + str(_pself.get("name") or "灵枢") + "："
+                           + "；".join(_parts) + "。语气与判断与它保持一致，别越聊越走样。")
     except Exception:
         pass
     return "\n".join(out)

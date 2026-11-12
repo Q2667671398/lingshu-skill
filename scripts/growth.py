@@ -3030,6 +3030,67 @@ def _dsh_lockfile_specifier(profile_dir: Path, name: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _file_lock_probe(path: Path) -> dict:
+    """Windows 文件占用检测（提案 C-①：按顺序探测，绝不给猜出来的 taskkill）。
+
+    ① rename 探测：能改名 = 没被独占打开（Windows 独占句柄会锁 rename），
+       探测完立刻改回来；② WMI 查 Win32_Process 的 CommandLine/ExecutablePath
+       里是否引用了该路径；③ 都查不到就只给"完全退出宿主"引导。
+    返回 {locked, pids: [{pid, name, cmd}], hint}
+    """
+    out = {"locked": False, "pids": [], "hint": ""}
+    if sys.platform != "win32" or not path.exists():
+        return out
+    # ① rename 探测（最可靠、零依赖）：改名成功=没被独占
+    probe = path.with_name(path.name + ".lspobe")
+    try:
+        path.rename(probe)
+        probe.rename(path)
+        return out  # 能改走又能改回：没被锁
+    except OSError:
+        out["locked"] = True
+    except Exception:
+        return out
+    # ② WMI 找占用者（wmic 在新 Windows 被移除，优先 PowerShell Get-CimInstance）
+    try:
+        target = str(path).lower()
+        ps = ("Get-CimInstance Win32_Process | Where-Object {($_.CommandLine -and "
+              "$_.CommandLine.ToLower().Contains('" + target.replace("'", "''") + "')) -or "
+              "($_.ExecutablePath -and $_.ExecutablePath.ToLower().Contains('" +
+              target.replace("'", "''") + "'))} | "
+              "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress")
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, timeout=15)
+        rows = json.loads(r.stdout.decode("utf-8", "replace") or "[]")
+        if isinstance(rows, dict):
+            rows = [rows]
+        my_pid = os.getpid()
+        for row in rows or []:
+            try:
+                pid = int(row.get("ProcessId", 0))
+                # 排除自己（探测进程的命令行里也含目标路径）和跑查询的 powershell 子进程
+                if pid in (my_pid, r.pid):
+                    continue
+                out["pids"].append({"pid": pid,
+                                    "name": str(row.get("Name", "")),
+                                    "cmd": str(row.get("CommandLine", ""))[:200]})
+            except (TypeError, ValueError):
+                continue
+    except Exception:
+        pass  # WMI 查不到不影响结论：rename 已判定 locked
+    if out["locked"]:
+        if out["pids"]:
+            names = "、".join(f"{p['name']} (PID {p['pid']})" for p in out["pids"][:3])
+            out["hint"] = (f"该目录被进程占用，疑似：{names}。请完全退出对应宿主"
+                           f"（含其 pnpm 临时目录里的旧副本进程）后重试更新；"
+                           f"确认进程身份后再手动结束，不要盲杀。")
+        else:
+            out["hint"] = ("该目录被某进程独占（rename 探测失败），但查不到具体进程"
+                           "（可能是杀软/索引服务/已退出未释放句柄）。请完全退出宿主后重试，"
+                           "或稍等片刻再更新。")
+    return out
+
+
 def dsh_lingshu_copy_state() -> list:
     """扫描所有 DSH profile 里 lingshu-skill 副本的健康状态。
 
@@ -3091,6 +3152,13 @@ def dsh_lingshu_copy_state() -> list:
             "file_count": file_count,
             "version": _dsh_pkg_version(pkg_dir),
         })
+        # 文件占用检测（v3.01 C-①）：只对 empty/partial 残缺态探测——
+        # 残缺十有八九是更新时目录被占用、pnpm 替换失败留下的；ok 态没必要白跑 rename/WMI
+        if state in ("empty", "partial"):
+            try:
+                out[-1]["lock"] = _file_lock_probe(pkg_dir)
+            except Exception as exc:
+                brain.log_event("growth", f"文件占用探测失败 {pkg_dir}: {exc}", level="warn")
     return out
 
 

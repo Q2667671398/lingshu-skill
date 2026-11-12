@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v2.92**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.01**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -46,6 +46,15 @@
 - [快速开始](#快速开始)
 - [命令速查](#命令速查)
 - [项目结构](#项目结构)
+
+## v3.01 新特性速览
+
+- **上下文水位自动守卫**：`brain.py status --json` 做唯一水位数据源（退出码按 60/75/90 分级）；`startup` 尾部固定水位提醒块；lingshu-cron pre-step 估算真实 token 水位，首次跨过阈值才注入提醒；面板概览水位卡。
+- **实时沉淀**：`remember`（importance≥7 或 insight/mistake/fact）自动落笔记；`lesson "教训"` 一条命令三写 memory+knowledge(待审)+note；recall 命中知识提示「该问题曾有记录」——先查再答，遇错即沉淀。
+- **人格↔记忆同步**：`persona suggest` 从记忆/笔记归纳画像候选（带证据链，采纳才生效）；`persona drift` 稳定度分；`memory boost` 遗忘纠正；注入包尾部人格自检行。
+- **面板人格页**：编辑先生效后告知（diff 高亮 + 概览「人格有变动」提示卡 + 未读改动 amber 常驻高亮，切走/刷新/手动「标记已读」才消）；变更审计链 `persona audit`；画像建议卡一键采纳。
+- **失败可见化与体检**：注入包顶部「上次会话写入失败 N 次」；`doctor` 六合一体检；Windows 文件占用时面板给 rename→WMI 进程检测与退出引导，不再给猜出来的 taskkill。
+- **注入预算动态分配**：硬块（工作记忆/待审/上次交接）先扣配额，不够先砍低重要度+高衰减条目。
 
 ## 核心机制
 

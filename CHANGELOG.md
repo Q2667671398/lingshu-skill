@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.01（2026-11-12）
+
+- **上下文水位自动守卫**：`brain.py status --json` 做唯一水位数据源（退出码按 60/75/90 分级 0/1/2/3）；`startup` 尾部固定水位提醒块 + wake_count 自增；lingshu-cron pre-step 估算真实 token 水位（宿主 usage 优先、字符数兜底），首次跨 60/75/90 才注入提醒不重复打扰；面板概览新增水位卡。
+- **实时沉淀**：`remember`（importance≥7 或 insight/mistake/fact）自动落笔记并带 memory_id 反向引用；新增 `lesson "教训"` 一条命令三写 memory+knowledge(待审)+note；knowledge 自动写入一律 pending 过审核闸；recall 命中知识条目提示「该问题曾有记录」。
+- **人格↔记忆同步**：`persona suggest scan/list/adopt/discard` 从记忆/笔记归纳画像候选（带证据链 memory_id）；learned_likes/dislikes 升级 {text, evidence, since} 结构；`persona drift` 稳定度分；`memory boost` 遗忘纠正（稳定度×1.5）+ kind 稳定性系数；注入包尾部人格自检行。
+- **面板人格页**：编辑先生效后告知（diff 高亮 + 概览「人格有变动」提示卡 + AI 近期改动 amber 常驻未读高亮，切走/刷新/手动标记已读才消）；`persona audit` 变更审计链；画像归纳建议卡一键采纳；记忆卡 ⚡ 遗忘纠正按钮。
+- **失败可见化与体检**：注入包顶部「上次会话写入失败 N 次」；新增 `doctor` 六合一体检（audit/persona check/diagnose/写权限/副本 sha/日志 warn）；Windows 文件占用时 rename 探测→WMI 进程定位 PID→退出引导，不再给猜出来的 taskkill；面板侧栏新增「代码版本」行识别旧副本错位。
+- **注入预算动态分配**：硬块（人格/工作记忆/onboarding/水位守则）先扣配额；软块（mistakes/关系/话题栈/梦结论）按比例上限整行截断；梦报告抽三行可读结论（合并/可复活/待复核）不再整段灌原文。
+
 ## v2.99（2026-11-11）
 
 - 向量记忆三层自动化，所有用户开箱即用：
