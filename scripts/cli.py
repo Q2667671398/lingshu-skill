@@ -132,6 +132,68 @@ def _open_backup_zip(zp: Path, password: str | None):
     return zipfile.ZipFile(zp)
 
 
+def _latest_valid_backup(bad_path: Path) -> Path | None:
+    """v3.02 #6：坏包回退——在坏包同目录找最近一份 testzip 通过的备份。
+
+    找不到/校验失败返回 None（只有这一个搜索结果，不做任何自动恢复决策）。
+    """
+    try:
+        cands = sorted(bad_path.parent.glob("brain-memory_*.zip*"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return None
+    for p in cands:
+        if p == bad_path:
+            continue
+        if not p.is_file():
+            continue
+        try:
+            with _open_backup_zip(p, None) as zf:
+                if zf.testzip() is None:
+                    return p
+        except Exception:
+            continue
+    return None
+
+
+def _backup_drill(zip_path: Path, password: str | None) -> bool:
+    """v3.02 #7：备份抽样恢复演练。
+
+    从备份包抽关键文件解到临时目录验证：JSON 可 parse / jsonl 行数非 0。
+    persona.json 是底线（丢了就是灾难），缺一个即 False；
+    jsonl 层文件缺了不算失败——刚 init 的空库还没写过记忆，属正常形态，
+    但只要在包里就必须内容非空。
+    任何异常按演练失败处理但不抛——演练本身绝不能让备份命令崩溃。
+    """
+    must_have = ("persona.json",)
+    check = list(must_have) + ["hippocampus.jsonl", "config.json"]
+    try:
+        with _open_backup_zip(zip_path, password) as zf:
+            names = set(zf.namelist())
+            missing = [x for x in must_have if x not in names]
+            if missing:
+                log_event("backup", f"演练失败：关键文件未入包 {missing}", level="warn")
+                return False
+            tmp = Path(__import__("tempfile").mkdtemp(prefix="lingshu-drill-"))
+            try:
+                for name in check:
+                    if name not in names:
+                        continue
+                    data = zf.read(name)
+                    if name.endswith(".json"):
+                        json.loads(data.decode("utf-8-sig"))
+                    else:  # jsonl：行数非 0
+                        if not len([l for l in data.decode("utf-8", "replace").splitlines() if l.strip()]):
+                            log_event("backup", f"演练失败：{name} 为空", level="warn")
+                            return False
+                return True
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+    except Exception as exc:
+        log_event("backup", f"演练异常：{exc}", level="warn")
+        return False
+
+
 def cmd_backup(target: str | None = None, keep: int = 20, password: str | None = None,
                assume_yes: bool = False) -> int:
     """把整个记忆库打成 zip。保留最近 keep 份，旧的自动修剪。
@@ -196,6 +258,32 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
         return 2
     if skipped:
         print(f"跳过 {skipped} 个敏感文件（密钥/凭据不进备份）")
+    # —— v3.02 #6：备份完整性自检 + sha256 sidecar ——
+    # 写完立刻 testzip：防磁盘满/编码问题产出坏包却当成功；坏了删掉并报错。
+    # .sha256 sidecar 让备份文件本身可被第三方对账（sha256sum -c）。
+    intact = False
+    try:
+        with _open_backup_zip(zip_path, None) as zf:
+            intact = zf.testzip() is None
+    except Exception:
+        intact = False
+    if not intact:
+        try:
+            zip_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        print("[错误] 备份包完整性校验失败（testzip 报坏/打不开），已删除坏包。"
+              "请检查磁盘空间后重试。", file=sys.stderr)
+        log_event("backup", "backup testzip 校验失败，坏包已删除", level="error")
+        return 2
+    # —— v3.02 #7：抽样恢复演练 ——
+    # 抽最多 3 个关键文件解到临时目录验证：JSON 可 parse、行数非 0。
+    # 关键件（persona.json/cortex.jsonl）没进包或解析失败 → 报 warn（下次注入/doctor 可见），
+    # 不删备份：可解析说明当时的数据本身就有问题，删了更糟，人来裁决。
+    drill_ok = _backup_drill(zip_path, password)
+    if not drill_ok:
+        print("[警告] 备份抽样演练未通过：包能打开，但关键文件缺失或解析失败。"
+              "建议尽快重做一份备份并人工检查。", file=sys.stderr)
     if password:
         # 加密：zip 字节 → 口令派生密钥加密 → .zip.enc，明文 zip 不留盘
         try:
@@ -219,6 +307,15 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
                 pass
     size_mb = zip_path.stat().st_size / 1024 / 1024
     print(f"已备份 {n} 个文件 → {zip_path}（{size_mb:.1f} MB）{'（口令加密）' if password else ''}")
+    # sha256 sidecar 在加密之后对最终产物计算（明文包会被 .enc 替换）
+    try:
+        import hashlib as _hl
+        _sha = _hl.sha256(zip_path.read_bytes()).hexdigest()
+        zip_path.with_name(zip_path.name + ".sha256").write_text(
+            f"{_sha}  {zip_path.name}\n", encoding="ascii")
+    except Exception as exc:
+        log_event("backup", f"sha256 sidecar 写入失败（备份本身完好）：{exc}", level="warn")
+        print(f"[警告] sha256 校验文件写入失败：{exc}", file=sys.stderr)
     if not password:
         print("[提示] 备份未加密，含全部记忆原文；加 --password 可生成加密备份。", file=sys.stderr)
     if removed:
@@ -243,18 +340,33 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
         return 2
     try:
         zf = _open_backup_zip(zp, password)
-    except ValueError as exc:
-        print(f"[错误] {exc}", file=sys.stderr)
-        return 2
-    except zipfile.BadZipFile:
-        print("[错误] 不是有效的 zip 文件", file=sys.stderr)
+        # v3.02 #6：恢复前完整性校验——坏包绝不往库里写半截数据
+        if zf.testzip() is not None:
+            zf.close()
+            bad = True
+        else:
+            bad = False
+    except (ValueError, zipfile.BadZipFile) as exc:
+        bad = True
+        if isinstance(exc, ValueError):
+            print(f"[错误] {exc}", file=sys.stderr)
+    if bad:
+        # v3.02 #6：坏包自动回退——尝试列表里最近一份通过校验的旧备份
+        prev = _latest_valid_backup(zp)
+        if prev:
+            print(f"[错误] {zp.name} 是坏包，且发现上一份完好备份：{prev}",
+                  file=sys.stderr)
+            print(f"[提示] 请人工确认后改用：restore \"{prev}\"", file=sys.stderr)
+        else:
+            print("[错误] 该备份包损坏，且同目录找不到其他完好的备份。", file=sys.stderr)
+        log_event("restore", f"restore 拒绝坏包：{zp.name}", level="error")
         return 2
     with zf:
         names = zf.namelist()
-        bad = [x for x in names
-               if x.startswith("/") or ".." in Path(x).parts or ":" in x]
-        if bad:
-            print(f"[错误] 备份里包含非法路径，已拒绝：{bad[:3]}", file=sys.stderr)
+        illegal = [x for x in names
+                   if x.startswith("/") or ".." in Path(x).parts or ":" in x]
+        if illegal:
+            print(f"[错误] 备份里包含非法路径，已拒绝：{illegal[:3]}", file=sys.stderr)
             return 2
         # 防 zip 炸弹：条目数、解压后总大小都要有上限
         if len(names) > MAX_RESTORE_ENTRIES:
@@ -917,6 +1029,22 @@ def daily(dry_run: bool = False, force: bool = False, feel_specs: list | None = 
         st["last_date"] = today
         st["note_id"] = note.get("id")
         _save_daily_state(st)
+        # ---- v3.02 #5：每日追加 metrics.jsonl（趋势数据源，面板可画曲线）
+        try:
+            s = stats()
+            _append_jsonl(HOME / "metrics.jsonl", {
+                "ts": now_ts(), "date": today,
+                "total": s.get("total"), "hippo": s.get("hippo"),
+                "cortex": s.get("cortex"), "dust": s.get("dust"),
+                "archive": s.get("archive"),
+                "recall_rate": (s.get("recall_usage") or {}).get("rate"),
+                "bad": (s.get("recall_usage") or {}).get("bad"),
+                "never_recalled_pct": s.get("never_recalled_pct"),
+                "avg_retention": s.get("avg_retention"),
+                "assoc": s.get("assoc"), "working": s.get("working"),
+            })
+        except Exception as e:
+            print(f"[警告] metrics.jsonl 写入失败（不影响例行）：{e}", file=sys.stderr)
 
     return {
         "skipped": False, "date": today, "dry_run": dry_run,
@@ -1037,6 +1165,10 @@ def _main(argv=None) -> int:
     p_rem.add_argument("--source", default="user", choices=["ai", "user", "dream"],
                        help="来源标记：本机亲手记录默认 user；AI 提炼/做梦请显式传 ai/dream")
     p_rem.add_argument("--layer", default="hippo", choices=["hippo", "cortex"])
+    p_rem.add_argument("--ttl", default=None, metavar="DAYS",
+                       help="保质期（天，可小数）：到期后注入标「待复核」，提醒找用户确认还作数吗（v3.02 #10）")
+    p_rem.add_argument("--review-at", default=None, metavar="DATE",
+                       help="显式指定复核时间点（YYYY-MM-DD 或时间戳），优先于 --ttl 推算")
 
     p_learn = sub.add_parser("lesson", help="一条命令记教训：memory(mistake) + knowledge(pending) + note 三写"
                                              "（brain.py learn 已被 growth 组的 learn ask/loop 占用，故名单独成词）")
@@ -1056,6 +1188,8 @@ def _main(argv=None) -> int:
     p_inj = sub.add_parser("inject", help="生成记忆注入包")
     p_inj.add_argument("query", nargs="*", default=[])
     p_inj.add_argument("--budget", type=int, default=None)
+    p_inj.add_argument("--user-said", default=None, metavar="TEXT",
+                       help="用户最新一句话：过情绪启发式产候选提示（v3.02 #11，只产候选不落盘）")
 
     p_dream = sub.add_parser("dream", help="做梦：整理与巩固记忆")
     p_dream.add_argument("--trigger", default="manual")
@@ -1139,8 +1273,9 @@ def _main(argv=None) -> int:
     p_daily.add_argument("--feel", action="append", default=[], metavar="情绪:强度:原因",
                          help="顺手记一条当天情绪（可重复）。如 --feel \"开心:0.7:用户夸我讲清楚了\"")
 
-    p_usage = sub.add_parser("usage", help="回忆使用反馈：核对上一轮找回的记忆有没有出现在回复里")
-    p_usage.add_argument("--reply", required=True, help="本轮回复文本（关键词重叠粗判）")
+    p_usage = sub.add_parser("usage", help="回忆使用反馈：核对上轮找回的记忆 / 记负反馈 usage --bad <id>")
+    p_usage.add_argument("--reply", default=None, help="本轮回复文本（关键词重叠粗判）")
+    p_usage.add_argument("--bad", default=None, metavar="ID", help="否定一条被找回的记忆（记 assoc 负边）")
     p_usage.add_argument("--json", action="store_true")
 
     p_stats = sub.add_parser("stats", help="记忆统计")
@@ -1192,6 +1327,19 @@ def _main(argv=None) -> int:
     p_list.add_argument("--limit", type=int, default=30)
     p_list.add_argument("--layer", default=None, choices=LAYERS)
     p_list.add_argument("--json", action="store_true")
+
+    # v3.02 #8：人类可读导出——备份 zip 是给机器恢复的，这份是给人看的。
+    p_exp = sub.add_parser("export", help="导出记忆库为人类可读格式（v3.02 #8）")
+    p_exp.add_argument("--format", default="md", choices=["md"],
+                       help="导出格式（当前仅 markdown）")
+    p_exp.add_argument("--out", default=None,
+                       help="输出文件路径（默认打印到 stdout）")
+    p_exp.add_argument("--layer", default=None,
+                       help="只导指定层：hippo/cortex/dust/archive（默认全部）")
+    p_exp.add_argument("--limit", type=int, default=0,
+                       help="最多导出 N 条记忆（0=不限）")
+    p_exp.add_argument("--no-notes", action="store_true",
+                       help="不附带知识库与笔记分节（默认附带）")
 
     p_forget = sub.add_parser("forget", help="忘记一条记忆")
     p_forget.add_argument("id")
@@ -1294,6 +1442,10 @@ def _main(argv=None) -> int:
     mem_sub.add_parser("fix-links", help="一键清理死链：摘除指向不存在 id 的 links/conflicts/superseded_by（不删记忆）")
     p_mem_boost = mem_sub.add_parser("boost", help="遗忘纠正（v3.01）：判定某条淡忘记忆仍重要时拉回——R 回 1、稳定度 ×1.5")
     p_mem_boost.add_argument("id", help="记忆 id（如 m_xxx）")
+    # v3.02 #10：事实保质期复核
+    mem_sub.add_parser("review-list", help="列出已到期、该找用户复核的事实记忆（--ttl/--review-at）")
+    p_mem_rc = mem_sub.add_parser("review-confirm", help="复核确认：这条事实用户确认过还作数，不再注入「待复核」提醒")
+    p_mem_rc.add_argument("id", help="记忆 id（如 m_xxx）")
 
     p_res = sub.add_parser("restore", help="从备份恢复记忆库（恢复前自动留现状备份）")
     p_res.add_argument("archive", help="备份 zip 路径（加密备份为 .zip.enc）")
@@ -1470,12 +1622,38 @@ def _main(argv=None) -> int:
         return 0
 
     if args.cmd == "remember":
+        # v3.02 #10：--ttl / --review-at 解析。ttl 支持天数（可小数）；
+        # review-at 支持 YYYY-MM-DD（当天末尾）或裸时间戳。
+        _ttl_days = _review_ts = None
+        try:
+            if args.ttl:
+                _ttl_days = float(args.ttl)
+                if _ttl_days <= 0:
+                    raise ValueError
+        except ValueError:
+            print(f"[错误] --ttl 需要正数天数（可小数，如 30 或 0.5），收到：{args.ttl}", file=sys.stderr)
+            return 2
+        if args.review_at:
+            s = args.review_at.strip()
+            try:
+                _review_ts = int(s)
+            except ValueError:
+                try:
+                    _review_ts = int(datetime.strptime(s, "%Y-%m-%d")
+                                     .replace(hour=23, minute=59, second=59).timestamp())
+                except ValueError:
+                    print(f"[错误] --review-at 需要 YYYY-MM-DD 或时间戳，收到：{args.review_at}", file=sys.stderr)
+                    return 2
         rec, how = remember(" ".join(args.text), args.kind, args.importance,
                             [t for t in args.tags.split(",") if t],
                             [e for e in args.entities.split(",") if e],
                             args.source, args.layer,
-                            emotion=(args.emotion or None))
+                            emotion=(args.emotion or None),
+                            ttl_days=_ttl_days, review_at=_review_ts)
         print(f"{'已合并' if how == 'merged' else '已写入'}：{rec['id']} ({rec['layer']}, 重要性 {rec['importance']})")
+        if rec.get("review_by"):
+            print(f"  保质期：{fmt_date(rec['review_by'])} 到期，过期后注入标「待复核」"
+                  "（复核确认：memory review-confirm <id>）")
         if rec.get("review") == "pending":
             print("  ⚠ 重要性高，已进待审池——用户确认前不当既定事实引用（brain.py review list 查看）")
         if rec.get("emotion"):
@@ -1574,6 +1752,25 @@ def _main(argv=None) -> int:
         return 0
 
     if args.cmd == "usage":
+        if args.bad and args.reply:
+            print("--bad 与 --reply 不能同时用：负反馈和核对分开跑。", file=sys.stderr)
+            return 2
+        if args.bad:
+            # v3.02 #9：召回负反馈
+            try:
+                r = usage_bad(args.bad)
+            except (KeyError, ValueError, PermissionError) as exc:
+                print(f"[错误] {exc}", file=sys.stderr)
+                return 2
+            if args.json:
+                print(json.dumps(r, ensure_ascii=False, indent=2))
+                return 0
+            print(f"已记负反馈：{r['id']}（第 {r['bad_count']} 次否定，"
+                  f"assoc 负边权重 {r['weight']}）。下次召回会降权。")
+            return 0
+        if not args.reply:
+            print("用法：usage --reply <本轮回复文本> 或 usage --bad <记忆id>", file=sys.stderr)
+            return 2
         r = evaluate_retrieval_usage(args.reply)
         if r.get("error"):
             print(r["error"], file=sys.stderr)
@@ -1590,7 +1787,21 @@ def _main(argv=None) -> int:
         return 0
 
     if args.cmd == "inject":
-        print(build_injection(" ".join(args.query), args.budget))
+        injection = build_injection(" ".join(args.query), args.budget)
+        # v3.02 #11：情绪自动输入——用户最新一句话过轻量启发式，命中就附候选。
+        # 只产候选：落不落盘、强度调多少，由 AI 自己判断后调 feel()/mirror()。
+        if getattr(args, "user_said", None):
+            try:
+                from emotion import emotion_auto_candidate
+                cand = emotion_auto_candidate(args.user_said)
+                if cand:
+                    injection += ("\n\n## 情绪候选（启发式，仅供参考，没写入）\n"
+                                  f"- 检测到用户可能情绪：{cand['emotion']}"
+                                  f"（强度约 {cand['intensity']:.0%}）——{cand['why']}\n"
+                                  "- 如属实可调 feel()/emotion_mirror() 记录；拿不准就忽略，别硬演。")
+            except Exception:
+                pass
+        print(injection)
         return 0
 
     if args.cmd == "dream":
@@ -2530,6 +2741,32 @@ def _main(argv=None) -> int:
                            f"warn {wcnt} 条 / error {ecnt} 条（累计）"))
         except Exception as e:
             checks.append(("log-anomalies", "FAIL", str(e)))
+        # 7. v3.02 #14：三副本版本矩阵——SKILL.md / 根 package.json / 插件 metadata.yaml
+        #    三处版本互相对账，谁落后一眼看出（engine 副本无版本文件，靠 sync --check 对内容）。
+        try:
+            import re as _re
+            root = Path(__file__).resolve().parent.parent
+
+            def _ver_of(p: Path, pat: str) -> str:
+                try:
+                    m = _re.search(pat, p.read_text(encoding="utf-8-sig"))
+                    return m.group(1) if m else "?"
+                except OSError:
+                    return "缺失"
+
+            v_skill = _ver_of(root / "SKILL.md", r'version["\']?\s*[:=]\s*["\']?([0-9][0-9a-zA-Z.\-]*)')
+            v_pkg = _ver_of(root / "package.json", r'"version"\s*:\s*"([^"]+)"')
+            v_meta = _ver_of(root / "scripts/astrbot_plugin_lingshu/metadata.yaml", r'version:\s*([0-9][0-9a-zA-Z.\-]*)')
+            vers = {"SKILL.md": v_skill, "package.json": v_pkg, "metadata.yaml": v_meta}
+            known = [v for v in vers.values() if v not in ("?", "缺失")]
+            drift = len(set(known)) > 1
+            detail = " · ".join(f"{k}={v}" for k, v in vers.items())
+            status = ("WARN" if drift or len(known) < len(vers) else "PASS")
+            if drift:
+                detail += "（版本漂移：升版时三处要一起改，check_version.py 会拦）"
+            checks.append(("version-matrix", status, detail))
+        except Exception as e:
+            checks.append(("version-matrix", "FAIL", str(e)))
 
         fails = sum(1 for _, s, _ in checks if s == "FAIL")
         warns = sum(1 for _, s, _ in checks if s == "WARN")
@@ -2597,6 +2834,82 @@ def _main(argv=None) -> int:
                 print(f"  上次做梦：{fmt_time(s['last_dream'])}")
             if s["top_tags"]:
                 print("  高频标签：" + "、".join(f"{t}×{c}" for t, c in s["top_tags"]))
+        return 0
+
+    # v3.02 #8：export --md —— 把记忆库导成人类可读的 Markdown。
+    # 备份 zip 给机器恢复用，这份给人读/给人审：按层分节、按时间排，
+    # 每条带 id/时间/类型/重要度/标签，正文截到 300 字防一页一条。
+    if args.cmd == "export":
+        import memory as _mem
+        ensure_home()
+        layers = [args.layer] if args.layer else ["hippo", "cortex", "dust", "archive"]
+        layer_titles = {"hippo": "短期（海马体）", "cortex": "长期（新皮层）",
+                        "dust": "淡忘区", "archive": "冷归档"}
+        out_lines = ["# 灵枢记忆库导出", "",
+                     f"- 导出时间：{fmt_time(now_ts())}",
+                     f"- 数据目录：`{HOME}`",
+                     f"- 范围：{'、'.join(layer_titles.get(x, x) for x in layers)}"
+                     + (f"（最多 {args.limit} 条）" if args.limit else ""), ""]
+        total = 0
+        for layer in layers:
+            if layer == "archive":
+                recs = _mem.load_archive()
+            else:
+                recs = [m for m in _mem.load_all() if m.get("layer") == layer]
+            recs.sort(key=lambda m: float(m.get("created") or 0), reverse=True)
+            if args.limit:
+                recs = recs[:args.limit]
+            out_lines.append(f"## {layer_titles.get(layer, layer)}（{len(recs)} 条）")
+            out_lines.append("")
+            if not recs:
+                out_lines.append("（空）")
+                out_lines.append("")
+                continue
+            for m in recs:
+                total += 1
+                text = str(m.get("text", "")).replace("\n", " ").strip()
+                if len(text) > 300:
+                    text = text[:300] + "…"
+                tags = " ".join(f"#{t}" for t in (m.get("tags") or []))
+                meta = f"`{m.get('id', '?')}` · {fmt_time(m.get('created') or 0)}" \
+                       f" · {m.get('kind', '?')} · 重要度 {m.get('importance', 0)}"
+                if m.get("pinned"):
+                    meta += " · 📌置顶"
+                out_lines.append(f"- **{text}**" if m.get("kind") in ("fact", "preference")
+                                 else f"- {text}")
+                out_lines.append(f"  - {meta}" + (f" · {tags}" if tags else ""))
+            out_lines.append("")
+        if not args.no_notes:
+            import growth
+            kb = growth.load_knowledge()
+            out_lines.append(f"## 知识库（{len(kb)} 条）")
+            out_lines.append("")
+            for k in kb[:200]:
+                body = str(k.get("content") or k.get("text") or "").replace("\n", " ")
+                if len(body) > 200:
+                    body = body[:200] + "…"
+                out_lines.append(f"- {body}")
+            out_lines.append("")
+            notes = growth.list_notes(limit=200)
+            out_lines.append(f"## 笔记 / 日记（最近 {len(notes)} 条）")
+            out_lines.append("")
+            for n in notes:
+                body = str(n.get("body") or n.get("content") or "").replace("\n", " ")
+                if len(body) > 200:
+                    body = body[:200] + "…"
+                out_lines.append(f"- **{n.get('type', n.get('kind', '?'))}** · "
+                                 f"{fmt_time(n.get('created') or 0)}：{body}")
+            out_lines.append("")
+        out_lines.append(f"---")
+        out_lines.append(f"共 {total} 条记忆。")
+        text = "\n".join(out_lines) + "\n"
+        if args.out:
+            p = Path(args.out).expanduser()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+            print(f"已导出 {total} 条记忆 → {p}")
+        else:
+            print(text, end="")
         return 0
 
     if args.cmd == "config":
@@ -3093,6 +3406,27 @@ def _main(argv=None) -> int:
             print(f"  last_access→现在（R 回 1），稳定度 {r['old_stability']:.0f}s→{r['stability']:.0f}s")
             if (r.get("layer") or "") == "dust":
                 print("  提示：这条在淡忘区，想整条复活回活跃层用 `memory dust revive <id>`。")
+            return 0
+        # v3.02 #10：事实保质期复核——到期列出 / 用户确认后静音
+        if mem_cmd == "review-list":
+            due = due_for_review(50)
+            if not due:
+                print("没有到期待复核的记忆。")
+                return 0
+            print(f"{len(due)} 条到期待复核（最早优先）：")
+            for m in due:
+                print(f"- {m['id']} · {fmt_date(m.get('review_by'))} 到期 · "
+                      f"[{m.get('layer')}] {display_text(m)[:80]}")
+            print("用户确认仍有效：memory review-confirm <id>；已过时就重新 remember 覆盖。")
+            return 0
+        if mem_cmd == "review-confirm":
+            try:
+                m = mark_reviewed(args.id)
+            except (LookupError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            print(f"已确认复核：{m['id']}（下次到期前不再提醒「待复核」）")
+            print(f"  [{m.get('layer')}] {display_text(m)[:80]}")
             return 0
         print("用法：memory dust fold|unfold|revive <id> [--layer cortex|hippo] / "
               "memory boost <id> / memory diagnose / memory fix-links",

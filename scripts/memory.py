@@ -523,6 +523,55 @@ def load_archive() -> list:
     return good
 
 
+def due_for_review(limit: int = 10) -> list:
+    """v3.02 #10：到期该复核的事实类记忆。
+
+    记入时带 --ttl/--review-at 的记忆，过了 review_by 时间点就算到期。
+    只挑、不删不改——到期是"该找用户确认一下这条还作数吗"，不是失效。
+    已被复核确认过的（review_by_confirmed）不再重复提醒。
+    """
+    now = now_ts()
+    out = []
+    for m in load_all() + load_archive():
+        if m.get("layer") in ("dust",):
+            continue
+        by = _num(m.get("review_by"), 0)
+        if not by or by > now:
+            continue
+        if m.get("review_by_confirmed"):
+            continue
+        out.append(m)
+    out.sort(key=lambda m: _num(m.get("review_by"), 0))  # 最早到期的先提醒
+    return out[:limit]
+
+
+def mark_reviewed(mem_id: str) -> dict:
+    """v3.02 #10：复核确认——用户确认这条事实仍作数。
+
+    打 review_by_confirmed 标，due_for_review 不再挑它；有 ttl 的把 review_by
+    顺延一个周期（确认一次=再来一轮保质期）。走 _strengthen_write 定向补丁，
+    不整文件重写。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法执行复核确认。")
+    ensure_home()
+    mid = str(mem_id or "").strip()
+    found = None
+    for m in load_all() + load_archive():
+        if str(m.get("id") or "") == mid:
+            found = dict(m)
+            break
+    if not found:
+        raise LookupError(f"没找到记忆 {mid}。")
+    ttl = _num(found.get("ttl_days"), 0)
+    found["review_by_confirmed"] = now_ts()
+    if ttl > 0:
+        found["review_by"] = int(now_ts() + ttl * DAY)
+    _patch_memory_fields(found)
+    log_event("memory", f"事实复核确认：{mid}")
+    return found
+
+
 def _hay(m: dict) -> str:
     """廉价的"可检索全文"拼接（小写）：text + tags + entities。
 
@@ -983,11 +1032,13 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
              emotion: str | None = None,
              channel: str | None = None, group_id: str | None = None,
              user: str | None = None,
-             project: str | None = None, session: str | None = None) -> tuple:
+             project: str | None = None, session: str | None = None,
+             ttl_days: float | None = None, review_at: int | None = None) -> tuple:
     ensure_home()
     text = (text or "").strip()
     if not text:
         raise ValueError("记忆内容为空")
+    text = redact(text)  # v3.02 #1：记忆写入统一脱敏，密钥不进 hippocampus/cortex
     # 单条记忆原文上限（config.remember_max_chars，默认 1200）：超长截断保主干，
     # 只影响写入上限，不改变近重复合并等逻辑。
     _rmax = _cfg_num(load_config(), "remember_max_chars", 1200, int)
@@ -1098,6 +1149,16 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
         if emo_name:
             rec["emotion"] = emo_name
             rec["emotional"] = round(emo_arousal, 2)
+        # v3.02 #10：事实类记忆的保质期——ttl_days 到期后注入标「待复核」，
+        # review_at 是显式指定的复核时间点（--review-at YYYY-MM-DD 或时间戳）。
+        # 只影响注入提示，不删不改：到期是"该找用户确认一下了"，不是"失效"。
+        if ttl_days is not None and _num(ttl_days, 0) > 0:
+            rec["ttl_days"] = _num(ttl_days, 0)
+            rec["expires_at"] = int(now_ts() + _num(ttl_days, 0) * DAY)
+        if review_at is not None and _num(review_at, 0) > 0:
+            rec["review_by"] = int(_num(review_at, 0))
+        elif ttl_days is not None and _num(ttl_days, 0) > 0:
+            rec["review_by"] = rec.get("expires_at")
         # —— 记忆冲突裁决（Mem0 风格）——
         # 与某条旧记忆中度相似（jaccard 0.55~0.86）但文本不同 = 同一件事说法变了/事实更新。
         # 旧的不删：打上 superseded_by 指向新记忆（回忆默认跳过被取代者，仍可沿链回溯旧观念）。
@@ -1977,13 +2038,50 @@ def evaluate_retrieval_usage(reply: str) -> dict:
             "items": rows}
 
 
+def usage_bad(mid: str) -> dict:
+    """v3.02 #9：召回负反馈——用户明确否定某条被找回的记忆。
+
+    在 assoc.jsonl 记一条自环负边（relation="否定"，weight 逐次更负），
+    关联图/召回排序看到负权重即可降权；重复否定会累积。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法记负反馈。")
+    mid = str(mid or "").strip()
+    if not mid:
+        raise ValueError("请给出要否定的记忆 id（usage --bad <id>）")
+    with _locked(HOME / "hippocampus.jsonl"):
+        target = next((m for m in load_all() if m.get("id") == mid), None)
+        if not target:
+            raise KeyError(f"没有这条记忆：{mid}（用 recall 或 list 拿 id）")
+        with _locked(_assoc_file()):
+            rows = load_assoc()
+            edge = next((r for r in rows if r.get("src") == mid and r.get("dst") == mid
+                         and r.get("relation") == "否定"), None)
+            if edge is not None:
+                edge["weight"] = round(_num(edge.get("weight"), -1) - 1.0, 2)
+                edge["ts"] = now_ts()
+                edge["count"] = int(_num(edge.get("count"), 1)) + 1
+                save_assoc(rows)
+                return {"id": mid, "bad_count": edge["count"], "weight": edge["weight"],
+                        "created": False}
+            rows.append({"src": mid, "dst": mid, "relation": "否定", "weight": -1.0,
+                         "count": 1, "why": "usage --bad", "ts": now_ts()})
+            save_assoc(rows)
+    return {"id": mid, "bad_count": 1, "weight": -1.0, "created": True}
+
+
 def usage_metrics() -> dict:
-    """历史回忆使用率（只算已经核对过的批次）。"""
+    """历史回忆使用率（只算已经核对过的批次）+ 负反馈计数（#9）。"""
     rows = read_jsonl(USAGE_FILE)
     recalled = sum(len(r.get("recalled") or []) for r in rows)
     used = sum(len(r.get("used") or []) for r in rows)
+    try:
+        bad = sum(max(0, int(_num(r.get("count"), 1)))
+                  for r in load_assoc() if r.get("relation") == "否定")
+    except Exception:
+        bad = 0
     return {"events": len(rows), "recalled": recalled, "used": used,
-            "rate": round(used / recalled, 3) if recalled else 0.0}
+            "rate": round(used / recalled, 3) if recalled else 0.0, "bad": bad}
 
 
 # ---------------------------------------------------------------- 工作记忆
@@ -2275,6 +2373,8 @@ def capture(payload: str, tag: str = "", kind: str = "episode",
     payload = (payload or "").strip()
     if not payload:
         raise ValueError("封存内容为空")
+    # v3.02 #1：先脱敏再落盘——verbatim 归档与海马体两个去向都必须是脱敏后的文本
+    payload = redact(payload)
     if READONLY:
         raise PermissionError("记忆库当前只读，无法封存。用 --home 指向可写目录。")
 
@@ -2979,6 +3079,23 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             if inject_max > 0 and len(_body) > inject_max:
                 _body = _body[:inject_max].rstrip() + "…"
             out.append(f"- {_body}")
+
+    # v3.02 #10：到期事实复核提醒——带保质期的记忆过期后注入标「待复核」，
+    # 提醒 AI 找机会跟用户确认"这条还作数吗"。确认过打 review_by_confirmed
+    # （或直接重新 remember 覆盖）就不再提醒。软块注入，超预算整块丢弃。
+    try:
+        _due = due_for_review(5)
+        if _due:
+            _due_lines = []
+            for m in _due:
+                _body = display_text(m)
+                if len(_body) > 120:
+                    _body = _body[:120] + "…"
+                _due_lines.append(f"- [待复核] {_body}（{fmt_date(_num(m.get('review_by'), 0))} 到期）")
+            used += _soft_block("\n## 事实待复核（到期了，找机会跟用户确认还作数吗）",
+                                _due_lines, 0.08)
+    except Exception:
+        pass
 
     # 上一次梦的结论（c1d 可读三行化）：不再把梦报告原文 6 行整段灌进来，
     # 而是抽成三行——合并了什么 / 哪些被淡忘（可 revive）/ 哪些被防线拦下待复核。

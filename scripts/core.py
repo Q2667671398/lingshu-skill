@@ -253,6 +253,46 @@ def load_config() -> dict:
     return cfg
 
 
+# ---------------------------------------------------------------- 脱敏（v3.02 #1/#3）
+
+# 常见密钥/凭据形态：命中后替换为 [REDACTED:类型]，保留首尾 3 字符便于人工辨认。
+# 顺序敏感：具名前缀（sk-/ghp_/github_pat_/xox/AKIA）先扫，泛化兜底（kv/Bearer）后扫，
+# 否则泛化规则会把具名 token 先吃掉一半、留下前缀导致具名规则扫不到。
+_REDACT_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("api-key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
+    ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
+    ("github-token", re.compile(r"ghp_[A-Za-z0-9]{20,}")),
+    ("slack-token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("aws-key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("bearer", re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}")),
+    ("kv-secret", re.compile(r"(?i)(password|passwd|token|secret|api_key|apikey|access_key)\s*[=:]\s*\S+")),
+]
+
+_REDACT_KEEP = 3  # 保留首尾 3 字符（不足 8 字符全遮）
+
+
+def redact(text: str) -> str:
+    """把文本里的疑似密钥/凭据替换成 [REDACTED:类型]。
+
+    用于记忆写入（capture/remember）与运行日志（log_event）：
+    任何入口都不落盘明文密钥。纯函数、绝不抛异常——脱敏失败时返回原文
+    比让记忆/日志写入崩掉更合理。
+    """
+    if not text or not isinstance(text, str):
+        return text
+    try:
+        for label, pat in _REDACT_PATTERNS:
+            def _sub(m, _label=label):
+                s = m.group(0)
+                if len(s) <= 8:
+                    return f"[REDACTED:{_label}]"
+                return f"{s[:_REDACT_KEEP]}[REDACTED:{_label}]{s[-_REDACT_KEEP:]}"
+            text = pat.sub(_sub, text)
+        return text
+    except Exception:
+        return text
+
+
 def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
     """轻量运行日志（lingshu.log）：锁冲突、内部异常、解析报错等留痕，面板「日志」页可看。
 
@@ -262,7 +302,8 @@ def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
         return
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        row = {"ts": now_ts(), "kind": kind, "level": level, "msg": str(message)[:500]}
+        row = {"ts": now_ts(), "kind": kind, "level": level,
+               "msg": redact(str(message))[:500]}  # 日志统一脱敏（v3.02 #3）
         if extra:
             for k, v in list(extra.items())[:4]:
                 if not isinstance(v, (str, int, float, bool, type(None))):
@@ -271,23 +312,28 @@ def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
                     except Exception:
                         v = str(v)[:200]
                 row[k] = v
-        with open(LOG_FILE, "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        # 超过 512KB 滚动：保留后半（最新），避免单文件无限膨胀。
-        # E-15：多进程同时滚动会 read_text/write_text 竞态丢行——用 lingshu.log
-        # 自己的写锁串行化滚动（抢不到锁就这轮不滚，下次写入再试）。
+        # v3.02 #4：超过 1MB 轮转 log → log.1 → log.2 → log.3（最旧的 .3 丢弃）。
+        # 写入前先滚（否则先写后滚会让刚写的这条跟着旧文件一起被 rename 走，
+        # 主日志文件一度消失）。多进程同时滚动：用 lingshu.log 自己的写锁串行化
+        # （抢不到锁就这轮不滚，下次写入再试）。不再"截半保留"——半截日志既丢历史又难读。
         try:
-            if LOG_FILE.stat().st_size > 512 * 1024:
+            if LOG_FILE.stat().st_size > 1024 * 1024:
                 try:
                     with _locked(LOG_FILE, timeout=1.0):
-                        if LOG_FILE.stat().st_size > 512 * 1024:
-                            data = (LOG_FILE.read_text(encoding="utf-8-sig") or "").splitlines()
-                            keep = data[-(len(data) // 2):]
-                            LOG_FILE.write_text("\n".join(keep) + "\n", encoding="utf-8")
+                        if LOG_FILE.stat().st_size > 1024 * 1024:
+                            for i in (2, 1):  # 从旧往新挪，避免覆盖
+                                src = LOG_FILE.with_suffix(LOG_FILE.suffix + f".{i}")
+                                dst = LOG_FILE.with_suffix(LOG_FILE.suffix + f".{i + 1}")
+                                if src.exists():
+                                    dst.unlink(missing_ok=True)
+                                    src.rename(dst)
+                            LOG_FILE.rename(LOG_FILE.with_suffix(LOG_FILE.suffix + ".1"))
                 except TimeoutError:
                     pass  # 别的进程正在滚：这轮跳过，下次写入再检查
         except OSError:
             pass
+        with open(LOG_FILE, "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
@@ -340,18 +386,30 @@ def clear_logs(ts=None, kind: str | None = None, msg: str | None = None) -> int:
 
 
 def read_logs(limit: int = 200, level: str | None = None, kind: str | None = None) -> list:
-    """读最近 N 条运行日志（最新在前）。level/kind 任一匹配即保留。"""
-    if not LOG_FILE.exists():
-        return []
-    try:
-        lines = [x for x in LOG_FILE.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
-    except OSError:
-        return []
+    """读最近 N 条运行日志（最新在前）。level/kind 任一匹配即保留。
+
+    v3.02 #4：日志按 1MB 轮转出 .1/.2/.3，这里按 新→旧 合并读取，凑满 limit 即停。
+    """
     rows = []
-    # 级别语义：指定级别及以上都显示（--level info ⇒ info/warn/error 全含）
+    for suffix in ("", ".1", ".2", ".3"):
+        p = LOG_FILE.with_suffix(LOG_FILE.suffix + suffix)
+        if not p.exists():
+            continue
+        try:
+            lines = [x for x in p.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
+        except OSError:
+            continue
+        # 新→旧顺序追加；当前文件里越靠后越新，轮转文件里越靠后越新（写序）
+        for ln in reversed(lines):
+            if len(rows) >= limit * 2:
+                break
+            rows.append(ln)
+        if len(rows) >= limit * 2:
+            break
     _lv_rank = {"debug": 0, "info": 1, "warn": 2, "warning": 2, "error": 3}
     want = _lv_rank.get(str(level).lower(), 1) if level else None
-    for ln in lines[-limit * 2:]:
+    out = []
+    for ln in rows:
         try:
             r = json.loads(ln)
         except Exception:
@@ -360,8 +418,8 @@ def read_logs(limit: int = 200, level: str | None = None, kind: str | None = Non
             continue
         if kind and r.get("kind") != kind:
             continue
-        rows.append(r)
-    return rows[::-1][:limit]
+        out.append(r)
+    return out[:limit]
 
 
 def _slurp_json(path, default=None):
@@ -954,6 +1012,14 @@ def write_jsonl(path: Path, rows: list) -> None:
     _replace_retry(tmp, path)
 
 
+def _append_jsonl(path: Path, row: dict) -> None:
+    """追加一行 JSONL（v3.02 #5 metrics.jsonl 用）：写锁防多进程交错半行。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _locked(path):
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 @contextmanager
 def _locked(path: Path, timeout: float = 10.0):
     """跨进程写锁：用独占创建 lock 文件互斥，带超时与陈旧锁清理。
@@ -1155,6 +1221,32 @@ def _strengthen_write(touched: list) -> None:
                     del remaining[mid]
         for mid in remaining:
             log_event("strengthen", f"放弃强化 {mid}：三层都找不到（可能已归档/删除）", path=fname["hippo"])
+
+
+def _patch_memory_fields(rec: dict) -> bool:
+    """v3.02 #10：定向 patch 保质期字段（review_by/review_by_confirmed/ttl_days）。
+
+    与 _strengthen_write 同一套锁内按层找 id 的套路，但只写保质期相关字段，
+    不碰强化计数字段——语义不同的事各走各的补丁，互不覆盖。
+    找不到（已归档/删除）返回 False 并留日志。
+    """
+    if READONLY or not rec.get("id"):
+        return False
+    patch_fields = ("ttl_days", "review_by", "review_by_confirmed")
+    fname = {"hippo": "hippocampus.jsonl", "cortex": "cortex.jsonl", "dust": "dust.jsonl",
+             ARCHIVE_LAYER: "archive.jsonl"}
+    for layer in ("hippo", "cortex", "dust", ARCHIVE_LAYER):
+        p = HOME / fname[layer]
+        rows = read_jsonl(p)
+        for r in rows:
+            if r.get("id") == rec["id"]:
+                for f in patch_fields:
+                    if f in rec:
+                        r[f] = rec[f]
+                write_jsonl(p, rows)
+                return True
+    log_event("memory", f"放弃复核确认 {rec['id']}：各层都找不到", level="warn")
+    return False
 
 
 # ---------------------------------------------------------------- 回忆使用反馈

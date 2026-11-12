@@ -1,5 +1,20 @@
 # 更新日志
 
+## v3.02（2026-11-12）
+
+- **隐私脱敏（#1/#3）**：新增 `core.redact()`——具名前缀（sk-/ghp_/github_pat_/xox/AKIA）先扫、kv/Bearer 兜底，命中替换为 `[REDACTED:类型]`（保留首尾 3 字符便于辨认）；capture/remember 写入与 log_event 日志统一脱敏，任何入口不落盘明文密钥。
+- **备份校验+演练（#6/#7）**：`backup` 生成 `.sha256` sidecar（内容含哈希与文件名）；`--drill` 恢复演练——解包到临时目录校验关键文件（persona.json）齐全后自动清理，备份不再"存了但没验证过"；restore 先校验 zip 完整性拒绝损坏包。
+- **日志轮转（#4）**：lingshu.log 超 1MB 时写入前自动轮转 .1→.2→.3（最旧丢弃），`read_logs`/面板日志页合并读取轮转文件、按时间倒序，最新在前。
+- **运行指标（#5）**：`daily` 追加 `metrics.jsonl`（每日一条：总数/分层/永不召回占比/平均保留度/联想/工作记忆/召回使用率），纯 JSONL 追加不覆盖，可长期画趋势。
+- **记忆导出 --md（#8）**：`export --md` 人类可读 Markdown 导出（长期/短期/核心/淡忘分节），支持 `--out` 写文件与 `--layer` 过滤。
+- **事实保质期（#10）**：`remember --ttl-days N` / `--review-at` 给事实记忆设保质期，到期进「待复核」；`due_for_review()` 列出到期项，`mark_reviewed` 确认后顺延一个周期静默提醒。
+- **情绪自动候选（#11）**：`emotion_auto_candidate()` 启发式从消息产出情绪候选（正负信号混着说/长粘贴/平淡文本不猜），只产候选不自动写入，判读权留给 AI。
+- **明文库提示（#2）**：SKILL.md 注入引导——明文库（knowledge）条目为用户手写/AI 待审内容，引用前先过一遍可信度；文档提示先行。
+- **负反馈信号（#9）**：`usage --bad` 记录召回未命中/无效的负反馈，计入 usage 统计。
+- **CI 与体检（#13/#14）**：CI workflow 增加两批单测 step；`doctor` 新增 version-matrix 检查（SKILL.md 与 package.json 主.次版本对齐）。
+- **版本对齐（#12）**：SKILL.md 3.02 / package.json 3.02.0 主.次版本对齐；metadata.yaml（AstrBot 插件）保持独立 0.2.x 版本线，顺带 0.2.5。
+- 新增单测：tests/test_v302_batch1.py（14 例）+ tests/test_v302_batch2.py（19 例），33 例全绿。
+
 ## v3.01（2026-11-12）
 
 - **上下文水位自动守卫**：`brain.py status --json` 做唯一水位数据源（退出码按 60/75/90 分级 0/1/2/3）；`startup` 尾部固定水位提醒块 + wake_count 自增；lingshu-cron pre-step 估算真实 token 水位（宿主 usage 优先、字符数兜底），首次跨 60/75/90 才注入提醒不重复打扰；面板概览新增水位卡。

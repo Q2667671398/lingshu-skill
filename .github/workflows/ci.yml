@@ -40,6 +40,14 @@ jobs:
       - name: plugin smoke tests
         run: python tests/test_plugin_smoke.py
 
+      # v3.02 第一批：脱敏 / 备份校验演练 / 负反馈 / 版本对齐
+      - name: v3.02 batch1 tests
+        run: python tests/test_v302_batch1.py
+
+      # v3.02 第二批：日志轮转 / metrics / export / 保质期复核 / 情绪候选 / 版本矩阵
+      - name: v3.02 batch2 tests
+        run: python tests/test_v302_batch2.py
+
       # 语法全量编译检查
       - name: py_compile
         run: python -m compileall -q scripts tests

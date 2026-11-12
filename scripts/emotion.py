@@ -954,6 +954,61 @@ def emotion_evaluate(event: str, polarity: str = "auto", importance: float = 0.6
     return rv
 
 
+# —— v3.02 #11：情绪自动输入（轻量启发式，只产候选不落盘）——
+# 用户消息里带明显情绪信号词时，AI 还没来得及调 emotion_evaluate/mirror，
+# 这里先给出一个"要不要记一笔情绪"的候选建议；采不采纳、强度多少由 AI 定。
+# 绝不直接写情绪流：误判一条"用户随口一句"成情绪事件比漏判更伤。
+
+_AUTO_POS_WORDS = ("谢谢", "太好了", "真棒", "好厉害", "帮大忙", "开心", "高兴",
+                   "太可爱", "喜欢", "感动", "哈哈", "嘿嘿", "辛苦了")
+_AUTO_NEG_WORDS = ("烦死了", "气死", "难受", "难过", "失望", "生气", "委屈",
+                   "崩溃", "哭", "好累", "太累", "害怕", "担心", "焦虑", "无聊")
+
+
+def emotion_auto_candidate(user_text: str) -> dict | None:
+    """扫描用户一句话，产出情绪候选（不写盘、不改状态）。
+
+    返回 None = 没有情绪信号，不用记；否则返回候选字典：
+      {emotion, intensity, why, hits, decision: "candidate"}
+    emotion 直接复用现有情绪词表（EMOTIONS），确保 feel() 能接受。
+    """
+    t = (user_text or "").strip()
+    if not t or len(t) > 500:  # 超长文本大概率是粘贴内容，不做情绪输入
+        return None
+    pos_hits = [w for w in _AUTO_POS_WORDS if w in t]
+    neg_hits = [w for w in _AUTO_NEG_WORDS if w in t]
+    if not pos_hits and not neg_hits:
+        return None
+    if pos_hits and neg_hits:  # 正负混着说（"烦死了不过还是谢谢"）不猜，交人工
+        return None
+    strong = any(w in t for w in ("气死", "崩溃", "哭", "太好了", "帮大忙", "委屈", "害怕"))
+    # 量化：命中 1 词=弱信号 0.35，2 词=0.5，3+ 或强烈词=0.7；感叹号再加一档
+    n = len(pos_hits or neg_hits)
+    intensity = 0.7 if (n >= 3 or strong) else (0.5 if n == 2 else 0.35)
+    if ("!" in t or "！" in t) and intensity < 0.7:
+        intensity += 0.1
+    if neg_hits:
+        emotion = "难过" if any(w in t for w in ("难过", "哭", "委屈")) else (
+            "焦虑" if any(w in t for w in ("害怕", "担心", "焦虑")) else "烦躁")
+        why = f"用户的话里带负面信号：{'、'.join(neg_hits[:3])}"
+    else:
+        emotion = "开心" if any(w in t for w in ("开心", "高兴", "哈哈")) else (
+            "感动" if "感动" in t else "满足")
+        why = f"用户的话里带正面信号：{'、'.join(pos_hits[:3])}"
+    # 词表校验：情绪名必须在 EMOTIONS 里，不在就退回通用词
+    if emotion not in EMOTIONS:
+        emotion = "满足" if pos_hits else "难过"
+        if emotion not in EMOTIONS:
+            return None
+    return {
+        "emotion": emotion,
+        "intensity": round(min(1.0, intensity), 2),
+        "why": why,
+        "hits": pos_hits[:3] + neg_hits[:3],
+        "decision": "candidate",  # 只是候选：AI 决定要不要 feel()/mirror()
+    }
+
+
 def emotion_mirror(user_emotion: str, intensity: float = 0.5, what: str = "") -> dict:
     """共情：用户有情绪时跟着走一点，但不失自己。
 

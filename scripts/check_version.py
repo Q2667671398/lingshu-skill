@@ -109,6 +109,28 @@ def check(staged: bool = False, base: str = "HEAD") -> int:
     if old_ver is None or new_ver is None:
         print("[version] 读不出 SKILL.md 的 version，跳过")
         return 0
+
+    # v3.02 #12：版本四处对齐——CHANGELOG 首条目标题必须就是当前版本。
+    # 无论本次是否升版都查：首条目还停在旧版本 = CHANGELOG 没跟上，发布口径失真。
+    cl_path = ROOT / "CHANGELOG.md"
+    if cl_path.exists():
+        try:
+            cl_head = cl_path.read_text(encoding="utf-8-sig")
+        except OSError:
+            cl_head = ""
+        m_first = None
+        for line in cl_head.splitlines():
+            if re.match(r"^##\s+", line):
+                m_first = line
+                break
+        if m_first is not None:
+            m_v = re.search(r"v?(\d+\.\d+(?:\.\d+)?)", m_first)
+            first_ver = m_v.group(1) if m_v else None
+            if first_ver and first_ver != new_ver:
+                print(f"[version] 拒绝：CHANGELOG.md 首条目是 v{first_ver}"
+                      f"（{m_first.strip()}），与 SKILL.md version（{new_ver}）不一致。"
+                      f"先在 CHANGELOG 顶部补 v{new_ver} 小节。", file=sys.stderr)
+                return 1
     # manifest.json 存在时：其 version 必须与 SKILL.md 完全一致
     mf_path = ROOT / "manifest.json"
     if mf_path.exists():
