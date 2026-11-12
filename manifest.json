@@ -65,10 +65,6 @@
       "sha256": "f0c18e561c15f2afa40e77ed71ca08a220b11487ccf8975da47b684c6055eead",
       "size": 54
     },
-    "docs/astrbot_integration_todo.md": {
-      "sha256": "a0cc461922068727978e92c2a7959be78bb8d9c03885ea612297e0e42e72eb28",
-      "size": 49066
-    },
     "docs/commands.md": {
       "sha256": "5a98598c87650eb60b0139916a5a5d9d3aa48bc77ed9c408a512a8ae04ec8400",
       "size": 15758
@@ -84,18 +80,6 @@
     "docs/panel-api.md": {
       "sha256": "2cab01a7b824b402bca41d8739d36133265bb8622385876e1b499385aa1aaa99",
       "size": 10172
-    },
-    "docs/待办-v3.01.md": {
-      "sha256": "b5d6232e09c8e96b71051528d797ccf400c3d5d7258472ce8f1f9e35d3e497e1",
-      "size": 10023
-    },
-    "docs/待办-v3.02.md": {
-      "sha256": "aff6892dfd72dc9be74dc4d2bbbcd1eef447d785ce278f51341167555f546515",
-      "size": 2568
-    },
-    "docs/进度-v3.01.md": {
-      "sha256": "82ce53f1740dde85dd6948bfa0ac2af1c2f9159b6210612b43aa399764535008",
-      "size": 11494
     },
     "index.js": {
       "sha256": "ca51e1ffd384d575a52ed0d2710b1f6bf633a1159917da836ba1efcdc2f0398b",
