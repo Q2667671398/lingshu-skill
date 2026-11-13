@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.04（2026-11-14）
+
+> 本轮主题：**自我进化闭环**（第五轮借鉴 #36/#38/#39/#41）——从错误中提炼教训、峰值情绪塑造人格、建立机器可读的自模型。
+
+- **教训库（#36）**：新增 `HOME/lessons.jsonl`。做梦任务从改口（correction）记忆、被 supersede 的旧记忆、conflict 冲突对中提炼教训候选（一律 pending 待审）；`review` 支持 `les_` 前缀 confirm/discard；教训被后续对话验证 confidence +0.10（上限 0.95）、被推翻 −0.15，<0.2 自动退役不再注入；注入包带 ≤5 条 active 教训；recall 命中相关教训时提示「⚠️ 已有教训」——先查再答，不重蹈覆辙。CLI：`lessons [list]/add/validate`。
+- **correction 语义（#41）**：`remember` / `capture` 新增 `--correction`——用户纠正"不对/不是这样"的记录打 `correction: true` 标，做梦的合并/淡忘/归档/supersede 四条路径全部跳过（**永不自动消失**），并优先参与教训提炼。
+- **峰值情绪塑造人格（#38）**：情绪强度 ≥0.85 的事件打 `formative` 标记（"成形时刻"）；做梦时带 formative 的事件使 traits 漂移权重 ×2.5 且不受漂移门限压制（`update_persona` 加 `bypass_gate`），并写入人格 history 叙事——「因为那次 XXX，我的「特质」更强/弱了」，人格演进从此有事件可溯。
+- **机器可读自模型（#39）**：persona.json 新增 `self_model` 节 `{strengths/limitations/uncertainties/autobiography}`（各 capped 20）。做梦自动沉淀：limitations ← 低置信 correction 记忆；autobiography ← 峰值情绪 + traits 跳变 ≥10 的人格变更 + formative 叙事。`persona self-model` 查看、`persona self-model --add limitation "<内容>"` 手动补充；`persona_brief` 注入自认识概览（擅长/短板/还没弄清），让 AI 回答"我不太擅长这个"时有据可依。
+
 ## v3.03（2026-11-13）
 
 - **数据结构版本化（#16）**：ensure_home 创建/校验 `HOME/_meta.json`（schema_version/created/updated）；未来结构升级时老版本检测到不认识的 schema 版本自动降级只读 + 警告，不再盲目写坏新库；老库静默创建 meta，只读模式不写。

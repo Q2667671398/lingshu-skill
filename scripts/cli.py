@@ -1172,6 +1172,9 @@ def _main(argv=None) -> int:
                        help="保质期（天，可小数）：到期后注入标「待复核」，提醒找用户确认还作数吗（v3.02 #10）")
     p_rem.add_argument("--review-at", default=None, metavar="DATE",
                        help="显式指定复核时间点（YYYY-MM-DD 或时间戳），优先于 --ttl 推算")
+    p_rem.add_argument("--correction", action="store_true",
+                       help="#41 改口标记：这条是用户纠正过的更正版，做梦合并/淡忘/归档永不自动动它"
+                            "（教训提炼 #36 优先读它）")
 
     p_learn = sub.add_parser("lesson", help="一条命令记教训：memory(mistake) + knowledge(pending) + note 三写"
                                              "（brain.py learn 已被 growth 组的 learn ask/loop 占用，故名单独成词）")
@@ -1209,10 +1212,12 @@ def _main(argv=None) -> int:
                                 "lock", "unlock", "history", "rollback", "check",
                                 "snapshot", "snapshots", "restore", "drift",
                                 "auto-snapshots", "auto-rollback",
-                                "suggest", "audit", "viewed"])
+                                "suggest", "audit", "viewed", "self-model"])
     p_per.add_argument("pair", nargs="?", default=None, help="例如 traits.幽默=70 / rollback 的序号")
     p_per.add_argument("tail", nargs="?", default=None,
-                       help="suggest adopt/discard：候选序号（persona suggest adopt 3）")
+                       help="suggest adopt/discard：候选序号（persona suggest adopt 3）；self-model：内容文本")
+    p_per.add_argument("--add", default=None, choices=["strength", "limitation", "uncertainty"],
+                       help="self-model：登记一条自认识（strength/limitation/uncertainty）")
     p_per.add_argument("--index", type=int, default=None,
                        help="suggest adopt/discard：候选序号（--index 3，与 tail 二选一）")
     p_per.add_argument("--json", action="store_true")
@@ -1318,8 +1323,20 @@ def _main(argv=None) -> int:
     p_rev = sub.add_parser("review", help="审核 AI 整理出来的记忆 / 知识 / 人格变更（防幻觉沉淀成事实）")
     p_rev.add_argument("action", nargs="?", default="list",
                        choices=["list", "confirm", "discard", "approve", "deny"])
-    p_rev.add_argument("id", nargs="?", default="", help="confirm/discard/approve/deny：那条的 id（m_ 开头的记忆 / k_ 开头的知识）")
+    p_rev.add_argument("id", nargs="?", default="", help="confirm/discard/approve/deny：那条的 id（m_ 开头的记忆 / k_ 开头的知识 / les_ 开头的教训）")
     p_rev.add_argument("--json", action="store_true")
+
+    # #36 教训库 CLI：list / add / validate。教训是失败闭环的产物——
+    # 做梦提炼（pending）+ 人工补录（active），validate 校准置信度，低置信自动退役。
+    p_les = sub.add_parser("lessons", help="教训库：列表 / 添加 / 校验（#36 失败闭环）")
+    p_les.add_argument("action", nargs="?", default="list", choices=["list", "add", "validate"])
+    p_les.add_argument("text", nargs="*", default=[],
+                       help="add：教训内容；validate：教训 id（les_ 开头）")
+    p_les.add_argument("--bad", action="store_true",
+                       help="validate：标记这次教训没用/踩坑（降权，低于 0.2 自动退役）")
+    p_les.add_argument("--confidence", type=float, default=0.5, help="add：初始置信度 0-1（默认 0.5）")
+    p_les.add_argument("--evidence", default="", help="add：证据记忆 id，逗号分隔")
+    p_les.add_argument("--json", action="store_true")
 
     p_audit = sub.add_parser("audit", help="整体自查：待审核项 + 冲突记忆 + 该做什么")
     p_audit.add_argument("--json", action="store_true")
@@ -1582,7 +1599,7 @@ def _main(argv=None) -> int:
             or (args.cmd == "topic" and action in ("touch", "feedback", "drop"))
             or (args.cmd == "persona" and action not in ("show", "path", "onboarding",
                                                          "history", "snapshots", "drift",
-                                                         "check"))
+                                                         "check", "self-model"))
             or (args.cmd == "mind" and action in ("set", "tune"))
             or (args.cmd == "emotion" and action in ("feel", "evaluate", "mirror",
                                                      "adjust", "del", "cool"))
@@ -1666,7 +1683,10 @@ def _main(argv=None) -> int:
                             [e for e in args.entities.split(",") if e],
                             args.source, args.layer,
                             emotion=(args.emotion or None),
-                            ttl_days=_ttl_days, review_at=_review_ts)
+                            ttl_days=_ttl_days, review_at=_review_ts,
+                            correction=args.correction)
+        if getattr(args, "correction", False) and how != "merged":
+            print("  #41 改口记录：已打 correction 标，永不自动合并/淡忘/归档（教训提炼优先读它）")
         print(f"{'已合并' if how == 'merged' else '已写入'}：{rec['id']} ({rec['layer']}, 重要性 {rec['importance']})")
         if rec.get("review_by"):
             print(f"  保质期：{fmt_date(rec['review_by'])} 到期，过期后注入标「待复核」"
@@ -1761,6 +1781,17 @@ def _main(argv=None) -> int:
                       "brain.py knowledge list 查看；pending 条目需确认后再引用。")
         except Exception:
             pass  # 知识提示是加分项，失败不影响回忆
+        # #36 教训命中提示：与知识命中同理——教训库里已有相关教训时先亮出来
+        # （「已有教训：xxx」），别让同一个坑再踩一次。
+        try:
+            l_hits = injectable_lessons(query, k=5)
+            l_hit = [l for l in l_hits if l.get("_hit")]
+            if l_hit:
+                print("  ⚠️ 已有教训："
+                      + "；".join(str(l.get("text", ""))[:60] for l in l_hit[:2])
+                      + "（lessons 查看 / lessons validate 校准）")
+        except Exception:
+            pass  # 教训提示是加分项，失败不影响回忆
         if args.json:
             print(json.dumps([{"memory": m, "score": s, "parts": p} for m, s, p in results], ensure_ascii=False, indent=2))
         else:
@@ -1887,6 +1918,37 @@ def _main(argv=None) -> int:
             p = compile_persona()
             print("人格档案已整理（保留原有设定）。")
             print(persona_brief(p))
+            return 0
+        if args.action == "self-model":
+            import persona as _persona
+            if args.add:
+                # --add 是选项，内容落在第一个位置参数 pair 上（tail 是给 suggest 的）
+                text = ((args.tail or args.pair) or "").strip()
+                if not text:
+                    print("用法：persona self-model --add limitation \"内容\"", file=sys.stderr)
+                    return 1
+                if args.pair and args.tail:
+                    print("内容只要一段：persona self-model --add limitation \"内容\"", file=sys.stderr)
+                    return 1
+                r = _persona.self_model_add(args.add, text)
+                if r.get("ok"):
+                    print(f"已记入「{r['bucket']}」（现存 {r['count']} 条）：{r['text']}")
+                else:
+                    print(f"没记成：{r.get('error')}", file=sys.stderr)
+                    return 1
+                return 0
+            sm = _persona.self_model_get()
+            for label, key in (("擅长", "strengths"), ("短板", "limitations"), ("还没弄清", "uncertainties")):
+                items = sm.get(key) or []
+                print(f"{label}：" + ("；".join(items) if items else "（还没有）"))
+            ab = sm.get("autobiography") or []
+            print("自传片段（最近 5 条）：")
+            if ab:
+                for e in ab[:5]:
+                    ts = int(e.get("ts") or 0)
+                    print(f"  - [{fmt_time(ts) if ts else '未知时间'}] {e.get('text', '')}")
+            else:
+                print("  （还没有。做梦遇到成形时刻后会自动沉淀）")
             return 0
         if args.action == "path":
             print(HOME / "persona.json")
@@ -3029,6 +3091,19 @@ def _main(argv=None) -> int:
                     return 1
                 print(f"知识「{r.get('title', target)}」已{'确认' if args.action == 'confirm' else '废弃'}。")
                 return 0
+            # #36：les_ 开头的是教训——confirm 转正开始注入，discard 弃用
+            if target.startswith("les_"):
+                try:
+                    r = set_lesson_status(target, "active" if args.action == "confirm" else "discarded")
+                except ValueError as exc:
+                    print(f"[未命中] {exc}", file=sys.stderr)
+                    return 1
+                except PermissionError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 1
+                print(f"教训已{'确认（转 active，开始注入）' if args.action == 'confirm' else '废弃'}："
+                      f"{r.get('text', '')[:60]}")
+                return 0
             try:
                 r = set_memory_review(target, args.action)
             except ValueError as exc:
@@ -3047,10 +3122,16 @@ def _main(argv=None) -> int:
         if args.json:
             print(json.dumps(rep, ensure_ascii=False, indent=2))
             return 0
-        total = len(rep["memories"]) + len(rep["knowledge"])
+        total = len(rep["memories"]) + len(rep["knowledge"]) + len(rep.get("lessons", []))
         if not total and not rep["persona"]:
             print("没有待审核项，干净。")
             return 0
+        if rep.get("lessons"):
+            print(f"\n待审核教训 {len(rep['lessons'])} 条（做梦从改口/冲突/被取代记忆里提炼的）：")
+            for l in rep["lessons"]:
+                print(f"  · {l['id']}  {l['text'][:70]}（置信度 {l.get('confidence', 0.5):.2f}，"
+                      f"证据 {len(l.get('evidence', []))} 条）")
+                print(f"    review confirm {l['id']}   /   review discard {l['id']}")
         if rep["memories"]:
             print(f"待审核记忆 {len(rep['memories'])} 条（AI 做梦等整理出来的，确认前不当事实）：")
             for m in rep["memories"]:
@@ -3074,9 +3155,72 @@ def _main(argv=None) -> int:
             return 0
         c = a["counts"]
         print(f"自查：待审记忆 {c['memories']} · 待审知识 {c['knowledge']} · "
+              f"待审教训 {c.get('lessons', 0)} · "
               f"AI 改人格 {c['persona']} · 疑似冲突 {c['conflicts']}")
         for t in a["tips"]:
             print(f"  - {t}")
+        return 0
+
+    if args.cmd == "lessons":
+        # #36 教训库 CLI。教训是失败闭环的产物：remember --correction 改口 →
+        # 做梦提炼 pending → review confirm 转正注入 → lessons validate 校准。
+        action = args.action
+        if action == "add":
+            text = " ".join(args.text).strip()
+            if not text:
+                print('用法：lessons add "教训内容" [--confidence 0.5] [--evidence m_xxx,m_yyy]', file=sys.stderr)
+                return 2
+            try:
+                lesson = add_lesson(
+                    text,
+                    evidence=[e.strip() for e in args.evidence.split(",") if e.strip()],
+                    confidence=args.confidence,
+                    status="active",  # 人工手写的教训默认直接生效；做梦提炼的才走 pending 闸
+                )
+            except (ValueError, PermissionError) as exc:
+                print(f"[失败] {exc}", file=sys.stderr)
+                return 1
+            print(f"已添加教训 {lesson['id']}（active，注入时按置信度参与）")
+            print(f"  {lesson['text']}")
+            return 0
+        if action == "validate":
+            lid = (args.text[0].strip() if args.text else "")
+            if not lid:
+                print("用法：lessons validate <les_id>（--bad 表示这次没用/踩坑了）", file=sys.stderr)
+                return 2
+            try:
+                r = validate_lesson(lid, ok=not args.bad)
+            except ValueError as exc:
+                print(f"[未命中] {exc}", file=sys.stderr)
+                return 1
+            except PermissionError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            if r.get("retired"):
+                print(f"教训 {lid} 置信度已低于 0.2，自动退役（不再注入，仅留档）。")
+            else:
+                word = "确认有效" if not args.bad else "踩坑反馈"
+                print(f"教训 {lid} {word}：置信度 {r['confidence']:.2f}，"
+                      f"累计验证 {r['times_validated']} 次")
+            return 0
+        # list（默认；退役的教训只在 --json 里能看到）
+        ls = list_lessons(include_retired=False)
+        if args.json:
+            print(json.dumps(ls, ensure_ascii=False, indent=2))
+            return 0
+        if not ls:
+            print("教训库还是空的。做梦会从改口（--correction）/冲突/被取代记忆里提炼，"
+                  '也可以手动：lessons add "别再犯……"')
+            return 0
+        print(f"教训 {len(ls)} 条（按置信度排序）：")
+        for l in ls:
+            flag = "（已退役）" if l.get("retired") else \
+                   ("（待审，review confirm 后生效）" if l.get("status") == "pending" else "")
+            print(f"  · {l['id']}  置信 {l.get('confidence', 0.5):.2f}  "
+                  f"验证 {int(l.get('times_validated', 0))} 次{flag}")
+            print(f"    {l.get('text', '')[:100]}")
+            if l.get("evidence"):
+                print(f"    证据：{'、'.join(l['evidence'][:4])}")
         return 0
 
     if args.cmd == "detect-conflicts":

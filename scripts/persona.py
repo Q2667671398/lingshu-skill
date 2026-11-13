@@ -77,6 +77,9 @@ def default_persona() -> dict:
         "notes": [],
         "state": {"mood": "", "mood_note": "", "energy": None, "closeness": None, "updated": now_ts()},
         "evolved": {"habits": [], "learned_likes": [], "learned_dislikes": [], "insights": []},
+        # 自认识（self-model）：擅长/短板/还没弄清 + 自传片段——由 AI 自己维护，
+        # 不等于 traits 数值，是它对自己能力边界的文字化认知。
+        "self_model": {"strengths": [], "limitations": [], "uncertainties": [], "autobiography": []},
         "history": [],
     }
 
@@ -89,6 +92,62 @@ def _split_kv(line: str):
     else:
         return None
     return k.strip().lstrip("-* ").strip(), v.strip()
+
+
+# —— 自认识（self-model）——
+_SELF_MODEL_MAX = 20  # 每个桶最多存 20 条：自认识是提炼出来的，不是流水账
+_SELF_MODEL_BUCKETS = ("strengths", "limitations", "uncertainties")
+
+
+def _ensure_self_model(p: dict) -> bool:
+    """保证 persona.self_model 四键结构完好：字符串桶为 [str]，autobiography 为 [{ts,text}]。
+    返回 True = 做了修复（调用方据此决定是否落盘）。防御式：坏类型条目直接丢弃。"""
+    sm = p.get("self_model")
+    if not isinstance(sm, dict):
+        p["self_model"] = {"strengths": [], "limitations": [],
+                           "uncertainties": [], "autobiography": []}
+        return True
+    fixed = False
+    for b in _SELF_MODEL_BUCKETS:
+        cur = sm.get(b)
+        if cur is None:
+            sm[b] = []
+            fixed = True
+        elif isinstance(cur, str):
+            sm[b] = [cur] if cur.strip() else []
+            fixed = True
+        elif not isinstance(cur, list):
+            sm[b] = []
+            fixed = True
+        else:
+            clean = [str(x).strip() for x in cur
+                     if isinstance(x, str) and str(x).strip()]
+            if clean != cur:
+                fixed = True
+            if len(clean) > _SELF_MODEL_MAX:
+                clean = clean[-_SELF_MODEL_MAX:]
+                fixed = True
+            sm[b] = clean
+    ab = sm.get("autobiography")
+    if ab is None or not isinstance(ab, list):
+        sm["autobiography"] = []
+        fixed = True
+    else:
+        clean = []
+        for x in ab:
+            if isinstance(x, dict) and str(x.get("text") or "").strip():
+                clean.append({"ts": _num(x.get("ts"), 0), "text": str(x["text"]).strip()})
+            elif isinstance(x, str) and x.strip():
+                clean.append({"ts": 0, "text": x.strip()})
+            else:
+                fixed = True
+        if len(clean) > _SELF_MODEL_MAX:
+            clean = sorted(clean, key=lambda e: e["ts"], reverse=True)[:_SELF_MODEL_MAX]
+            fixed = True
+        if clean != ab:
+            fixed = True
+        sm["autobiography"] = clean
+    return fixed
 
 
 def compile_persona() -> dict:
@@ -144,6 +203,12 @@ def load_persona() -> dict:
         changed = True
     if "drives" not in p or not isinstance(p.get("drives"), dict):
         p["drives"] = {}
+        changed = True
+    # 自认识（self_model）迁移：旧档案没有这个块，或块被写坏（不是 dict）时修复。
+    if not isinstance(p.get("self_model"), dict):
+        p["self_model"] = {"strengths": [], "limitations": [], "uncertainties": [], "autobiography": []}
+        changed = True
+    elif _ensure_self_model(p):
         changed = True
     # v2.62 迁移：旧结构 traits（裸数字）→ 溯源结构；history 缺 source 的补记。
     # 纯读路径（check/注入）不该每次都报警，升级一次即静默；只读模式不动盘。
@@ -365,21 +430,58 @@ def persona_brief(p: dict, mood: bool = True) -> str:
     habits = p.get("evolved", {}).get("habits", [])
     if habits:
         lines.append("我养成的习惯：" + "；".join(h["name"] if isinstance(h, dict) else str(h) for h in habits[-4:]) + "。")
+    # 自认识概览：擅长/短板/还没弄清——只在自己真的积累了认知时才说，空块不出声
+    sm = p.get("self_model") if isinstance(p.get("self_model"), dict) else {}
+    if sm.get("strengths"):
+        lines.append("我擅长的：" + "、".join(sm["strengths"][:3]) + "。")
+    if sm.get("limitations"):
+        lines.append("我的短板：" + "、".join(sm["limitations"][:3]) + "。")
+    if sm.get("uncertainties"):
+        lines.append("我还没弄清的：" + "、".join(sm["uncertainties"][:2]) + "。")
     return "\n".join(lines)
 
 
 def update_persona(updates: dict, why: str = "做梦整理", source: str = "",
-                   evidence: list | None = None) -> list:
+                   evidence: list | None = None, bypass_gate: bool = False,
+                   formative_event: str = "") -> list:
     """应用人格变更，写入 evolution history。返回被拒绝的字段。
 
     source：谁发起的（dream/自我总结/面板/…）；evidence：依据的记忆/事件 id 列表。
     两人格漂移要能溯源：这条改动来自哪场梦、哪段对话。
+    bypass_gate：做梦遇到"成形时刻"（峰值情绪）时才可置 True——跳过漂移双门限
+    与 EMA，按 ±25 的封顶幅度直接改值，并在 history 里留 formative_event 叙事。
     """
     if not isinstance(updates, dict):
         return []
     # load→改→save 整体加锁：否则并发的两次改动后写者会把先写者的字段覆盖回旧值
     with _locked(HOME / "persona.json"):
-        return _update_persona_inner(updates, why, source, evidence)
+        return _update_persona_inner(updates, why, source, evidence,
+                                     bypass_gate=bypass_gate,
+                                     formative_event=formative_event)
+
+
+def _num(v, default: float = 0.0) -> float:
+    """把可能是 None/字符串/bool/NaN 的值安全转成 float（与 memory._num 同语义，
+    避免环形 import）。drift 账本、history 时间戳都可能被写坏。"""
+    if v is None or isinstance(v, bool):
+        return float(default)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    if math.isnan(f) or math.isinf(f):
+        return float(default)
+    return f
+
+
+def _dedupe(items: list) -> list:
+    """保序去重（与 memory._dedupe 同语义），供 persona_brief 喜好合并等使用。"""
+    out, seen = [], set()
+    for x in items or []:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 
 def _num_or_none(val):
@@ -397,7 +499,8 @@ def _num_or_none(val):
 
 
 def _update_persona_inner(updates: dict, why: str, source: str,
-                          evidence: list | None) -> list:
+                          evidence: list | None, bypass_gate: bool = False,
+                          formative_event: str = "") -> list:
     p = load_persona()
     # —— 永久记忆：改人格前先存快照——
     # 任何 update_persona 路径（dream / 面板 / CLI / 回滚）都会进这里，
@@ -441,23 +544,42 @@ def _update_persona_inner(updates: dict, why: str, source: str,
             if why == "做梦整理" and isinstance(fval, (int, float)):
                 # old 可能是合法的 0：不能用 `old or 50`（0 会被当成 50）
                 base = 50 if old is None else int(old_val)
-                # —— 人格漂移双门限 + EMA ——
-                # 人格是长年累月养成的，不该被一两场对话带偏：做梦给出的微调先记在
-                # drift 账本上，小幅波动（低于门限）只是心里动了一下，不落盘；同向
-                # 攒够门限才真正改人格，改的幅度也打六折——越大的转变越要慢慢来。
-                drift = st.setdefault("trait_drift", {})
-                acc = _num(drift.get(key), 0.0) + max(-10, min(10, int(val)))
-                if abs(acc) < TRAIT_DRIFT_GATE:
-                    drift[key] = round(acc, 2)
-                    log(f"traits.{key}(漂移累积)", old_val, f"账面 {acc:+.1f}，未过门限未改动")
-                    continue
-                eff = acc * TRAIT_DRIFT_EMA
-                new = base + int(round(eff))
-                drift[key] = round(acc - eff, 2)   # 平滑掉的余额留在账上，下次接着攒
-                new = max(0, min(100, new))
-                if new == old_val:
-                    log(f"traits.{key}", old_val, f"倾向 {acc:+.1f} 但撞在边界上，未变")
-                    continue
+                if bypass_gate:
+                    # —— 成形时刻（峰值情绪）旁路 ——
+                    # 平时的漂移门限防的是"一两句话带偏人格"；但一次真正的峰值
+                    # 情绪本来就足以重塑人。幅度仍封顶 ±25，改动直接落盘不走账本。
+                    eff = max(-25.0, min(25.0, float(val)))
+                    new = max(0, min(100, base + int(round(eff))))
+                    if new != old_val:
+                        # 溯源叙事：这次改变不是因为攒了账，是因为那次真实发生过的事
+                        p.setdefault("history", []).append({
+                            "ts": now, "field": "narrative",
+                            "text": f"因为那次{formative_event or '一场强烈的情绪'}，"
+                                    f"我的「{key}」更{'强' if eff > 0 else '弱'}了",
+                            "why": why, "source": source or "dream_formative",
+                            "evidence": list(evidence)[:10] if evidence else []})
+                    else:
+                        log(f"traits.{key}(成形旁路)", old_val,
+                            f"倾向 {eff:+.1f} 但撞在边界上，未变")
+                        continue
+                else:
+                    # —— 人格漂移双门限 + EMA ——
+                    # 人格是长年累月养成的，不该被一两场对话带偏：做梦给出的微调先记在
+                    # drift 账本上，小幅波动（低于门限）只是心里动了一下，不落盘；同向
+                    # 攒够门限才真正改人格，改的幅度也打六折——越大的转变越要慢慢来。
+                    drift = st.setdefault("trait_drift", {})
+                    acc = _num(drift.get(key), 0.0) + max(-10, min(10, int(val)))
+                    if abs(acc) < TRAIT_DRIFT_GATE:
+                        drift[key] = round(acc, 2)
+                        log(f"traits.{key}(漂移累积)", old_val, f"账面 {acc:+.1f}，未过门限未改动")
+                        continue
+                    eff = acc * TRAIT_DRIFT_EMA
+                    new = base + int(round(eff))
+                    drift[key] = round(acc - eff, 2)   # 平滑掉的余额留在账上，下次接着攒
+                    new = max(0, min(100, new))
+                    if new == old_val:
+                        log(f"traits.{key}", old_val, f"倾向 {acc:+.1f} 但撞在边界上，未变")
+                        continue
             else:
                 new = int(val)                     # 面板 / CLI：绝对值 0-100
                 new = max(0, min(100, new))
@@ -1615,3 +1737,148 @@ def persona_audit(days: int = 30) -> dict:
         by_source[src] = by_source.get(src, 0) + 1
     return {"days": days, "total": len(timeline),
             "by_source": by_source, "timeline": timeline[:100]}
+
+
+# ———————— 自认识（self-model）————————
+# 与 traits 的区别：traits 是"性格倾向数值"，self_model 是 AI 用文字对自己能力
+# 边界的认知——擅长什么、短板在哪、哪些还没弄清。数值漂移由做梦攒账驱动，
+# 文字自认识由三条路汇入：AI 手动登记（self_model_add）、做梦后自动沉淀
+# （self_model_autosink：纠错教训 + 成形时刻叙事 + traits 跳变）。
+
+_SELF_MODEL_BUCKET_MAP = {"strength": "strengths", "limitation": "limitations",
+                          "uncertainty": "uncertainties"}
+
+
+def self_model_get() -> dict:
+    """读自认识四桶（防御式：坏结构现场修复但不落盘）。"""
+    p = load_persona()
+    _ensure_self_model(p)
+    return p.get("self_model") or {"strengths": [], "limitations": [],
+                                   "uncertainties": [], "autobiography": []}
+
+
+def self_model_add(kind: str, text: str) -> dict:
+    """AI 手动登记一条自认识（strength/limitation/uncertainty）。
+    去重、封顶 20 条、写 history 溯源——自我认知的每一步要有账可查。"""
+    bucket = _SELF_MODEL_BUCKET_MAP.get(str(kind or "").strip().lower())
+    text = str(text or "").strip()
+    if not bucket:
+        return {"ok": False, "error": "kind 必须是 strength / limitation / uncertainty"}
+    if not text:
+        return {"ok": False, "error": "内容不能为空"}
+    if len(text) > 80:
+        text = text[:80]  # 自认识是提炼，不是日记
+    with _locked(HOME / "persona.json"):
+        p = load_persona()
+        _ensure_self_model(p)
+        sm = p["self_model"]
+        b = sm[bucket]
+        if text in b:
+            return {"ok": False, "error": "已有同一条，不重复记"}
+        b.append(text)
+        if len(b) > _SELF_MODEL_MAX:
+            b.pop(0)
+        p.setdefault("history", []).append({
+            "ts": now_ts(), "field": f"self_model.{bucket}",
+            "text": text, "why": "自我登记", "source": "ai"})
+        save_persona(p)
+    audit_log("ai", "self_model_add", f"self_model.{bucket}", text)
+    return {"ok": True, "bucket": bucket, "text": text, "count": len(b)}
+
+
+def self_model_autosink() -> dict:
+    """做梦后自动沉淀自认识：三条来源汇入，全部去重、封顶。
+
+    1. limitations ← 近期被纠正（correction=True）且 confidence<0.5 的记忆——
+       "我上次说错了/没把握" 是最诚实的短板线索；
+    2. autobiography ← 成形时刻的峰值情绪事件 + history 里的 narrative 叙事
+       + traits 跳变≥10 的条目——这些是"改变了我"的事，值得写进自传；
+    3. strengths/uncertainties 不自动写——擅长和困惑应该由 AI 自己说，
+       机器替它下结论反而失真。
+    只读模式直接跳过；任何一路失败不影响其余（防御式）。"""
+    if READONLY:
+        log_event("persona", "只读模式，跳过 self_model_autosink", level="warn")
+        return {"skipped": True, "reason": "readonly"}
+    added = {"limitations": [], "autobiography": []}
+    with _locked(HOME / "persona.json"):
+        p = load_persona()
+        _ensure_self_model(p)
+        sm = p["self_model"]
+        now = now_ts()
+
+        # —— 路 1：纠错教训 → limitations ——
+        try:
+            import memory as _mem
+            wrong = []
+            for r in _mem.load_all():
+                if not isinstance(r, dict) or not r.get("correction"):
+                    continue
+                if _num(r.get("confidence"), 1.0) >= 0.5:
+                    continue
+                t = str(r.get("text") or r.get("summary") or "").strip()
+                if t:
+                    wrong.append((_num(r.get("ts"), 0), t))
+            wrong.sort(key=lambda x: x[0], reverse=True)
+            seen = set()
+            for _, t in wrong[:10]:
+                if t in seen or t in sm["limitations"]:
+                    continue
+                seen.add(t)
+                sm["limitations"].append(t)
+                added["limitations"].append(t)
+            del sm["limitations"][:-_SELF_MODEL_MAX]
+        except Exception as e:
+            log_event("persona", f"self_model_autosink 纠错教训路失败：{e}", level="warn")
+
+        # —— 路 2：成形时刻/叙事/traits 跳变 → autobiography ——
+        autobio: list = []
+        try:
+            import emotion as _emo
+            for ev in _emo.formative_events(14)[:5]:
+                emo = ev.get("emotion") or "强烈的情绪"
+                why = (ev.get("why") or ev.get("about") or "").strip()
+                autobio.append({"ts": _num(ev.get("ts"), 0),
+                                "text": f"那次{emo}" + (f"（{why}）" if why else "") + "深深影响了我"})
+        except Exception as e:
+            log_event("persona", f"self_model_autosink 峰值情绪路失败：{e}", level="warn")
+        try:
+            for h in p.get("history", []):
+                if h.get("field") == "narrative":
+                    autobio.append({"ts": _num(h.get("ts"), 0),
+                                    "text": str(h.get("text") or "").strip()})
+        except Exception as e:
+            log_event("persona", f"self_model_autosink 叙事路失败：{e}", level="warn")
+        try:
+            for h in p.get("history", []):
+                f0, t0 = h.get("from"), h.get("to")
+                if h.get("field") != "traits" or not isinstance(t0, dict):
+                    continue
+                try:
+                    if abs(trait_value(t0) - trait_value(f0)) >= 10:
+                        autobio.append({"ts": _num(h.get("ts"), 0),
+                                        "text": str(h.get("why") or "性格明显变了").strip()})
+                except (TypeError, ValueError):
+                    continue  # 溯源结构被手改坏的单条跳过，不拖垮整批
+        except Exception as e:
+            log_event("persona", f"self_model_autosink traits 跳变路失败：{e}", level="warn")
+        # 去重 + 时间倒序 + 封顶
+        seen_t = set()
+        uniq = []
+        for e in autobio:
+            if e["text"] and e["text"] not in seen_t:
+                seen_t.add(e["text"])
+                uniq.append(e)
+        uniq.sort(key=lambda e: e["ts"], reverse=True)
+        existing = {e.get("text") for e in sm["autobiography"]}
+        for e in uniq:
+            if e["text"] in existing:
+                continue
+            sm["autobiography"].append(e)
+            added["autobiography"].append(e["text"])
+        sm["autobiography"].sort(key=lambda e: _num(e.get("ts"), 0), reverse=True)
+        del sm["autobiography"][_SELF_MODEL_MAX:]
+
+        save_persona(p)
+    audit_log("ai", "self_model_autosink", "self_model",
+              f"limitations+{len(added['limitations'])} autobiography+{len(added['autobiography'])}")
+    return {"ok": True, "added": added}

@@ -115,6 +115,11 @@ DESIRE_EMO_MAP = {
 }
 EMOTION_HALF_LIFE = 6 * HOUR  # 情绪余波：6 小时衰减一半
 
+# #38 峰值情绪（formative）：强度 ≥ 此值的"成形时刻"会被打上 formative 标记，
+# 做梦整理人格 traits 时这些事件权重 ×2.5 且不受漂移门限压制——
+# 一次大喜/大怒对人格的塑造不该和普通情绪一个概率。
+FORMATIVE_INTENSITY = 0.85
+
 # 理智被情绪压制的上限（杏仁核劫持：会压低，但永远压不掉判断力的一半以上）
 EMOTION_SUPPRESS_MAX = 0.40
 # arousal 达到此值视为"情绪上头"（激动情绪超过一定程度会影响理智）
@@ -122,6 +127,30 @@ STORM_AROUSAL = 0.65
 # 理智没有成形时的中性值（与好奇心一致）
 RATIONAL_DEFAULT = 50
 ASSOC_FILE = HOME / "assoc.jsonl"   # 记忆关联边（无向，附关系与权重）
+
+
+def _num(v, default: float = 0.0) -> float:
+    """把可能是 None/字符串/bool/NaN 的值安全转成 float（与 memory._num 同语义）。
+    情绪流里老事件、手改数据都可能让 ts/intensity 变成 null 或字符串，硬 float() 会整条崩。"""
+    if v is None or isinstance(v, bool):
+        return float(default)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    if math.isnan(f) or math.isinf(f):
+        return float(default)
+    return f
+
+
+def _dedupe(items: list) -> list:
+    """保序去重（与 memory._dedupe 同语义），供情绪抑制清单等使用。"""
+    out, seen = [], set()
+    for x in items or []:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 
 def _emotion_coord(name: str) -> tuple:
@@ -215,6 +244,17 @@ def emotion_events(limit: int = 0) -> list:
     rows = read_jsonl(HOME / "emotions.jsonl")
     rows.sort(key=lambda r: _num(r.get("ts"), 0), reverse=True)
     return rows[:limit] if limit else rows
+
+
+def formative_events(days: float = 14) -> list:
+    """#38 取最近 N 天的峰值情绪事件（formative=True）。
+
+    供做梦 traits 漂移使用：这些事件权重 ×2.5 且不受漂移门限压制。
+    防御式读取——老事件没有 formative 字段，直接过滤掉。
+    """
+    cutoff = now_ts() - max(0.0, float(days)) * 86400
+    return [e for e in emotion_events()
+            if e.get("formative") and _num(e.get("ts"), 0) >= cutoff]
 
 
 def _locate_event(rows: list, ref) -> dict | None:
@@ -380,6 +420,11 @@ def feel(name: str, intensity: float = 0.6, why: str = "",
     if suppressed:
         ev["intensity"] = round(ev["intensity"] * 0.4, 3)
         ev["suppressed_by"] = cfg.get("notes") or "情感设置里被我自己抑制"
+    # #38 峰值情绪（formative）：抑制打折之后强度仍达到门槛，才算"成形时刻"。
+    # 标记就写在事件本行（emotions.jsonl），不另开 formative 列表——侵入最小，
+    # 且事件被 adjust/del 时标记天然跟随，不会出现标记与事件脱节。
+    if float(ev.get("intensity") or 0) >= FORMATIVE_INTENSITY:
+        ev["formative"] = True
     # 写入与序号定位共用一把锁：emotion adjust/del 的"第 n 条"以锁内看到的
     # 最新状态为准，并发 feel 追加不会让序号错位改/删错条（append 收进锁内）。
     with _locked(HOME / "emotions.jsonl"):

@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core import *
+import core  # noqa: E402  # 教训库 lessons_file() 动态取 core.HOME，--home 切换后指向新目录
 
 def detect_conflicts(limit: int = 50) -> list:
     """启发式扫描"可能矛盾的记忆"（如「我用 Windows」vs「我改用 Linux」）。
@@ -217,6 +218,10 @@ def review_report() -> dict:
         log_event("review", f"待审核知识加载失败（growth 模块）：{e}", level="warn")
         kn = []
     return {"memories": mems, "knowledge": kn,
+            "lessons": [{"id": l.get("id"), "text": l.get("text", ""),
+                         "confidence": l.get("confidence", 0.5),
+                         "evidence": l.get("evidence", [])}
+                        for l in lessons_for_review()],
             "persona": [{"ts": h.get("ts"), "field": h.get("field"),
                          "from": h.get("from"), "to": h.get("to"), "why": h.get("why")}
                         for h in ai_persona_changes(7)]}
@@ -225,6 +230,7 @@ def review_report() -> dict:
 def review_counts() -> dict:
     rep = review_report()
     return {"memories": len(rep["memories"]), "knowledge": len(rep["knowledge"]),
+            "lessons": len(rep.get("lessons", [])),
             "persona": len(rep["persona"])}
 
 
@@ -320,6 +326,9 @@ def audit() -> dict:
                     "`review` 看全文 → `review confirm <id>` 或 `review discard <id>`。")
     if rep["knowledge"]:
         tips.append(f"有 {len(rep['knowledge'])} 条知识待审核：`knowledge review` → confirm/discard。")
+    if rep.get("lessons"):
+        tips.append(f"有 {len(rep['lessons'])} 条做梦提炼的教训待审核（#36）："
+                    "`review` 看清单 → `review confirm <les_id>` 转正开始注入。")
     if rep["persona"]:
         tips.append(f"最近 7 天 AI 改了 {len(rep['persona'])} 次人格："
                     "`persona history` 看来源，跑偏就 `persona rollback <序号>`。")
@@ -333,6 +342,7 @@ def audit() -> dict:
         tips.append("干净：没有待审核项、没有明显冲突。")
     return {"counts": {"memories": len(rep["memories"]),
                        "knowledge": len(rep["knowledge"]),
+                       "lessons": len(rep.get("lessons", [])),
                        "persona": len(rep["persona"]),
                        "conflicts": len(conf),
                        "archive": n_arch},
@@ -1088,7 +1098,8 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
              channel: str | None = None, group_id: str | None = None,
              user: str | None = None,
              project: str | None = None, session: str | None = None,
-             ttl_days: float | None = None, review_at: int | None = None) -> tuple:
+             ttl_days: float | None = None, review_at: int | None = None,
+             correction: bool = False) -> tuple:
     ensure_home()
     text = (text or "").strip()
     if not text:
@@ -1193,6 +1204,11 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
         rec = make_record(text, kind, importance, tags, entities, source, layer,
                           channel=channel, group_id=group_id, user=user,
                           project=project, session=session)
+        # —— #41 correction 语义：用户说「不对/不是」语境下显式标记的改口记录 ——
+        # correction 条目是失败闭环的第一手证据：做梦教训提炼（#36）优先读它，
+        # 且合并/淡忘/归档路径都会跳过（永不自动合并消失），只有人工才能处理。
+        if correction:
+            rec["correction"] = True
         rec["importance"] = round(float(rec.get("importance", 0.5)) + (boost if emo_name else 0), 3)
         rec["importance"] = max(0.0, min(1.0, rec["importance"]))
         # 高重要性待审闸：重要性 ≥0.8（10 分制 ≥8）的记忆多半是约定/承诺/重要决定，
@@ -2569,7 +2585,7 @@ def _split_segments(text: str) -> list:
 
 def capture(payload: str, tag: str = "", kind: str = "episode",
             importance: float | None = None, raw_only: bool = False,
-            source: str = "ai") -> dict:
+            source: str = "ai", correction: bool = False) -> dict:
     """把当前上下文原样封存进记忆库，保证 70%→100% 之间的话不会随滚动丢掉。
 
     与 remember 的区别：remember 是提炼后的结论；capture 是"原文搬运"，
@@ -2618,6 +2634,9 @@ def capture(payload: str, tag: str = "", kind: str = "episode",
                               source=source, layer="hippo")
             rec["verbatim"] = True
             rec["detail"] = 1.0
+            # #41 correction 语义：封存的改口原文同样打标，合并/提炼路径会特殊对待
+            if correction:
+                rec["correction"] = True
             records.append(rec)
             existing.append(t)
             saved.append(rec)
@@ -2630,6 +2649,175 @@ def capture(payload: str, tag: str = "", kind: str = "episode",
                     pass
             save_all(records)
     return {"saved": saved, "skipped": skipped, "archive": archive, "chars": len(payload)}
+
+
+# ---------------------------------------------------------------- 教训库（#36 lessons.jsonl）
+# 失败闭环的落点：做梦从「被取代的旧记忆 + conflict 记录 + correction 改口」里提炼出
+# 可复用的教训，先入 pending 待审（与 knowledge/persona 的一致审核闸同约定），
+# review confirm 后转 active 开始注入。教训靠 validate 反复校准：
+# 用对了 times_validated+1、confidence 上调；用错了降权；confidence <0.2 标记
+# retired 退出注入——错的教训比没有教训更危险。
+LESSONS_FILE_NAME = "lessons.jsonl"
+
+
+def lessons_file() -> Path:
+    """教训库文件路径。动态取 core.HOME：--home/--init 切换后指向新目录。"""
+    return core.HOME / LESSONS_FILE_NAME
+
+
+def _lesson_id(ts: int) -> str:
+    h = hashlib.sha1(f"lesson{ts}{os.urandom(4).hex()}".encode("utf-8")).hexdigest()[:8]
+    return f"les_{ts}_{h}"
+
+
+def load_lessons() -> list:
+    """读教训库。坏行跳过 + warn 日志（与 read_jsonl 同风格），畸形条目过滤。"""
+    raw = read_jsonl(lessons_file())
+    good, bad = [], 0
+    for r in raw:
+        if isinstance(r, dict) and r.get("id") and r.get("text"):
+            good.append(r)
+        else:
+            bad += 1
+    if bad:
+        log_event("lessons", f"教训库跳过 {bad} 条畸形记录（缺 id/text 或类型错）", level="warning")
+    return good
+
+
+def save_lessons(rows: list) -> None:
+    write_jsonl(lessons_file(), rows)
+
+
+def list_lessons(include_retired: bool = False) -> list:
+    ls = load_lessons()
+    if not include_retired:
+        ls = [l for l in ls if not l.get("retired")]
+    # 按 confidence 从高到低，同分新的在前
+    return sorted(ls, key=lambda l: (-_num(l.get("confidence"), 0.5), -_num(l.get("created"), 0)))
+
+
+def add_lesson(text: str, evidence=None, confidence: float = 0.5,
+               status: str = "active") -> dict:
+    """新增一条教训。做梦提炼的默认 status="pending"（待审核闸），人工 add 的直接 active。"""
+    ensure_home()
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("教训内容为空")
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法写教训。用 --home 指向可写目录。")
+    conf = _num(confidence, 0.5)
+    conf = max(0.0, min(1.0, conf))
+    ts = now_ts()
+    lesson = {
+        "id": _lesson_id(ts),
+        "text": text,
+        "kind": "lesson",
+        "status": status if status in ("pending", "active") else "pending",
+        "confidence": round(conf, 3),
+        "times_validated": 0,
+        "evidence": [str(e) for e in (evidence or []) if e],
+        "created": ts,
+        "updated": ts,
+    }
+    # 写入加锁：教训库与记忆库一样是 read-modify-write，不加锁并发写会互相覆盖
+    with _locked(lessons_file()):
+        save_lessons(load_lessons() + [lesson])
+    audit_log("system" if status == "pending" else "user", "lesson_add", lesson["id"],
+              f"confidence={lesson['confidence']}, status={lesson['status']}")
+    log_event("lessons", f"新增教训 {lesson['id']}（{lesson['status']}）")
+    return lesson
+
+
+def validate_lesson(lesson_id: str, ok: bool) -> dict:
+    """校验教训：ok=True 认为有用（times_validated+1、confidence 上调）；
+    ok=False 踩了坑（降权）；confidence <0.2 标记 retired，不再注入。"""
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法校验教训。用 --home 指向可写目录。")
+    lesson_id = str(lesson_id or "").strip()
+    with _locked(lessons_file()):
+        rows = load_lessons()
+        target = next((l for l in rows if l.get("id") == lesson_id), None)
+        if not target:
+            raise ValueError(f"没有这条教训：{lesson_id}")
+        conf = _num(target.get("confidence"), 0.5)
+        if ok:
+            target["times_validated"] = int(_num(target.get("times_validated"), 0)) + 1
+            # 上调有上限（0.95）：再对也不能当铁律，教训永远依赖语境
+            conf = min(0.95, conf + 0.10)
+        else:
+            conf = conf - 0.15
+        target["confidence"] = round(max(0.0, conf), 3)
+        target["updated"] = now_ts()
+        # 低于 0.2 退役：留着仅作档案，注入与校验提示都不再带它
+        if target["confidence"] < 0.2 and not target.get("retired"):
+            target["retired"] = True
+            target["retired_at"] = now_ts()
+            audit_log("system", "lesson_retire", lesson_id,
+                      f"confidence={target['confidence']} < 0.2，自动退役")
+        save_lessons(rows)
+    audit_log("user", "lesson_validate", lesson_id,
+              f"ok={ok}, confidence={target['confidence']}, "
+              f"times_validated={target['times_validated']}")
+    return dict(target)
+
+
+def set_lesson_status(lesson_id: str, status: str) -> dict:
+    """审核闸：pending → active（review confirm 用）/ active → discarded（review discard 用）。"""
+    if status not in ("pending", "active", "discarded"):
+        raise ValueError(f"非法状态：{status}")
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法改教训状态。用 --home 指向可写目录。")
+    with _locked(lessons_file()):
+        rows = load_lessons()
+        target = next((l for l in rows if l.get("id") == lesson_id), None)
+        if not target:
+            raise ValueError(f"没有这条教训：{lesson_id}")
+        target["status"] = status
+        target["updated"] = now_ts()
+        save_lessons(rows)
+    audit_log("user", "lesson_review", lesson_id, f"status → {status}")
+    return dict(target)
+
+
+def lessons_for_review() -> list:
+    return [l for l in load_lessons() if l.get("status") == "pending"]
+
+
+def injectable_lessons(query: str = "", k: int = 5) -> list:
+    """注入用教训：active 且未 retired，按 confidence 取前 k 条。
+    有 query 时把词面命中的教训排到最前（提示「已有教训：xxx」）。"""
+    cand = [l for l in load_lessons()
+            if l.get("status") == "active" and not l.get("retired")]
+    if not cand:
+        return []
+    if query:
+        q_terms = terms(query)
+        hit, other = [], []
+        for l in cand:
+            l_terms = terms(l.get("text", ""))
+            if q_terms & l_terms or jaccard(q_terms, l_terms) >= 0.25:
+                l["_hit"] = True
+                hit.append(l)
+            else:
+                other.append(l)
+        # 命中按 confidence 排前，其余补足到 k
+        hit.sort(key=lambda l: -_num(l.get("confidence"), 0.5))
+        other.sort(key=lambda l: -_num(l.get("confidence"), 0.5))
+        return (hit + other)[:k]
+    return sorted(cand, key=lambda l: -_num(l.get("confidence"), 0.5))[:k]
+
+
+def _lessons_injection(query: str = "") -> str:
+    """注入包小节：active 教训按 confidence 注入，命中 query 的排最前并标「已有教训」。"""
+    ls = injectable_lessons(query, k=5)
+    if not ls:
+        return ""
+    lines = []
+    for l in ls:
+        mark = "已有教训" if query and l.get("_hit") else "教训"
+        conf = f"置信度 {_num(l.get('confidence'), 0.5):.2f}，已验证 {int(_num(l.get('times_validated'), 0))} 次"
+        lines.append(f"- [{mark}] {l['text']}（{conf}）")
+    return "\n## 教训（#36 失败闭环：先用上，别再踩同一个坑）\n" + "\n".join(lines)
 
 
 # ---------------------------------------------------------------- 记忆关联（联想能力）
@@ -3340,6 +3528,15 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             _three.append("被防线拦下待人工复核：" + "；".join(x[:60] for x in _blocked[:2]))
         if _three:
             used += _soft_block("\n## 上次睡醒后记得的结论", _three, 0.10)
+
+    # #36 教训注入：active 且未 retired 的教训最多 5 条按 confidence 注入；
+    # 有 query 时词面命中的排最前，提示「已有教训」——先看坑在哪，再走下一步。
+    try:
+        _lesson_seg = _lessons_injection(query)
+        if _lesson_seg:
+            out.append(_lesson_seg)
+    except Exception:
+        pass
 
     # 待整理的梦（超过 48h 未整理视为孤儿任务，下次做梦会自动归档）
     pending = HOME / "dreams" / "pending.json"
