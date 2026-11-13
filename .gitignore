@@ -45,3 +45,9 @@ pnpm-lock.yaml
 # 修复待办与验收/测试脚本——本地文档与工具，永远不推送
 docs/修复待办.md
 scripts/test_niah.py
+
+# 测试脚本本地化——永远不推送
+tests/
+
+# 测试脚本本地化——永远不推送
+tests/
