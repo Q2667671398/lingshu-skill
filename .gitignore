@@ -41,3 +41,7 @@ pnpm-lock.yaml
 # 如未来引入 dependencies，请改用一种包管理器并提交其锁文件 + packageManager 字段。
 
 .tmp_refs/
+
+# 修复待办与验收/测试脚本——本地文档与工具，永远不推送
+docs/修复待办.md
+scripts/test_niah.py

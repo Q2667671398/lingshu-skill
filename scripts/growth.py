@@ -712,6 +712,10 @@ def apply_tidy(result: dict) -> dict:
         save_knowledge(rows)
         # 统计真实从库里消失的条数（含合并被吃掉的那 X-1 条），别只报 delete 清单
         done["deleted"] = len(removed)
+        # v4 #32：知识整理（合并/更新/新建/删除）生效审计
+        if any(done.values()):
+            brain.audit_log("ai", "apply_tidy", "knowledge.jsonl",
+                            " ".join(f"{k}={v}" for k, v in done.items()))
 
     pending = KNOWLEDGE_DIR / "pending.json"
     if pending.exists():
@@ -3936,10 +3940,11 @@ def run(argv=None) -> int:
     try:
         return _run(argv)
     except (ValueError, FileExistsError, KeyError) as exc:
+        # 业务错误（参数非法/找不到对象）：退出码 1
         print(f"[错误] {exc}", file=sys.stderr)
-        return 2
+        return 1
     except OSError as exc:
-        # 文件被占用 / 读不到文件 / 目录不可写等，给可读信息而不是裸 traceback
+        # 文件被占用 / 读不到文件 / 目录不可写等：系统错误，退出码 2
         print(f"[错误] 文件操作失败：{exc}", file=sys.stderr)
         return 2
 
@@ -4158,7 +4163,7 @@ def _run(argv=None) -> int:
         if writing:
             print(f"[只读] 记忆库当前不可写，{args.cmd} {act} 需要写盘。"
                   "改用 --home 指向可写目录，或先解除写保护。", file=sys.stderr)
-            return 3
+            return 1
 
     # ---------------- knowledge
     if args.cmd == "knowledge":
@@ -4211,12 +4216,12 @@ def _run(argv=None) -> int:
                 path = Path(args.apply)
                 if not path.exists():
                     print(f"找不到整理结果：{path}", file=sys.stderr)
-                    return 2
+                    return 1
                 try:
                     result = brain.load_loose_json(path, "knowledge tidy --apply 的结果")
                 except ValueError as e:
                     print(str(e), file=sys.stderr)
-                    return 2
+                    return 1
                 res = apply_tidy(result)
                 print(f"知识整理完成：合并 {res['merged']} 组，更新 {res['updated']} 条，"
                       f"新建 {res['created']} 条，删除 {res['deleted']} 条")
@@ -4320,7 +4325,7 @@ def _run(argv=None) -> int:
             if args.act == "new":
                 if not body:
                     print("需要 --body 或 --file 提供正文。", file=sys.stderr)
-                    return 2
+                    return 1
                 res = create_skill(args.name, args.description, body, args.force)
                 print(f"技能已创建：{res['path']}（v{res['version']}）")
                 print("自检：python scripts/brain.py skill check " + res["name"])
@@ -4588,7 +4593,7 @@ def _run(argv=None) -> int:
         if args.act in ("new", "edit", "rm"):
             if _readonly():
                 print("[只读] 记忆库当前不可写，扩展模块需要写盘。", file=sys.stderr)
-                return 3
+                return 1
             if args.act == "new":
                 body = args.body
                 if getattr(args, "file", None):
@@ -4630,7 +4635,7 @@ def _run(argv=None) -> int:
             if not load_config().get("extensions_enabled", False):
                 print("扩展未启用（extensions_enabled=false，扩展是任意代码，默认不执行）。"
                       "确认信任后运行 `config set extensions_enabled true` 开启。", file=sys.stderr)
-                return 3
+                return 1
             mod = _load_ext(args.name)
             fn = getattr(mod, "run", None)
             if not callable(fn):

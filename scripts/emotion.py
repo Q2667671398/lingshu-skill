@@ -622,8 +622,8 @@ def mood_brief() -> str:
                 st["count"] = int(st.get("count") or 0) + 1
                 st["sig"] = sig
                 atomic_json(path, st)
-        except Exception:
-            pass   # 闸门状态读写失败绝不挡正常注入
+        except Exception as exc:
+            log_event("mood-gate", f"心境注入闸门状态读写失败（限流可能短暂失效）：{exc}", level="warn")
     if gated:
         return ""
     top = m["active"][0]
@@ -690,8 +690,8 @@ def _log_emotion_check(row: dict) -> None:
         rows = read_jsonl(p)[-199:]
         rows.append(row)
         write_jsonl(p, rows)
-    except Exception:
-        pass
+    except Exception as exc:
+        log_event("emotion-check", f"情绪记录落盘失败（不影响主流程）：{exc}", level="warn")
 
 
 def emotion_consistency_check(reply_text: str, record: bool = True) -> dict:
@@ -887,8 +887,8 @@ def _log_emotion_audit(row: dict) -> None:
         rows = read_jsonl(p)[-199:]
         rows.append(row)
         write_jsonl(p, rows)
-    except Exception:
-        pass
+    except Exception as exc:
+        log_event("emotion-audit", f"情绪审计落盘失败（不影响主流程）：{exc}", level="warn")
 
 
 def emotion_audit_recent(limit: int = 20) -> list:

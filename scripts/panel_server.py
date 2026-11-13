@@ -48,6 +48,7 @@ _WRITE_ENDPOINTS = {
     "/api/forget", "/api/daily", "/api/dream/instruction", "/api/logs",
     "/api/memory/dust",
     "/api/memory/boost",
+    "/api/memory/rebuild-embeds",
     # 自定义面板管理：activate/delete/install 等都写数据目录
     "/api/panels", "/api/panels/scaffold",
     # 拓展商店：导出内置宿主适配插件（写 extensions/installed/）
@@ -653,7 +654,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/search":
             q = (parse_qs(url.query).get("q") or [""])[0]
             k = _int_param(url, "k", 12, 1, 100)
-            results = brain.recall(q, k=k, strengthen=False)
+            mode = (parse_qs(url.query).get("mode") or ["auto"])[0]
+            if mode not in ("fast", "deep", "auto"):
+                mode = "auto"
+            results = brain.recall(q, k=k, strengthen=False, mode=mode)
             self._json([{"memory": memory_view(m), "score": s, "parts": p} for m, s, p in results])
             return
         if path == "/api/memories":
@@ -829,7 +833,7 @@ class Handler(BaseHTTPRequestHandler):
         # 写请求真正到来时复探一次，可写就摘掉只读状态，不用重启面板。
         if brain.READONLY and path in _WRITE_ENDPOINTS and not _readonly_allowed(path, data):
             try:
-                if brain._home_writable(max_attempts=1):
+                if brain._home_writable(max_attempts=3):
                     brain.READONLY = False
                     brain._sync_state()
             except Exception:
@@ -979,7 +983,8 @@ def _api_persona_state(self, path, data):
         st["updated"] = brain.now_ts()
         p.setdefault("history", []).append({
             "ts": brain.now_ts(), "field": "state", "from": None,
-            "to": {k: data[k] for k in data}, "why": "面板编辑",
+            "to": {k: data[k] for k in ("mood", "mood_note", "energy", "closeness") if k in data},
+            "why": "面板编辑",
         })
         brain.save_persona(p)
     self._json({"ok": True, "persona": p})
@@ -1708,6 +1713,20 @@ def _api_memory_boost(self, path, data):
     self._json({"ok": True, "result": r})
 
 
+def _api_memory_rebuild_embeds(self, path, data):
+    """一键重建全库 embedding 向量（force=true 全量重算，false 只补缺失/模型不符）。"""
+    force = bool(data.get("force"))
+    try:
+        r = brain.memory.rebuild_embeddings(force=force)
+    except PermissionError:
+        self._json({"error": "当前数据目录只读，无法重建 embedding"}, 403)
+        return
+    except RuntimeError as exc:
+        self._json({"error": str(exc)}, 502)
+        return
+    self._json({"ok": True, "result": r})
+
+
 def _api_mode(self, path, data):
     mode = str(data.get("mode", "") or "").lower()
     if mode not in ("work", "human", "auto"):
@@ -1895,24 +1914,59 @@ def _ollama_zip_path() -> Path:
     return brain.HOME / "downloads" / "ollama-windows-amd64.zip"
 
 
+_OLLAMA_STATE_LOCK = threading.Lock()   # state 文件多线程读写互斥（setup/download/probe/status 三处同时碰）
+_OLLAMA_DOWNLOAD_LOCK = threading.Lock()  # 下载 zip 互斥：sync + async 不能同时写同一个文件
+
+
+def _ollama_validate_zip(path: Path) -> None:
+    """下载后启发式校验：拒绝半截 / 非 zip / 不含 ollama.exe 的归档。
+    （完整 SHA256 签名兜底作为二期，ollama.com 发布页有官方清单）"""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            bad = zf.testzip()
+            if bad is not None:
+                raise RuntimeError(f"zip 内部成员损坏：{bad}")
+            names = zf.namelist()
+            exe_names = [n for n in names
+                         if n.lower().endswith("ollama.exe") and not n.endswith("/")]
+            if not exe_names:
+                raise RuntimeError("zip 内未找到 ollama.exe（可能非官方归档或已损坏）")
+            # 顺手再扫一遍 zip slip（_ollama_safe_extractall 里也会扫，这里早失败早报警）
+            dest_r = path.parent.resolve()
+            for member in names:
+                try:
+                    if not (path.parent / member).resolve().is_relative_to(dest_r):
+                        raise RuntimeError(f"zip 含越界路径：{member}")
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    raise RuntimeError(f"zip 成员解析失败：{member}") from exc
+    except RuntimeError:
+        raise
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError(f"zip 文件损坏：{exc}") from exc
+
+
 def _ollama_state_write(stage: str, **extra) -> None:
     """分阶段状态落盘：前端轮询 /api/extensions/ollama/status 时读这份。
     阶段名（状态机）：idle → downloading(带 percent) → downloaded
     → extracting → starting → pulling → done；任何一步失败 → error(带 detail)。
-    """
+    加锁防止 setup 并发时 write 半截 JSON 被 read 读到。"""
     try:
-        _ollama_state_path().parent.mkdir(parents=True, exist_ok=True)
-        payload = {"stage": stage, "ts": time.time()}
-        payload.update(extra)
-        _ollama_state_path().write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        with _OLLAMA_STATE_LOCK:
+            p = _ollama_state_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"stage": stage, "ts": time.time()}
+            payload.update(extra)
+            brain.atomic_json(p, payload)
     except OSError:
         pass  # 状态文件写失败只影响进度展示，不中断安装流程
 
 
 def _ollama_state_read() -> dict:
     try:
-        obj = json.loads(_ollama_state_path().read_text(encoding="utf-8"))
+        with _OLLAMA_STATE_LOCK:
+            obj = json.loads(_ollama_state_path().read_text(encoding="utf-8"))
         return obj if isinstance(obj, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -1953,6 +2007,31 @@ def _ollama_tags() -> list:
         return []
 
 
+def _ollama_model_names() -> set:
+    """已拉取的模型名集合（精确匹配，避免子串误判）。"""
+    try:
+        return {str(m.get("name") or "") for m in (
+            json.loads(urllib.request.urlopen(
+                f"http://localhost:{_OLLAMA_PORT}/api/tags", timeout=2
+            ).read().decode("utf-8")).get("models") or [])}
+    except Exception:
+        return set()
+
+
+def _ollama_safe_extractall(zf: zipfile.ZipFile, dest: Path) -> None:
+    """解压 zip 到 dest，拒绝 zip slip（成员名含 ../ 或绝对路径一律抛异常）。
+    照搬 growth.py 同款防护逻辑。"""
+    dest_r = dest.resolve()
+    for member in zf.namelist():
+        try:
+            p = (dest / member).resolve()
+        except Exception as exc:
+            raise RuntimeError(f"zip 归档含非法成员名：{member}") from exc
+        if not p.is_relative_to(dest_r):
+            raise RuntimeError(f"zip 归档含越界路径成员：{member}")
+    zf.extractall(dest)
+
+
 def _ollama_embed_configured() -> bool:
     try:
         embed = brain.load_config().get("embed") or {}
@@ -1978,7 +2057,7 @@ def ollama_status() -> dict:
         "ok": True,
         "installed": _ollama_exe() is not None,
         "serving": _ollama_serving(),
-        "model_ready": _OLLAMA_MODEL in " ".join(_ollama_tags()),
+        "model_ready": _OLLAMA_MODEL in _ollama_model_names(),
         "embed_configured": _ollama_embed_configured(),
         "zip_exists": _ollama_zip_path().is_file(),
         "stage": str(state.get("stage") or "idle"),
@@ -2000,7 +2079,7 @@ def _api_ollama_enable(self, path, data):
         if not _ollama_serving():
             self._json({"ok": False, "error": "Ollama 服务未运行（11434 无响应）"}, 400)
             return
-        if not (_OLLAMA_MODEL in " ".join(_ollama_tags())):
+        if _OLLAMA_MODEL not in _ollama_model_names():
             if not _ollama_pull_model():
                 self._json({"ok": False, "error": f"模型 {_OLLAMA_MODEL} 拉取失败"}, 502)
                 return
@@ -2049,7 +2128,7 @@ def _ollama_setup_async() -> None:
             _ollama_state_write("extracting", detail="解压到程序目录")
             _OLLAMA_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(_ollama_zip_path()) as zf:
-                zf.extractall(_OLLAMA_INSTALL_DIR)
+                _ollama_safe_extractall(zf, _OLLAMA_INSTALL_DIR)
             if _ollama_exe() is None:
                 _ollama_state_write("error", detail="解压后找不到 ollama.exe")
                 return
@@ -2059,7 +2138,7 @@ def _ollama_setup_async() -> None:
             _ollama_state_write("error", detail="ollama serve 启动失败（可稍后在面板重试）")
             return
         # ③ 拉模型（tags 里已有 → 跳过，避免重复下载）
-        if _OLLAMA_MODEL not in " ".join(_ollama_tags()):
+        if _OLLAMA_MODEL not in _ollama_model_names():
             _ollama_state_write("pulling", detail=f"拉取模型 {_OLLAMA_MODEL}（首次较慢）")
             if not _ollama_pull_model():
                 _ollama_state_write("error", detail=f"模型 {_OLLAMA_MODEL} 拉取失败（网络或磁盘问题）")
@@ -2077,9 +2156,11 @@ def _ollama_setup_async() -> None:
 
 
 def _ollama_download_sync() -> None:
-    """同步下载 zip（只在 setup 后台线程里调）：复用 _ollama_download_async 的
-    流式写盘逻辑但阻塞到完成——setup 本来就在后台线程，串行更简单可控。"""
+    """同步下载 zip（只在 setup 后台线程里调）：流式写盘 + 校验 + 异常 raise 给 setup_async。
+    与 _ollama_download_async 共用 _OLLAMA_DOWNLOAD_LOCK，避免两个线程同时写同一个 zip。"""
     dest = _ollama_zip_path()
+    if not _OLLAMA_DOWNLOAD_LOCK.acquire(blocking=False):
+        return  # 另一个线程在下，不重复下载
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(_OLLAMA_URL,
@@ -2096,12 +2177,15 @@ def _ollama_download_sync() -> None:
                 pct = int(got * 100 / total) if total > 0 else 0
                 _ollama_state_write("downloading", percent=pct,
                                     detail=f"{got // (1024 * 1024)}MB")
+        _ollama_validate_zip(dest)   # 下载完立即校验（坏的就删掉防误装）
     except Exception:
         try:
-            dest.unlink(missing_ok=True)   # 半截 zip 没用，删掉防误装
+            dest.unlink(missing_ok=True)   # 半截 zip / 校验失败 → 删掉防误装
         except OSError:
             pass
         raise
+    finally:
+        _OLLAMA_DOWNLOAD_LOCK.release()
 
 
 # --------------------------------------------------------------- ① 自动探测接管
@@ -2120,7 +2204,7 @@ def _ollama_auto_probe() -> None:
             return  # 没装/没跑：静默退出，降级向量兜底照常
         # 服务在跑但灵枢还没接入 → 接管写配置
         if not _ollama_embed_configured():
-            if _OLLAMA_MODEL in " ".join(_ollama_tags()):
+            if _OLLAMA_MODEL in _ollama_model_names():
                 cfg = brain.load_config()
                 embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
                 embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
@@ -2155,8 +2239,12 @@ def _ollama_auto_probe_async() -> None:
 
 
 def _ollama_download_async() -> None:
-    """后台线程流式下载 zip，进度写状态文件（约 1GB，绝不阻塞 HTTP 线程）。"""
+    """后台线程流式下载 zip，进度写状态文件（约 1GB，绝不阻塞 HTTP 线程）。
+    与 _ollama_download_sync 共用 _OLLAMA_DOWNLOAD_LOCK，避免两个线程同时写同一个 zip。"""
     dest = _ollama_zip_path()
+    if not _OLLAMA_DOWNLOAD_LOCK.acquire(blocking=False):
+        _ollama_state_write("downloading", detail="已有下载在进行中，等待复用现有 zip")
+        return
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(_OLLAMA_URL,
@@ -2173,13 +2261,16 @@ def _ollama_download_async() -> None:
                 pct = int(got * 100 / total) if total > 0 else 0
                 _ollama_state_write("downloading", percent=pct,
                                     detail=f"{got // (1024 * 1024)}MB")
+        _ollama_validate_zip(dest)   # 下载完立即校验（坏的就删掉防误装）
         _ollama_state_write("downloaded", percent=100, detail=str(dest))
     except Exception as exc:
         try:
-            dest.unlink(missing_ok=True)   # 半截 zip 没用，删掉防误装
+            dest.unlink(missing_ok=True)   # 半截 zip / 校验失败 → 删掉防误装
         except OSError:
             pass
         _ollama_state_write("error", detail=f"下载失败：{exc}")
+    finally:
+        _OLLAMA_DOWNLOAD_LOCK.release()
 
 
 def _ollama_start_serve() -> bool:
@@ -2226,7 +2317,7 @@ def _ollama_install_async() -> None:
         _ollama_state_write("extracting", detail="解压到程序目录")
         _OLLAMA_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(_OLLAMA_INSTALL_DIR)
+            _ollama_safe_extractall(zf, _OLLAMA_INSTALL_DIR)
         if _ollama_exe() is None:
             _ollama_state_write("error", detail="解压后找不到 ollama.exe")
             return
@@ -2326,6 +2417,7 @@ _POST_ROUTES = {
         "/api/memory/review": _api_memory_review,
         "/api/memory/bulk": _api_memory_bulk,
         "/api/memory/boost": _api_memory_boost,
+        "/api/memory/rebuild-embeds": _api_memory_rebuild_embeds,
         "/api/knowledge": _api_knowledge,
         "/api/note": _api_note,
         # 技能 / 种子

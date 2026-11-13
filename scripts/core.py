@@ -73,6 +73,45 @@ READONLY = os.environ.get("BRAIN_MEMORY_READONLY") == "1"
 
 DAY = 86400
 HOUR = 3600
+
+# ---------------------------------------------------------------- 库 schema 版本（v3.02 #16）
+# 记忆库结构版本号落在 HOME/_meta.json。当前代码只认 1；读到更高版本说明
+# 数据是被更新版本写出的，盲写可能破坏未知字段——降级只读并留痕，由用户升级程序。
+SCHEMA_VERSION = 1
+
+
+def schema_version() -> int:
+    """当前支持的记忆库 schema 版本（brain.py 命名空间合并后即 brain.schema_version()）。"""
+    return SCHEMA_VERSION
+
+
+def _check_meta() -> None:
+    """初始化/校验 HOME/_meta.json：老库没有就静默创建（向后兼容）；
+    schema_version 高于当前支持版本则只读降级 + 日志警告。绝不抛异常。"""
+    global READONLY
+    if READONLY:
+        return  # 只读降级：不写 _meta.json，已有文件照样可读
+    path = HOME / "_meta.json"
+    try:
+        if path.exists():
+            meta = json.loads(path.read_text(encoding="utf-8-sig"))
+            ver = int(meta.get("schema_version", 0) or 0)
+            if ver > SCHEMA_VERSION:
+                READONLY = True
+                _sync_state()
+                log_event("schema", f"记忆库 schema 版本 {ver} 高于当前支持的 {SCHEMA_VERSION}，"
+                                    "已降级只读（请升级灵枢后再写）", level="warn")
+                return
+            meta["updated"] = now_ts()
+            meta.setdefault("schema_version", SCHEMA_VERSION)
+            meta.setdefault("created", now_ts())
+        else:
+            ts = now_ts()
+            meta = {"schema_version": SCHEMA_VERSION, "created": ts, "updated": ts}
+        atomic_json(path, meta)
+    except Exception:
+        pass  # _meta.json 是元数据不是数据本身，读写失败都不拦正常流程
+
 DEFAULT_STABILITY = 2 * DAY
 MAX_STABILITY = 240 * DAY
 RETENTION_FLOOR = 0.10
@@ -210,6 +249,7 @@ def ensure_home() -> None:
         compile_persona()
     (HOME / "dreams").mkdir(parents=True, exist_ok=True)
     (HOME / "skills").mkdir(parents=True, exist_ok=True)  # 面板「技能根目录」显示此目录，提前建好免得显示"不存在"
+    _check_meta()  # v3.02 #16：_meta.json 创建与 schema 版本校验（老库首次静默创建）
 
 
 def load_config() -> dict:
@@ -336,6 +376,35 @@ def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def audit_log(actor: str, action: str, target: str, detail: str = "") -> None:
+    """审计日志（v4 #32）：敏感写/删/导出操作追加一行到 HOME/audit.jsonl。
+
+    只读模式静默跳过；写失败只 warn 不抛——审计绝不当崩溃源。
+    超过 5000 条时裁剪保留最新 4000 条（与 metrics/log 同样的防膨胀思路）。
+    detail 只记简短摘要，不落记忆全文。
+    """
+    if READONLY:
+        return
+    try:
+        f = HOME / "audit.jsonl"
+        try:
+            if f.exists() and sum(1 for _ in open(f, "r", encoding="utf-8-sig")) > 5000:
+                with _locked(f):
+                    lines = [x for x in f.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
+                    if len(lines) > 5000:
+                        keep = [json.loads(x) for x in lines[-4000:]]
+                        write_jsonl(f, keep)
+        except Exception:
+            pass  # 裁剪失败不影响本次记录
+        _append_jsonl(f, {"ts": now_ts(), "actor": actor, "action": action,
+                          "target": str(target)[:200], "detail": str(detail)[:300]})
+    except Exception as e:
+        try:
+            log_event("audit", f"审计日志写入失败: {e}", level="warn")
+        except Exception:
+            pass
 
 
 def clear_logs(ts=None, kind: str | None = None, msg: str | None = None) -> int:
@@ -1006,6 +1075,13 @@ def _replace_retry(tmp: Path, path: Path) -> None:
 def write_jsonl(path: Path, rows: list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(path)
+    try:
+        # v3.02 #25：只有记忆层文件封哈希链——write_jsonl 还服务 history/knowledge 等，
+        # 无差别封链会往别的文件里塞 h/p_h。非记忆文件、桥接前（无 _seal_chain）都跳过。
+        if path.name in ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl", "archive.jsonl"):
+            _seal_chain(rows)
+    except NameError:
+        pass
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")

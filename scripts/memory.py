@@ -304,6 +304,8 @@ def bulk_memory_action(ids: list, action: str, value=None) -> dict:
             updated += 1
         if updated:
             save_all(records)
+            # v4 #32：批量操作审计（含批量 delete/importance 等）
+            audit_log("panel", f"bulk_{action}", f"{len(ids)}条", f"成功 {updated} 条")
     return {"updated": updated, "requested": len(ids), "action": action,
             "review_counts": review_counts()}
 
@@ -468,6 +470,55 @@ def fix_dead_links() -> dict:
             save_all(records)
             log_event("diagnose", f"清理死链：修正 {changed} 条记忆、摘除 {removed} 个断链引用")
     return {"fixed_records": changed, "removed_refs": removed}
+
+
+def _mem_hash(m: dict) -> str:
+    """记忆哈希链节点：sha256(text + created + id 规范拼接)。
+
+    v3.02 #25：每条记忆带 h（自身哈希）与 p_h（前一条的 h），构成校验链。
+    只在新写入路径调用，recall 热路径绝不碰——不为校验拖慢回忆。
+    """
+    raw = f"{m.get('text', '')}\x1f{m.get('created', 0)}\x1f{m.get('id', '')}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _seal_chain(records: list) -> None:
+    """写盘前统一封链：给每条记忆重算 h、按顺序串 p_h（前一条的 h）。
+
+    v3.02 #25：只在合法写入路径调用（remember 新增/合并都会改文本，统一重算
+    才不会把自家写入误判成篡改）。历史存量记忆没有 h：首次写入时按当前顺序
+    静默补齐——verify 对无 h 的条目跳过不算断裂，老库不报错，新写入续链。
+    """
+    prev = ""
+    for m in records:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        m["h"] = _mem_hash(m)
+        m["p_h"] = prev
+        prev = m["h"]
+
+
+def verify_integrity() -> dict:
+    """v3.02 #25：校验记忆哈希链完整性（热层 + 归档层）。
+
+    返回 {"ok": bool, "broken_at": id 或 None, "count": n}。无 h 的条目
+    （历史存量）跳过不计为断裂；坏链只报告不修复。注意本函数只读不写。
+    """
+    rows = load_all() + load_archive()
+    prev = ""
+    broken_at, broken_id = -1, None
+    for i, m in enumerate(rows):
+        if not isinstance(m, dict) or not m.get("h"):
+            continue  # 存量无哈希：跳过，不计断裂
+        if broken_at < 0:
+            # 链断判定：自身哈希对不上（内容被改），或 p_h 与前一条带哈希的 h 对不上（条目被插/删）
+            if _mem_hash(m) != m["h"]:
+                broken_at, broken_id = i, m["id"]
+            elif prev and m.get("p_h") != prev:
+                broken_at, broken_id = i, m["id"]
+        prev = m["h"]
+    return {"ok": broken_at < 0, "broken_at": broken_id, "count": len(rows),
+            "broken_pos": broken_at if broken_at >= 0 else None}
 
 
 def load_all() -> list:
@@ -661,10 +712,13 @@ def archive_run(dry_run: bool = False) -> dict:
             # 归档层文件单独维护：只在本次真的新增了归档时才重写，绝不整库覆写清空
             _append_archive(cand)
             save_all([m for m in records if m.get("id") not in keep_ids])
+            audit_log("dream", "archive_run", f"{len(cand)}条", "冷归档生效")
     return {"count": len(arch), "archived": arch, "dry_run": dry_run}
 
 
 def save_all(records: list) -> None:
+    if not READONLY:
+        _seal_chain(records)  # v3.02 #25：写盘前封哈希链（只读降级不写任何字段）
     groups = {"hippo": [], "cortex": [], "dust": []}
     for r in records:
         layer = r.get("layer", "hippo")
@@ -804,6 +858,7 @@ def boost(memory_id: str) -> dict:
     found["stability"] = min(old_s * 1.5, 90 * DAY)
     found["boosted_at"] = now_ts()
     _strengthen_write([found])
+    audit_log("user", "boost", mid, f"stability {old_s:.0f}s→{found['stability']:.0f}s")
     log_event("memory", f"遗忘纠正 {mid}：last_access→now，stability {old_s:.0f}s→{found['stability']:.0f}s")
     return {"ok": True, "id": mid, "layer": found.get("layer"),
             "stability": found["stability"], "old_stability": old_s}
@@ -1129,8 +1184,8 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
                 try:
                     if _embed_wanted(m, text_changed=(len(text) > len(old))):
                         _schedule_embed(m["id"], str(m.get("text") or ""))
-                except Exception:
-                    pass          # embedding 是增强，绝不影响记事
+                except Exception as exc:
+                    log_event("embed", f"schedule_embed 失败（不影响记事）：{exc}", level="warn")
                 _remember_desire_nudge(m, imp)
                 _remember_side_effects(m, "merged")
                 return m, "merged"
@@ -1369,6 +1424,115 @@ def embed_backfill(limit: int = 0) -> int:
     return n
 
 
+def rebuild_embeddings(force: bool = False) -> dict:
+    """一键重建全库 embedding 向量（同步、全量/增量两档）。
+
+    场景：换嵌入模型、缓存损坏、历史记忆缺向量（含 archive 层）。
+    - force=False：只补缺失向量、或向量模型与当前配置不符的（记录里带
+      embedding_model 字段时按模型名判断；老数据无该字段但有向量 → 视为
+      旧模型产物，一并重算，保证维度/语义一致）；
+    - force=True：全部有正文的记忆一律重算。
+    逐条失败只记录 id 继续跑，最后返回统计。只读模式抛 PermissionError；
+    嵌入服务不可用抛 RuntimeError（CLI 映射退出码 2，系统级错误）。
+    进度每 20 条 log_event 一次，写回走现有锁 + 原子替换。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法重建 embedding。")
+    cfg = _embed_cfg()
+    fb_dims = None
+    try:
+        import fallback_embed
+        _fb = fallback_embed.cfg()
+        fb_dims = _fb["dims"] if _fb else None
+    except Exception:
+        pass
+    if cfg:
+        # 探针：embed_texts 在真服务不可达时会静默降级到 hash 兜底（256 维）。
+        # 重建场景必须拿真模型向量——维度对上兜底 dims 就说明服务没通，明确报错。
+        probe = embed_texts(["灵枢重建探针"])
+        if not probe or (fb_dims is not None and len(probe[0]) == fb_dims):
+            raise RuntimeError(
+                f"嵌入服务不可用（{cfg['url']}，模型 {cfg['model']}）。"
+                "请确认 Ollama 已启动（ollama serve）且模型已拉取"
+                f"（ollama pull {cfg['model']}），或检查 config.json 的 embed.url。")
+        model_name = cfg["model"]
+    else:
+        if fb_dims is None:
+            raise RuntimeError(
+                "embedding 服务未配置（config.json 的 embed.url 为空），且降级向量兜底未启用，"
+                "无法重建。先配置 embed 服务，或在面板「拓展」页启用 Ollama。")
+        model_name = f"fallback-hash-{fb_dims}d"
+
+    records = load_all() + load_archive()
+    todo, skipped = [], 0
+    for m in records:
+        text = str(m.get("text") or "").strip()
+        if not text:
+            skipped += 1
+            continue
+        if not force and m.get("embedding") and m.get("embedding_model") == model_name:
+            skipped += 1
+            continue
+        todo.append(m)
+
+    failed: list = []
+    rebuilt = 0
+    by_layer: dict = {}
+    done = 0
+    batch = max(1, int((cfg or {}).get("batch_size") or 8))
+    for i in range(0, len(todo), batch):
+        chunk = todo[i:i + batch]
+        vecs = embed_texts([str(m.get("text") or "") for m in chunk])
+        if not vecs or len(vecs) != len(chunk):
+            # 批量失败逐条重试，坏条目不拖垮整批
+            vecs = []
+            for m in chunk:
+                v = embed_texts([str(m.get("text") or "")])
+                vecs.append(v[0] if v else None)
+        for m, v in zip(chunk, vecs):
+            if not v:
+                failed.append(m.get("id") or "?")
+                continue
+            m["embedding"] = [round(x, 4) for x in v]
+            m["embedding_model"] = model_name
+            by_layer.setdefault(m.get("layer") or "hippo", []).append(m)
+            rebuilt += 1
+        done += len(chunk)
+        if done % 20 < batch or done >= len(todo):
+            log_event("embed", f"rebuild_embeddings 进度：{done}/{len(todo)}，"
+                      f"已重建 {rebuilt}，失败 {len(failed)}")
+
+    if rebuilt:
+        with _locked(HOME / "hippocampus.jsonl"):
+            hot = load_all()
+            updated = {m["id"]: m for m in by_layer.get("hippo", []) + by_layer.get("cortex", []) + by_layer.get("dust", [])
+                       if m.get("id")}
+            n_hot = 0
+            for m in hot:
+                new = updated.pop(m.get("id"), None)
+                if new is not None:
+                    m["embedding"] = new["embedding"]
+                    m["embedding_model"] = model_name
+                    n_hot += 1
+            if n_hot:
+                save_all(hot)
+            # 归档层独立维护（与 _append_archive 同款锁）
+            arch_new = by_layer.get(ARCHIVE_LAYER, [])
+            if arch_new:
+                with _locked(HOME / "archive.jsonl"):
+                    arch = load_archive()
+                    amap = {m.get("id"): m for m in arch_new if m.get("id")}
+                    for m in arch:
+                        new = amap.get(m.get("id"))
+                        if new is not None:
+                            m["embedding"] = new["embedding"]
+                            m["embedding_model"] = model_name
+                    write_jsonl(HOME / "archive.jsonl", arch)
+    log_event("embed", f"rebuild_embeddings 完成：重建 {rebuilt}，跳过 {skipped}，"
+              f"失败 {len(failed)}，模型 {model_name}")
+    return {"rebuilt": rebuilt, "skipped": skipped, "failed": failed, "model": model_name}
+
+
 def _dense_recall(query: str, records_by_id: dict, top_n: int = 10,
                   floor: float = 0.30) -> dict:
     """Dense 召回：query 向量与记忆 embedding 算 cosine，返回 {id: sim} 的 Top-N。
@@ -1515,8 +1679,17 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
            channel: str | None = None, group_id: str | None = None,
            user: str | None = None,
            target_user: str | None = None, asker: str | None = None,
-           _archive_pass: int = 0) -> list:
+           mode: str = "auto", _archive_pass: int = 0) -> list:
     """模糊回忆：相关度 + 近期性 + 重要性 + 联想扩散。返回 [(record, score, parts), ...]
+
+    mode 三种显式召回模式（#27）：
+      * "fast"：只用词面/实体索引匹配——不调 embedding（dense）、不做 rerank 精排、
+        不做关联扩散。低延迟，适合高频轻查询。
+      * "deep"：词面 + 向量 + 关联扩散 + rerank + 冲突提示，全量手段，
+        适合重要回忆/做梦整理。
+      * "auto"（默认）：按查询长度/词面命中数自适应——查询短且词面已有足够命中
+        走 fast，否则走 deep。等价于旧版的"能省则省"意图。
+    实际生效的模式附在每个结果的 parts["mode"] 里，方便调用方/前端透传展示。
 
     channel/group_id/user 任一给出即进入通道上下文：
       只召回「同群记忆 + 全局记忆 + 该用户自己的记忆」，其他群不可见；
@@ -1540,6 +1713,8 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     ensure_home()
     cfg = load_config()
     w = cfg["weights"]
+    if mode not in ("fast", "deep", "auto"):
+        raise ValueError(f"recall mode 只能是 fast/deep/auto，收到：{mode!r}")
     records = [m for m in load_all() if m.get("id") and (m.get("layer") in layers or (include_dust and m.get("layer") == "dust"))]
     # 被取代的记忆默认跳过：观念已更新，回忆里只出现新说法；
     # 需要"翻旧账"时走 show 单条查，沿 superseded_by 链还能回溯到旧观念。
@@ -1561,6 +1736,9 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     now = now_ts()
     q_terms = terms(query)
     dense_scores = {}   # P1 Dense 召回结果（id -> cosine）；无 embed 服务/无向量时恒空
+    # 无查询词（startup 注入）时不做 mode 裁决：没有词面证据可判断，
+    # 后续 dense/关联扩散本就因 q_terms 为空不会触发；这里只定个有效值防 NameError。
+    eff_mode = "deep" if mode == "auto" else mode
     # 第一道预筛：带查询词时先做廉价的子串包含测试，只对可能相关的记忆做正则分词与打分。
     # 上万条记忆时这一刀把"全量 terms + 全量 idf"砍成"候选集 terms"；数学上不丢召回
     # （relevance>0 ⇔ 共享 term，而共享 term 必是本文档文本的连续子串）。
@@ -1574,21 +1752,32 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         # 若 id_map 只从候选集建，links 指向的邻居会被误判成"不存在"。
         full_index = {m["id"]: m for m in records}
         records = cand
+        # —— mode 自适应裁决（#27）——
+        # 短查询（<= 8 个词面 term）且词面候选已足够（>= k 条直接命中）时走 fast：
+        # 词面证据已经充足，向量捞回的语义近似多半挤不进 Top-K，不值得付 embedding 调用；
+        # 否则（长查询/词面命中稀薄）升 deep，补上 dense/rerank/关联扩散的完整链路。
+        # 显式 mode=fast / mode=deep 则跳过裁决，完全按调用方意图执行。
+        eff_mode = mode
+        if mode == "auto":
+            eff_mode = ("fast" if len(q_terms) <= 8 and len(records) >= max(k, 1)
+                        else "deep")
         # —— P1-1c Dense 召回：把"词面不重叠但语义相关"的记忆捞回候选集 ——
         # 关键词子串预筛是召回瓶颈：稀疏词面没交集的记忆（"之前那个并发方案"）
         # 会被上面一刀切掉。有 embedding 的记忆与 query 向量算 cosine，Top-N 并回
         # 候选集参与后续打分；未配置 embed 服务/无向量数据/调用失败时
         # dense_scores 为空，行为与纯关键词版本完全一致。
-        try:
-            dense_scores = _dense_recall(query, full_index, top_n=max(k * 2, 10))
-            if dense_scores:
-                have = {m["id"] for m in records}
-                for mid in dense_scores:
-                    if mid not in have:
-                        records.append(full_index[mid])
-        except Exception as e:
-            log_event("recall", f"Dense 召回失败，退回纯关键词：{e}", level="warn")
-            dense_scores = {}
+        # mode=fast 时跳过：低延迟模式不付 embedding 调用的延迟（#27）。
+        if eff_mode != "fast":
+            try:
+                dense_scores = _dense_recall(query, full_index, top_n=max(k * 2, 10))
+                if dense_scores:
+                    have = {m["id"] for m in records}
+                    for mid in dense_scores:
+                        if mid not in have:
+                            records.append(full_index[mid])
+            except Exception as e:
+                log_event("recall", f"Dense 召回失败，退回纯关键词：{e}", level="warn")
+                dense_scores = {}
         if not records:
             # 热集一个候选都没有时，冷集补召分支（下方 avg<0.1）永远到不了——
             # 纯关键词模式下"只有 archive 里有匹配"的查询会整条漏掉。这里先递归
@@ -1598,7 +1787,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
                 try:
                     return recall(query, k, layers, strengthen, include_dust, True,
                                   channel, group_id, user, target_user, asker,
-                                  _archive_pass=_archive_pass + 1)
+                                  mode=mode, _archive_pass=_archive_pass + 1)
                 except Exception as e:
                     log_event("recall", f"冷集兜底（热集空候选）失败：{e}", level="warn")
             return []
@@ -1710,7 +1899,8 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         if overlap >= 1:
             item[1] += min(0.10, 0.04 * overlap)
     # 显式联想：记忆之间已有的关联边把邻居也带起来（"提到 A 就想起 B"）
-    if not READONLY or _assoc_file().exists():
+    # mode=fast 跳过关联扩散：低延迟模式只认词面直接命中（#27）。
+    if (not READONLY or _assoc_file().exists()) and eff_mode != "fast":
         for r in load_assoc():
             if r["src"] in top_ids and r["dst"] not in top_ids:
                 w = _num(r.get("weight"), 1)
@@ -1729,7 +1919,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     # 配了 rerank.url 才调用；未配置/失败/返回为空都保持加权合并原顺序。
     # 重排语义：reranker 返回的索引序作为新顺序，没返回的条目按原加权序跟在后面，
     # 绝不丢条——精排只影响顺序，不影响召回集合。
-    if q_terms and len(scored) > 1:
+    if q_terms and len(scored) > 1 and eff_mode != "fast":
         try:
             _n = min(len(scored), max(k * 3, 10))
             _head = scored[:_n]
@@ -1758,14 +1948,14 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             try:
                 return recall(query, k, layers, strengthen, include_dust, True,
                               channel, group_id, user, target_user, asker,
-                              _archive_pass=_archive_pass + 1)
+                              mode=mode, _archive_pass=_archive_pass + 1)
             except Exception as e:
                 log_event("recall", f"冷集自动补召失败：{e}", level="warn")
 
     # 沿 links 显式联想扩散一跳：命中的记忆通过 relink/裁决挂上的关联边，
     # 把直接邻居追加成"关联记忆"（linked: true），上限 5 条。
-    # 只追加展示、不参与侧抑制/strengthen 写回——它们不是本次检索的命中，
-    # 只是顺藤摸瓜带出来的邻居。
+    # linked 项会参与侧抑制（怕跟原始命中重复）、也会参与 strengthen 写回
+    # （被想起就是被想起）——但巩固倍率低于主动命中，语义是"顺带想起"。
     if result:
         direct_ids = {m["id"] for m, _, _ in result}
         linked_out, seen = [], set(direct_ids)
@@ -1819,7 +2009,11 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             m["access_count"] = ac + 1
             # 首次提取巩固更强：头一回想起来的事，印记打得比反复想起更深
             # （首因效应 + 首次测试效应：第一次回忆本身就是一次强巩固）
-            mult = 2.6 if first else 1.8
+            # linked 项是"顺带想起"，巩固倍率低一档（1.2 / 1.1）
+            if m.get("linked"):
+                mult = 1.2 if first else 1.1
+            else:
+                mult = 2.6 if first else 1.8
             m["stability"] = min(MAX_STABILITY, _num(m.get("stability"), DEFAULT_STABILITY) * mult + 4 * HOUR)
             m["last_access"] = now
             # detail 的落盘交给 _strengthen_write 在锁内以盘上现值重算巩固
@@ -1837,6 +2031,16 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             desire_nudge({"求知欲": 1.5})
         except Exception:
             pass          # 锦上添花，失败不影响回忆本身
+    # —— mode=deep 冲突提示（#27）：命中记忆带未裁决冲突时在 parts 里提醒 ——
+    # fast/auto 付不起 detect 级别的额外注意力，只有 deep（重要回忆/做梦整理）给提示。
+    if eff_mode == "deep" and result:
+        for m, _, parts in result:
+            if m.get("conflict_flag") or m.get("conflicts"):
+                parts["conflict_hint"] = ("该记忆存在未裁决的冲突说法（conflict_flag/conflicts），"
+                                          "旧说法可能已过时——brain.py detect-conflicts 查看")
+    # 实际生效模式写进每条 parts：调用方/前端可透传展示，不用猜到底走了哪条路
+    for m, s, parts in result:
+        parts["mode"] = eff_mode
     return [(m, round(s, 4), parts) for m, s, parts in result]
 
 
@@ -1857,6 +2061,7 @@ def forget(memory_id: str) -> bool:
                 m["forgotten_at"] = now_ts()
                 m["detail"] = round(max(0.15, _num(m.get("detail"), 1.0) * 0.5), 2)
                 save_all(records)
+                audit_log("user", "forget", memory_id, "记忆移入淡忘区")
                 return True
     return False
 
@@ -1943,6 +2148,7 @@ def revive(memory_id: str, layer: str = "cortex") -> dict:
         target["revived_at"] = now_ts()
         target["last_access"] = now_ts()
         save_all(records)
+        audit_log("user", "revive", memory_id, f"淡忘记忆复活到 {layer} 层")
         return dict(target)
 
 

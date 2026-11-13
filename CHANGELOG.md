@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.03（2026-11-13）
+
+- **数据结构版本化（#16）**：ensure_home 创建/校验 `HOME/_meta.json`（schema_version/created/updated）；未来结构升级时老版本检测到不认识的 schema 版本自动降级只读 + 警告，不再盲目写坏新库；老库静默创建 meta，只读模式不写。
+- **记忆哈希校验链（#25）**：记忆条目新增 SHA-256 内容哈希（text+created+id），写盘前按层重算并串成 prev-hash 链；`memory integrity` 一条命令校验篡改/损坏位置（只报告不修复）；存量无哈希的老数据静默补齐续链。
+- **CLI 退出码统一（#20）**：0=成功、1=业务错（ValueError/KeyError 等，stderr 无堆栈）、2=系统错（traceback）、130=中断；main() 统一兜底，约 60 处调用点修正，growth.py 对齐——脚本化调用终于能可靠判断成败。
+- **embedding 一键重建（#29）**：`rebuild-embeds [--force]` 全量重算（含 archive 层），embedding 模型变更/维度不符时缓存自动失效重建；面板「记忆」页新增按钮（POST /api/memory/rebuild-embeds），每 20 条上报进度。
+- **召回三模式（#27）**：`recall` 新增 `mode` 参数——fast（纯词面/实体，零 embedding，快）/ deep（全量向量 + 冲突提示，准）/ auto（默认，短查询且词面命中够时走 fast，否则 deep）；默认行为与旧版兼容；CLI `recall --mode`、面板搜索页透传。
+- **审计日志（#32）**：核心变更操作统一写 `HOME/audit.jsonl`（谁/何时/做了什么/对象），覆盖 forget/boost/批量操作/归档/复活/人格改动/漂移/整理/导出等；CLI `auditlog [limit] [--json]` 查看；>5000 条自动裁剪，敏感字段截断不落全文。
+- 面板改动（搜索 mode、重建 embedding 按钮）需重启面板进程并强刷浏览器后生效。
+
 ## v3.02（2026-11-12）
 
 - **隐私脱敏（#1/#3）**：新增 `core.redact()`——具名前缀（sk-/ghp_/github_pat_/xox/AKIA）先扫、kv/Bearer 兜底，命中替换为 `[REDACTED:类型]`（保留首尾 3 字符便于辨认）；capture/remember 写入与 log_event 日志统一脱敏，任何入口不落盘明文密钥。

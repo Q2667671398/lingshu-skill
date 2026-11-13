@@ -519,6 +519,11 @@ def _update_persona_inner(updates: dict, why: str, source: str,
             p["drives"][key] = new_v
             log(f"drives.{key}", old, p["drives"][key])
     save_persona(p)
+    # v4 #32：人格变更审计——只记改了哪些字段与来源，不落字段全文
+    applied = [h.get("field", "?") for h in hist if h.get("ts") == now]
+    if applied:
+        audit_log("ai" if (source or why) in ("做梦整理", "dream") else "user",
+                  "persona_update", ",".join(applied[:5]), f"source={source or why}; 拒绝 {len(rejected)} 项")
     return rejected
 
 
@@ -670,6 +675,7 @@ def _persona_rollback_inner(p: dict, index: int | None = None) -> dict:
     hist.append({"ts": now_ts(), "field": field,
                  "from": to, "to": frm, "why": "回滚"})
     save_persona(p)
+    audit_log("user", "persona_rollback", field, f"回滚：{to} → {frm}")
     return {"field": field, "from": to, "to": frm, "why": entry.get("why", ""),
             "overwrote_later": overwrote}
 
@@ -764,6 +770,7 @@ def persona_restore(name: str) -> dict:
         {"ts": now_ts(), "field": "persona", "from": "(自动备份)",
          "to": name, "why": "persona restore"})
     save_persona(persona)
+    audit_log("user", "persona_restore", name, "人格从快照恢复（restore前已自动备份）")
     return {"restored": name, "ts": d.get("ts", 0), "label": d.get("label", name)}
 
 
@@ -901,6 +908,8 @@ def daily_drift(days: int = 1) -> dict:
                     "source": "drift"})
                 save_persona(p)
                 applied = True
+                audit_log("ai", "daily_drift", "state.mood_score",
+                          f"{int(cur)}→{new}（近{days}天 net={net}）")
         return {
             "days": days, "memories": len(recent),
             "emotion_hits": hits, "positive": positive, "negative": negative,

@@ -203,7 +203,7 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
     """
     if not HOME.exists():
         print(f"[错误] 记忆库还不存在：{HOME}（先运行 init）", file=sys.stderr)
-        return 2
+        return 1
     if not password and not assume_yes:
         # 明文备份会扩大泄露面（备份文件与明文数据同盘甚至可能更分散）：显式确认
         if sys.stdin and sys.stdin.isatty():
@@ -337,7 +337,7 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
     zp = Path(zip_path).expanduser()
     if not zp.exists():
         print(f"[错误] 找不到备份文件：{zp}", file=sys.stderr)
-        return 2
+        return 1
     try:
         zf = _open_backup_zip(zp, password)
         # v3.02 #6：恢复前完整性校验——坏包绝不往库里写半截数据
@@ -367,25 +367,25 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
                    if x.startswith("/") or ".." in Path(x).parts or ":" in x]
         if illegal:
             print(f"[错误] 备份里包含非法路径，已拒绝：{illegal[:3]}", file=sys.stderr)
-            return 2
+            return 1
         # 防 zip 炸弹：条目数、解压后总大小都要有上限
         if len(names) > MAX_RESTORE_ENTRIES:
             print(f"[错误] 备份条目过多（{len(names)} > {MAX_RESTORE_ENTRIES}），拒绝恢复", file=sys.stderr)
-            return 2
+            return 1
         total_size = sum(i.file_size for i in zf.infolist() if not i.is_dir())
         if total_size > MAX_RESTORE_BYTES:
             print(f"[错误] 备份解压后过大（{total_size / 1024 / 1024:.0f} MB > {MAX_RESTORE_BYTES / 1024 / 1024:.0f} MB），拒绝恢复",
                   file=sys.stderr)
-            return 2
+            return 1
         if not any(x in ("persona.json", "hippocampus.jsonl", "cortex.jsonl", "config.json") for x in names):
             print("[错误] 这不像灵枢的记忆备份（缺 persona.json / hippocampus.jsonl）", file=sys.stderr)
-            return 2
+            return 1
         if not yes:
             # 非交互环境（管道/脚本/AI 调用）没有确认提示可用：必须显式 --yes
             # 才允许覆盖写回，否则静默覆盖数据的风险太大，直接拒绝。
             if not (sys.stdin and sys.stdin.isatty()):
                 print("[错误] 非交互环境下恢复会覆盖现有数据，必须显式加 --yes 确认。", file=sys.stderr)
-                return 2
+                return 1
             try:
                 mode = "【--exact】先删除现有受管文件、再" if exact else ""
                 extra = "（备份之后新增的文件会被删除）" if exact else "（备份之后新增的文件不会被删除）"
@@ -448,10 +448,10 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
                     os.replace(str(extracted), str(final))
     except ValueError as exc:
         print(f"[错误] {exc}", file=sys.stderr)
-        return 2
+        return 1
     except PermissionError as exc:
         print(f"[错误] 恢复被拒绝（当前环境可能只读）：{exc}", file=sys.stderr)
-        return 3
+        return 1
     finally:
         # 无论成功还是失败，都清掉临时目录
         try:
@@ -476,7 +476,7 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
             r = archive_run(dry_run=dry_run)
         except PermissionError as exc:
             print(f"[只读] {exc}", file=sys.stderr)
-            return 3
+            return 1
         verb = "可归档" if dry_run else "已雪藏"
         print(f"{verb} {r['count']} 条冷记忆 → 归档层（原文保留，archive search / restore 可找回）。")
         for x in r["archived"][:max(limit, 1)]:
@@ -491,7 +491,7 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
     if action == "search":
         if not arg:
             print("用法：archive search <关键词>", file=sys.stderr)
-            return 2
+            return 1
         q = terms(arg)
         hits = [m for m in rows if q and any(t in _hay(m) for t in q)]
         if not hits:
@@ -506,10 +506,10 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
     if action == "restore":
         if not arg:
             print("用法：archive restore <id>", file=sys.stderr)
-            return 2
+            return 1
         if READONLY:
             print("[只读] 记忆库当前不可写，无法回捞。", file=sys.stderr)
-            return 3
+            return 1
         with _locked(HOME / "hippocampus.jsonl"), _locked(HOME / "archive.jsonl"):
             rows = load_archive()
             hit = next((m for m in rows if m.get("id") == arg), None)
@@ -525,6 +525,7 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
             hot.append(hit)
             save_all(hot)
             write_jsonl(HOME / "archive.jsonl", [m for m in rows if m.get("id") != arg])
+        audit_log("cli", "archive_restore", arg, "归档回捞到长期记忆")
         print(f"已回捞 {arg} → 长期记忆（重新参与回忆）。")
         return 0
 
@@ -551,7 +552,7 @@ def cmd_relink(limit: int = 0, min_score: float = 1.0, max_links: int = 5) -> in
     import memory as _mem
     if READONLY:
         print("[只读] 记忆库当前不可写，relink 需要写盘。", file=sys.stderr)
-        return 3
+        return 1
     ensure_home()
     # 记忆上万后全库 jaccard 两两比对是 O(n²)，但与 recall/dream 现有全量扫描
     # 同量级；先按创建时间倒序截 limit，保证"最近的最先补到"。
@@ -621,11 +622,11 @@ def cmd_home(action: str = "show", dest: str = "") -> int:
     if action == "move":
         if not dest:
             print("用法：home move <目标目录>", file=sys.stderr)
-            return 2
+            return 1
         dst = Path(dest).expanduser()
         if not HOME.exists():
             print(f"[错误] 源记忆库不存在：{HOME}", file=sys.stderr)
-            return 2
+            return 1
         try:
             dst_res, home_res = dst.resolve(), HOME.resolve()
         except OSError:
@@ -636,13 +637,13 @@ def cmd_home(action: str = "show", dest: str = "") -> int:
         try:
             dst_res.relative_to(home_res)
             print(f"[错误] 目标目录不能是记忆库内部（会边复制边膨胀）：{dst}", file=sys.stderr)
-            return 2
+            return 1
         except ValueError:
             pass
         if dst.exists():
             if any(dst.iterdir()) and not (dst / "persona.json").exists():
                 print(f"[错误] 目标目录非空且不像记忆库：{dst}", file=sys.stderr)
-                return 2
+                return 1
         else:
             try:
                 dst.mkdir(parents=True, exist_ok=True)
@@ -669,7 +670,7 @@ def cmd_home(action: str = "show", dest: str = "") -> int:
         print(f"  python scripts/brain.py --home \"{dst}\" ...   # 单次")
         return 0
     print("用法：home [show | verify | move <目标目录>]", file=sys.stderr)
-    return 2
+    return 1
 
 
 # ---------------------------------------------------------------- startup（会话开始钩子）
@@ -685,7 +686,7 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
     if not p_path.exists() and not any(m.exists() for m in mem_paths):
         print("[灵枢] 记忆库未初始化：先运行 python scripts/brain.py init"
               "（只读环境可用 --home 指到已有目录）", file=sys.stderr)
-        return 2
+        return 1
     print(build_injection(query, budget))
     # 水位提醒块：与 status 同一实现（memory._water_level），别两套口径。
     try:
@@ -750,7 +751,7 @@ def cmd_sync_dsh(days: int = 1, dry_run: bool = False, force: bool = False,
     dsh = _resolve_dsh_dir(explicit)
     if not dsh:
         print("[错误] 没找到 DSH 记忆目录。用 --dir 指定，或设 DSH_MEMORY_HOME。", file=sys.stderr)
-        return 2
+        return 1
     try:
         import growth
     except Exception as exc:
@@ -1071,14 +1072,16 @@ def _print_mem(m: dict, score: float | None = None, parts: dict | None = None) -
 
 
 class _BrainParser(argparse.ArgumentParser):
-    """用法错误退出码用 64（EX_USAGE），避免与 startup 的"记忆库未初始化=2"撞码。
+    """用法错误退出码统一为 1（业务错误：命令/参数写错）。
 
-    宿主据此区分：64=命令/参数写错（改命令即可）；2=记忆库没初始化（要 init）。
+    退出码约定（docs/修复待办.md #20）：
+    0=成功；1=业务错误（含参数/用法错误、找不到对象、READONLY 拒绝写）；
+    2=系统错误（IO/文件损坏/依赖缺失）；3=鉴权拒绝；4=隐私拒绝；130=用户中断。
     """
     def error(self, message):
         self.print_usage(sys.stderr)
         print(f"{self.prog}: 参数错误：{message}", file=sys.stderr)
-        raise SystemExit(64)
+        raise SystemExit(1)
 
 
 def _require_privileged(user, channel, cmd, action="") -> bool:
@@ -1184,6 +1187,9 @@ def _main(argv=None) -> int:
     p_rec.add_argument("--json", action="store_true")
     p_rec.add_argument("--include-archive", action="store_true",
                        help="连归档层的冷记忆一起找（默认不搜归档）")
+    p_rec.add_argument("--mode", default="auto", choices=["fast", "deep", "auto"],
+                       help="召回模式：fast=只词面（低延迟）/ deep=全量（向量+关联+冲突提示）"
+                            "/ auto=自适应（默认）")
 
     p_inj = sub.add_parser("inject", help="生成记忆注入包")
     p_inj.add_argument("query", nargs="*", default=[])
@@ -1416,6 +1422,14 @@ def _main(argv=None) -> int:
     p_arch.add_argument("--limit", type=int, default=20)
     p_arch.add_argument("--dry-run", action="store_true", help="run：只预览可归档的，不落盘")
 
+    p_audit = sub.add_parser("auditlog", help="审计日志：查看敏感写/删/导出操作的最近记录（audit.jsonl）")
+    p_audit.add_argument("limit", nargs="?", type=int, default=50, help="显示最近 N 条（默认 50）")
+    p_audit.add_argument("--json", action="store_true", help="输出 JSON 行")
+
+    p_rel = sub.add_parser("rebuild-embeds", help="一键重建全库 embedding 向量（换模型/缓存损坏/历史缺向量时用）")
+    p_rel.add_argument("--force", action="store_true",
+                       help="全部重算（默认只补缺失或与当前模型不符的）")
+
     p_rel = sub.add_parser("relink", help="联想建链：给全库记忆按词面相似度补挂 links（双向）")
     p_rel.add_argument("--limit", type=int, default=0,
                        help="只处理最近 N 条（0=全库）；已有 links 的也会补挂新邻居")
@@ -1446,6 +1460,8 @@ def _main(argv=None) -> int:
     mem_sub.add_parser("review-list", help="列出已到期、该找用户复核的事实记忆（--ttl/--review-at）")
     p_mem_rc = mem_sub.add_parser("review-confirm", help="复核确认：这条事实用户确认过还作数，不再注入「待复核」提醒")
     p_mem_rc.add_argument("id", help="记忆 id（如 m_xxx）")
+    mem_sub.add_parser("integrity",
+                       help="记忆哈希链完整性校验（v3.02 #25）：报告第一条断裂的 id 与位置，只报告不修复")
 
     p_res = sub.add_parser("restore", help="从备份恢复记忆库（恢复前自动留现状备份）")
     p_res.add_argument("archive", help="备份 zip 路径（加密备份为 .zip.enc）")
@@ -1592,13 +1608,14 @@ def _main(argv=None) -> int:
                 and getattr(args, "action", "") in ("grant", "revoke", "capture-on", "capture-off"))
             or (args.cmd == "memory" and getattr(args, "mem_cmd", None) == "dust")
             or (args.cmd == "relink")                                  # 建链写盘，全量都算写
+            or (args.cmd == "rebuild-embeds")                          # 重建向量写回各层文件
             or (args.cmd == "drift")                                   # 漂移走 persona.json 写盘
             or (args.cmd == "auto-archive" and not args.dry_run)
         )
         if writing:
             print(f"[只读] 记忆库当前不可写，{args.cmd} 需要写盘。"
                   "改用 --home 指向可写目录，或先解除写保护。", file=sys.stderr)
-            return 3
+            return 1
 
     if args.cmd == "init":
         ensure_home()
@@ -1632,7 +1649,7 @@ def _main(argv=None) -> int:
                     raise ValueError
         except ValueError:
             print(f"[错误] --ttl 需要正数天数（可小数，如 30 或 0.5），收到：{args.ttl}", file=sys.stderr)
-            return 2
+            return 1
         if args.review_at:
             s = args.review_at.strip()
             try:
@@ -1643,7 +1660,7 @@ def _main(argv=None) -> int:
                                      .replace(hour=23, minute=59, second=59).timestamp())
                 except ValueError:
                     print(f"[错误] --review-at 需要 YYYY-MM-DD 或时间戳，收到：{args.review_at}", file=sys.stderr)
-                    return 2
+                    return 1
         rec, how = remember(" ".join(args.text), args.kind, args.importance,
                             [t for t in args.tags.split(",") if t],
                             [e for e in args.entities.split(",") if e],
@@ -1711,7 +1728,7 @@ def _main(argv=None) -> int:
             return 0
         except PermissionError:
             print("[只读] 记忆库不可写，extract 跳过", file=sys.stderr)
-            return 3
+            return 1
         except Exception as exc:
             print(f"[extract] 静默失败：{exc}", file=sys.stderr)
             return 2
@@ -1722,7 +1739,8 @@ def _main(argv=None) -> int:
             for m in recent(args.k):
                 _print_mem(m)
             return 0
-        results = recall(query, args.k, include_archive=args.include_archive)
+        results = recall(query, args.k, include_archive=args.include_archive,
+                         mode=args.mode)
         record_retrieval(query, results, channel="recall")
         # 知识条目命中提示：recall 原本只查记忆层，顺带在 knowledge.jsonl 里做
         # 简单词面匹配——这个问题曾被沉淀成知识时先亮出来（含待审核条目），
@@ -1754,14 +1772,14 @@ def _main(argv=None) -> int:
     if args.cmd == "usage":
         if args.bad and args.reply:
             print("--bad 与 --reply 不能同时用：负反馈和核对分开跑。", file=sys.stderr)
-            return 2
+            return 1
         if args.bad:
             # v3.02 #9：召回负反馈
             try:
                 r = usage_bad(args.bad)
             except (KeyError, ValueError, PermissionError) as exc:
                 print(f"[错误] {exc}", file=sys.stderr)
-                return 2
+                return 1
             if args.json:
                 print(json.dumps(r, ensure_ascii=False, indent=2))
                 return 0
@@ -1770,11 +1788,11 @@ def _main(argv=None) -> int:
             return 0
         if not args.reply:
             print("用法：usage --reply <本轮回复文本> 或 usage --bad <记忆id>", file=sys.stderr)
-            return 2
+            return 1
         r = evaluate_retrieval_usage(args.reply)
         if r.get("error"):
             print(r["error"], file=sys.stderr)
-            return 2
+            return 1
         if args.json:
             print(json.dumps(r, ensure_ascii=False, indent=2))
             return 0
@@ -1810,7 +1828,7 @@ def _main(argv=None) -> int:
                 res = auto_dream(args.trigger, args.dry_run)
             except RuntimeError as exc:
                 print(f"[中止] {exc}", file=sys.stderr)
-                return 2
+                return 1
             if res.get("applied"):
                 print(f"自动做梦完成：新增长期记忆 {res['memories']} 条，遗忘 {res['forgotten']} 条，"
                       f"{res.get('clusters', 0)} 组碎片已合并。")
@@ -1824,16 +1842,16 @@ def _main(argv=None) -> int:
         if args.apply:
             if READONLY:
                 print("[只读] 记忆库当前只读，无法沉淀梦境结果。", file=sys.stderr)
-                return 3
+                return 1
             path = Path(args.apply)
             if not path.exists():
                 print(f"找不到整理结果文件：{path}", file=sys.stderr)
-                return 2
+                return 1
             try:
                 result = load_loose_json(path, "dream --apply 的结果")
             except ValueError as e:
                 print(str(e), file=sys.stderr)
-                return 2
+                return 1
             if args.dry_run:
                 print(json.dumps(result, ensure_ascii=False, indent=2)[:4000])
                 print("\n（--dry-run：只预览将沉淀的内容，未落盘）")
@@ -1847,7 +1865,7 @@ def _main(argv=None) -> int:
             report = dream(args.trigger, args.dry_run)
         except RuntimeError as exc:
             print(f"[中止] {exc}", file=sys.stderr)
-            return 2
+            return 1
         print(f"做梦完成（{args.trigger}）")
         print(f"  重放 {sum(len(c['texts']) for c in report['clusters'])} 条 / {len(report['clusters'])} 组")
         print(f"  巩固 {len(report['promoted'])} 条，遗忘 {len(report['forgotten'])} 条，模糊化 {report['faded']} 条")
@@ -1876,7 +1894,7 @@ def _main(argv=None) -> int:
         if args.action == "set":
             if not args.pair or "=" not in args.pair:
                 print("用法：persona set traits.幽默=70", file=sys.stderr)
-                return 2
+                return 1
             key, val = args.pair.split("=", 1)
             try:
                 p = set_persona_field(key.strip(), val.strip())
@@ -1890,7 +1908,7 @@ def _main(argv=None) -> int:
             item = (args.pair or "").strip()
             if not item:
                 print("用法：persona lock 名字", file=sys.stderr)
-                return 2
+                return 1
             with _locked(HOME / "persona.json"):
                 p = load_persona()
                 locks = p.setdefault("locked", [])
@@ -1927,12 +1945,12 @@ def _main(argv=None) -> int:
                     idx = int(args.pair.strip())
                 except ValueError:
                     print("序号得是数字：persona rollback <序号>", file=sys.stderr)
-                    return 2
+                    return 1
             try:
                 r = persona_rollback(idx)
             except (ValueError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             print(f"已回滚 {r['field']}：{r['from'] if r['from'] is not None else '∅'} → "
                   f"{r['to'] if r['to'] is not None else '∅'}（原来是「{r['why']}」）")
             if r.get("overwrote_later"):
@@ -1973,23 +1991,23 @@ def _main(argv=None) -> int:
                 ver = int(args.pair or 0)
             except ValueError:
                 print("用法：persona auto-rollback <版本号>（用 persona auto-snapshots 看版本）", file=sys.stderr)
-                return 2
+                return 1
             p = rollback_persona_snapshot(ver)
             if p is None:
                 print(f"没找到版本 v{ver} 的快照，或当前只读。", file=sys.stderr)
-                return 2
+                return 1
             print(f"已按自动快照 v{ver} 回滚人格（回滚前的状态也已另存快照）。")
             print(persona_brief(load_persona()))
             return 0
         if args.action == "restore":
             if not args.pair:
                 print("用法：persona restore <快照名字>（用 persona snapshots 看名字）", file=sys.stderr)
-                return 2
+                return 1
             try:
                 r = persona_restore(args.pair)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             print(f"已从快照恢复人格：{r['label']}（{fmt_time(r['ts'])}）")
             print(persona_brief(load_persona()))
             return 0
@@ -2069,18 +2087,18 @@ def _main(argv=None) -> int:
                 if not idx:
                     print("用法：persona suggest adopt <序号> / persona suggest discard <序号>（先 list 看序号）",
                           file=sys.stderr)
-                    return 64
+                    return 1
                 try:
                     r = (_persona.persona_suggest_adopt(idx) if sub_action == "adopt"
                          else _persona.persona_suggest_discard(idx))
                 except (ValueError, PermissionError) as exc:
                     print(str(exc), file=sys.stderr)
-                    return 2
+                    return 1
                 print(f"已{'采纳' if sub_action == 'adopt' else '忽略'}：[{r.get('field')}] {r.get('text', '')}"
                       + ("（已写进人格，带来源证据）" if sub_action == "adopt" else "（不写人格，留痕可追溯）"))
                 return 0
             print("用法：persona suggest [list|scan|adopt <序号>|discard <序号>]", file=sys.stderr)
-            return 64
+            return 1
         if args.action == "audit":
             import persona as _persona
             r = _persona.persona_audit(getattr(args, "days", 30) or 30)
@@ -2149,7 +2167,7 @@ def _main(argv=None) -> int:
         if args.action == "tune":
             if args.curiosity is None and args.reason is None:
                 print("用法：mind tune --curiosity +5 --reason -3 --why \"用户嫌我啰嗦\"", file=sys.stderr)
-                return 2
+                return 1
             dr = mind_tune(args.curiosity or 0, args.reason or 0, why=args.why)
             print("已按用户态度调整：" + " / ".join(
                 f"{'好奇心' if k == 'curiosity' else '理智'} {dr.get(k, '未成形')}" for k in DRIVE_KEYS))
@@ -2158,7 +2176,7 @@ def _main(argv=None) -> int:
         if args.action == "weigh":
             if not args.topic:
                 print("用法：mind weigh \"这件事\" --benefit 7 --cost 3 --confidence 0.6", file=sys.stderr)
-                return 2
+                return 1
             r = mind_weigh(args.topic, args.benefit, args.cost, args.confidence, args.urgency)
             print(f"事项：{r['topic']}")
             print(f"  好处 {r['benefit']:g} × 把握 {r['confidence']:.0%}，坏处/代价 {r['cost']:g}")
@@ -2186,7 +2204,7 @@ def _main(argv=None) -> int:
         if args.action == "evaluate":
             if not args.emotion:
                 print("用法：emotion evaluate \"用户骂我了\" --polarity auto --intensity 0.8", file=sys.stderr)
-                return 2
+                return 1
             r = emotion_evaluate(args.emotion, args.polarity,
                                  args.intensity if args.intensity is not None else 0.6,
                                  why=args.why, about=args.about)
@@ -2205,7 +2223,7 @@ def _main(argv=None) -> int:
         if args.action == "mirror":
             if not args.emotion:
                 print("用法：emotion mirror \"用户很难过\" [--intensity 0.6]", file=sys.stderr)
-                return 2
+                return 1
             r = emotion_mirror(args.emotion,
                                args.intensity if args.intensity is not None else 0.5)
             print(r["note"])
@@ -2244,7 +2262,7 @@ def _main(argv=None) -> int:
         if args.action == "feel":
             if not args.emotion:
                 print("用法：emotion feel 开心 --intensity 0.7 --why \"用户夸我了\"", file=sys.stderr)
-                return 2
+                return 1
             ev = feel(args.emotion,
                       args.intensity if args.intensity is not None else 0.6,
                       why=args.why, about=args.about,
@@ -2326,18 +2344,18 @@ def _main(argv=None) -> int:
         if args.action == "adjust":
             if not args.emotion:
                 print("用法：emotion adjust <事件id或序号> [--intensity 0.3] [--emotion-name 委屈] [--why \"其实还好\"]", file=sys.stderr)
-                return 2
+                return 1
             ref = args.emotion.strip()
             if not (ref.startswith("e") and len(ref) > 1):
                 try:
                     ref = int(ref)
                 except ValueError:
                     print("事件定位得是 id（e 开头）或序号（数字）：emotion adjust <id|序号>", file=sys.stderr)
-                    return 2
+                    return 1
             if (args.intensity is None and not args.emotion_name and not args.why
                     and not args.about and args.decay_hours is None):
                 print("至少要改一项：--intensity / --emotion-name / --why / --about / --decay-hours", file=sys.stderr)
-                return 2
+                return 1
             try:
                 r = emotion_modify(ref, emotion=args.emotion_name,
                                    intensity=args.intensity,
@@ -2345,7 +2363,7 @@ def _main(argv=None) -> int:
                                    decay_hours=args.decay_hours)
             except (ValueError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             ev = r["event"]
             label = ev.get("id") or f"第 {ref} 条"
             print(f"已微调 {label}：{ev.get('emotion')}（强度 {float(ev.get('intensity', 0)):.0%}）")
@@ -2355,19 +2373,19 @@ def _main(argv=None) -> int:
         if args.action == "del":
             if not args.emotion:
                 print("用法：emotion del <事件id或序号>（先 emotion events 看事件 id）", file=sys.stderr)
-                return 2
+                return 1
             ref = args.emotion.strip()
             if not (ref.startswith("e") and len(ref) > 1):
                 try:
                     ref = int(ref)
                 except ValueError:
                     print("事件定位得是 id（e 开头）或序号（数字）：emotion del <id|序号>", file=sys.stderr)
-                    return 2
+                    return 1
             try:
                 r = emotion_delete(ref)
             except (ValueError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             label = r["deleted"].get("id") or "该条"
             print(f"已删除 {label}：{r['deleted'].get('emotion')}；还剩 {r['remaining']} 条。")
             return 0
@@ -2384,7 +2402,7 @@ def _main(argv=None) -> int:
             if not args.emotion:
                 print("用法：emotion check \"<你刚发的回复>\" —— 把内部情绪状态和回复语气做一致性核对",
                       file=sys.stderr)
-                return 2
+                return 1
             r = emotion_consistency_check(args.emotion)
             print(f"此刻内部情绪：{r['mood_label']}（valence {r['mood_valence']:+.2f}，强度 {r['mood_intensity']:.0%}）")
             print(f"回复语气极性：{r['reply_valence']:+.2f}")
@@ -2426,7 +2444,7 @@ def _main(argv=None) -> int:
         if args.action == "link":
             if len(args.ids) != 2:
                 print("用法：assoc link <记忆A的id> <记忆B的id> --relation 因果 --why \"...\"", file=sys.stderr)
-                return 2
+                return 1
             r = link_memory(args.ids[0], args.ids[1], args.relation, args.weight, args.why)
             print(f"已关联 {r['src']} ↔ {r['dst']}（{r['relation']}，权重 {r['weight']}）"
                   + ("，反复连，权重加强了" if not r["created"] else ""))
@@ -2434,7 +2452,7 @@ def _main(argv=None) -> int:
         if args.action == "unlink":
             if len(args.ids) != 2:
                 print("用法：assoc unlink <idA> <idB>", file=sys.stderr)
-                return 2
+                return 1
             ok = unlink_memory(args.ids[0], args.ids[1])
             print("已断开。" if ok else "本来就没有这条关联。")
             return 0 if ok else 1
@@ -2450,7 +2468,7 @@ def _main(argv=None) -> int:
         if args.action == "of":
             if not args.ids:
                 print("用法：assoc of <记忆id>", file=sys.stderr)
-                return 2
+                return 1
             mid = args.ids[0]
             nb = assoc_of(mid)
             if not nb:
@@ -2507,7 +2525,7 @@ def _main(argv=None) -> int:
             text = " ".join(args.text).strip()
             if not text:
                 print("用法：work add \"先记着这件事\" --tag 任务 --why \"怕等下忘了\"", file=sys.stderr)
-                return 2
+                return 1
             rows = work_add(text, args.tag, args.why)
             print(f"已写入会话暂存（{len(rows)}/{WORKING_CAPACITY}）。它不是长期记忆，{int(WORKING_TTL / HOUR)} 小时后自动丢。")
             return 0
@@ -2515,17 +2533,17 @@ def _main(argv=None) -> int:
             text = " ".join(args.text).strip()
             if not text:
                 print("用法：work done 2  （暂存里的第 2 条已完成）", file=sys.stderr)
-                return 2
+                return 1
             try:
                 idx = int(text.split()[0])
             except ValueError:
                 print("序号得是数字：work done <第几条>", file=sys.stderr)
-                return 2
+                return 1
             # 先校验序号、后执行：越界时不能先标记完成再报错（先执行后校验会有副作用）
             cur = work_status()
             if idx < 1 or idx > cur["count"]:
                 print(f"序号越界：当前暂存只有 {cur['count']} 条。", file=sys.stderr)
-                return 2
+                return 1
             rows = work_done(idx)
             done = rows[idx - 1]
             print(f"第 {idx} 条已标记完成：{done.get('text', '')}——做完的事不再占心思。")
@@ -2569,7 +2587,7 @@ def _main(argv=None) -> int:
         if args.action in ("touch", "feedback", "drop") and not name:
             print(f"用法：topic {args.action} \"话题名\" [--why \"...\"]"
                   + (" --good/--bad" if args.action == "feedback" else ""), file=sys.stderr)
-            return 2
+            return 1
         if args.action == "touch":
             kw = {"why": args.why}
             if args.type:
@@ -2591,7 +2609,7 @@ def _main(argv=None) -> int:
             pos = args.good and not args.bad
             if not (args.good or args.bad):
                 print("feedback 需要 --good（用户展开多说）或 --bad（敷衍/转移话题）二选一。", file=sys.stderr)
-                return 2
+                return 1
             rows = topic_feedback(name, positive=pos, why=args.why)
             cur = next((r for r in rows if r["name"] == name), None)
             if cur is None:
@@ -2647,13 +2665,44 @@ def _main(argv=None) -> int:
             print(f"  {t} [{r.get('level', 'info')}] {r.get('kind', '?')} · {r.get('msg', '')}")
         return 0
 
+    if args.cmd == "auditlog":
+        # v4 #32：查看审计日志（HOME/audit.jsonl），只读展示，不写任何文件
+        # 注意与原有 `audit`（整体自查）命令区分
+        f = HOME / "audit.jsonl"
+        rows = []
+        if f.exists():
+            try:
+                lines = [x for x in f.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
+                for x in lines:
+                    try:
+                        rows.append(json.loads(x))
+                    except Exception:
+                        continue
+            except OSError as e:
+                print(f"[错误] 读取审计日志失败：{e}", file=sys.stderr)
+                return 2
+        rows = rows[-max(args.limit, 1):]
+        if args.json:
+            for r in rows:
+                print(json.dumps(r, ensure_ascii=False))
+            return 0
+        if not rows:
+            print("审计日志是空的：还没有删除 / 批量 / 归档 / 导出等敏感操作记录。")
+            return 0
+        print(f"审计日志（最新 {len(rows)} 条）：")
+        for r in reversed(rows):  # 最新在前
+            t = fmt_time(r.get("ts", 0)) if r.get("ts") else "??"
+            print(f"  {t} [{r.get('actor', '?')}] {r.get('action', '?')} · {r.get('target', '')}"
+                  + (f" — {r.get('detail', '')}" if r.get("detail") else ""))
+        return 0
+
     if args.cmd == "status":
         # 水位唯一数据源（C 项修正）：面板水位卡 / cron / doctor 全读 memory._water_level
         try:
             wl = memory._water_level(args.used)
         except Exception as e:
             print(f"[错误] 水位读取失败：{e}", file=sys.stderr)
-            return 3
+            return 2
         if args.json:
             print(json.dumps(wl, ensure_ascii=False, indent=2))
         else:
@@ -2907,6 +2956,7 @@ def _main(argv=None) -> int:
             p = Path(args.out).expanduser()
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding="utf-8")
+            audit_log("cli", "export", str(p.name), f"导出 {total} 条记忆")
             print(f"已导出 {total} 条记忆 → {p}")
         else:
             print(text, end="")
@@ -2919,14 +2969,14 @@ def _main(argv=None) -> int:
         if args.action == "set":
             if not args.key or not args.value:
                 print("用法：config set model_tier small / config set budget_tokens 800", file=sys.stderr)
-                return 2
+                return 1
             cfg = config_set(args.key, args.value)
             print(f"已设置 {args.key} = {json.dumps(cfg[args.key], ensure_ascii=False)}")
             return 0
         if args.action == "unset":
             if not args.key:
                 print("用法：config unset <key>", file=sys.stderr)
-                return 2
+                return 1
             config_unset(args.key)
             print(f"已移除 {args.key}")
             return 0
@@ -2968,7 +3018,7 @@ def _main(argv=None) -> int:
         if args.action in ("confirm", "discard"):
             if not args.id:
                 print("用法：review confirm <id> / review discard <id>（先 review 看清单）", file=sys.stderr)
-                return 2
+                return 1
             target = args.id.strip()
             if target.startswith("k_"):
                 import growth
@@ -2986,10 +3036,10 @@ def _main(argv=None) -> int:
                     print(f"[未命中] {exc}", file=sys.stderr)
                     return 1
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             except PermissionError as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             print(f"记忆已{'确认' if args.action == 'confirm' else '废弃'}："
                   f"{r.get('gist') or r.get('text', '')[:40]}")
             return 0
@@ -3080,7 +3130,7 @@ def _main(argv=None) -> int:
                 if not sep:
                     print(f"[错误] --section 需为 \"键=值\" 形式（键：状态/目标/死路及原因/下一步），收到：{item}",
                           file=sys.stderr)
-                    return 2
+                    return 1
                 if val:
                     sections[key.strip()] = val.strip()
             if not sections:
@@ -3146,13 +3196,13 @@ def _main(argv=None) -> int:
     if args.cmd == "channel":
         if not args.channel_cmd:
             print("用法：channel remember|recall|user|owner …（channel --help 查看）", file=sys.stderr)
-            return 64
+            return 1
 
         if args.channel_cmd == "remember":
             text = " ".join(args.text).strip()
             if not text:
                 print("记忆内容为空", file=sys.stderr)
-                return 2
+                return 1
             rec, how = remember(text, args.kind, args.importance,
                                 [t for t in args.tags.split(",") if t], [],
                                 args.source, args.layer,
@@ -3220,7 +3270,7 @@ def _main(argv=None) -> int:
             if args.action in ("grant", "revoke", "capture-on", "capture-off") and not u:
                 print(f"用法：channel privacy {args.action} --user <user>。"
                       "授权只能由本人执行，不能替别人操作。", file=sys.stderr)
-                return 64
+                return 1
             if args.action == "grant":
                 g = (getattr(args, "group", "") or "").strip()
                 rec = consent_grant(u, getattr(args, "channel", "") or "", g,
@@ -3275,7 +3325,7 @@ def _main(argv=None) -> int:
                 return 0
             if not args.user:
                 print(f"用法：channel owner {args.action} <user>，如 qq:10001", file=sys.stderr)
-                return 64
+                return 1
             # 门控：owner 管理只能本机（无 --caller）执行，或由已有 owner 在通道上下文执行；
             # admin 不行（防通道内自封 owner）。--caller 是调用者身份，位置参数 user 是操作目标。
             _ou = (getattr(args, "caller", "") or "").strip()
@@ -3332,6 +3382,23 @@ def _main(argv=None) -> int:
     if args.cmd == "relink":
         return cmd_relink(args.limit, args.min_score, args.max_links)
 
+    if args.cmd == "rebuild-embeds":
+        import memory as _mem
+        try:
+            r = _mem.rebuild_embeddings(force=args.force)
+        except PermissionError as exc:
+            print(f"[只读] {exc}", file=sys.stderr)
+            return 1
+        except RuntimeError as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            return 2
+        print(f"embedding 重建完成：重建 {r['rebuilt']}，跳过 {r['skipped']}，"
+              f"失败 {len(r['failed'])}，模型 {r['model']}")
+        if r["failed"]:
+            print(f"  失败条目（向量缺失，可稍后重试）：{'、'.join(r['failed'][:20])}"
+                  + ("…" if len(r["failed"]) > 20 else ""), file=sys.stderr)
+        return 0
+
     if args.cmd == "drift":
         import persona as _persona
         d = _persona.daily_drift(args.days)
@@ -3377,7 +3444,7 @@ def _main(argv=None) -> int:
                 m = fn(args.id, args.layer) if args.action == "revive" else fn(args.id)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             verb = {"fold": "已折叠（原文收进 folded_text，只留 gist；unfold 可还原）",
                     "unfold": "已展开还原（原文回到正文，记忆仍在淡忘区；revive 可复活）",
                     "revive": f"已复活 → {m.get('layer')} 层"}[args.action]
@@ -3401,7 +3468,7 @@ def _main(argv=None) -> int:
                 r = boost(args.id)
             except (LookupError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             print(f"遗忘纠正完成：{r['id']}（{r.get('layer') or '?'} 层）")
             print(f"  last_access→现在（R 回 1），稳定度 {r['old_stability']:.0f}s→{r['stability']:.0f}s")
             if (r.get("layer") or "") == "dust":
@@ -3424,14 +3491,27 @@ def _main(argv=None) -> int:
                 m = mark_reviewed(args.id)
             except (LookupError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             print(f"已确认复核：{m['id']}（下次到期前不再提醒「待复核」）")
             print(f"  [{m.get('layer')}] {display_text(m)[:80]}")
             return 0
+        # v3.02 #25：记忆哈希链完整性校验——只报告，不自动修复
+        if mem_cmd == "integrity":
+            import memory as _mem_mod
+            r = _mem_mod.verify_integrity()
+            if getattr(args, "json", False):
+                print(json.dumps(r, ensure_ascii=False, indent=2))
+            elif r["ok"]:
+                print(f"完整性校验通过：{r['count']} 条记忆（热层+归档），哈希链完好。")
+            else:
+                print(f"完整性校验失败：第 {r['broken_pos']} 条（id={r['broken_at']}）处链断裂，"
+                      f"共扫描 {r['count']} 条。可能被手工改动或中间条目被增删；只报告不修复，"
+                      "请核对后从备份恢复或重建。", file=sys.stderr)
+            return 0 if r["ok"] else 1
         print("用法：memory dust fold|unfold|revive <id> [--layer cortex|hippo] / "
-              "memory boost <id> / memory diagnose / memory fix-links",
+              "memory boost <id> / memory diagnose / memory fix-links / memory integrity",
               file=sys.stderr)
-        return 64
+        return 1
 
     if args.cmd == "restore":
         return cmd_restore(args.archive, args.yes,
@@ -3452,7 +3532,7 @@ def _main(argv=None) -> int:
             if not text:
                 print("用法：user-rules add <规则内容>，如 `user-rules add 不要动 DSH 数据目录`",
                       file=sys.stderr)
-                return 2
+                return 1
             ensure_home()
             need_nl = False
             if path.exists():
@@ -3499,7 +3579,9 @@ def _main(argv=None) -> int:
 
 
 def main(argv=None) -> int:
-    """入口：给 AI 的中文报错，不甩 Python 堆栈。"""
+    """入口：统一退出码约定——
+    0=成功；1=业务错误（找不到对象/参数非法/READONLY 拒绝写等 ValueError 类）；
+    2=系统错误（IO/文件损坏/依赖缺失等）；3=鉴权拒绝；4=隐私拒绝；130=用户中断。"""
     # Python 版本预检：代码使用 `int | None` 等 3.10+ 语法，低版本解释器 import 即语法错误，
     # 这里提前给出可读报错而不是让宿主拿到一屏 SyntaxError
     if sys.version_info < (3, 10):
@@ -3509,10 +3591,11 @@ def main(argv=None) -> int:
         return 2
     try:
         return _main(argv)
-    except (ValueError, KeyError, FileExistsError, PermissionError) as exc:
+    except (ValueError, KeyError, LookupError, FileExistsError, PermissionError) as exc:
+        # 业务错误：简短中文提示，无堆栈，退出码 1
         log_event("run", f"CLI 出错：{exc}", level="error")
         print(f"[错误] {exc}", file=sys.stderr)
-        return 2
+        return 1
     except KeyboardInterrupt:
         print("\n已停止")
         return 130
@@ -3531,4 +3614,5 @@ def main(argv=None) -> int:
         print(f"[错误] {type(exc).__name__}: {exc}"
               + (f"（完整堆栈已写入：{diag}）" if diag.exists() else "（详情见运行日志）"),
               file=sys.stderr)
-        return 1
+        traceback.print_exc(file=sys.stderr)
+        return 2
