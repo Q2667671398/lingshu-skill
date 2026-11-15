@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 3.12
+version: 3.13
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -302,6 +302,17 @@ python scripts/brain.py logs [--level warn|error]     # 运行日志（锁冲突
 python scripts/brain.py user-rules add "<长期规则>"   # 更新永不覆盖
 python scripts/brain.py ext new|list|edit|run|rm      # 扩展模块（可执行钩子）
 python scripts/brain.py knowledge add|search|review
+  # knowledge add 格式规范（字段与 growth.add_knowledge() 一一对应）：
+  #   位置参数 <title>  标题（必需；高度相似标题 jaccard≥0.75 会自动合并进已有条目）
+  #   --body      正文全文（长中文正文建议先存 md 文件再用脚本读入，避免命令行编码问题）
+  #   --topic     主题分类，如「灵枢·插件商店/更新缓存」
+  #   --points    要点列表，顿号/逗号/换行分隔（_split 切分）
+  #   --tags      标签，同样 _split 切分；--entities 实体；--source-ids 来源记忆 id
+  #   --confidence 0-1（user 默认 0.8）；--source user|ai（user 直接 confirmed，ai 进 pending 待审核）
+  #   --review    显式指定 confirmed/pending/discarded（覆盖 --source 默认值）
+  # 注意：没有 --title / --file 参数（title 是位置参数；正文长时用 scripts 里临时脚本调
+  #   growth.add_knowledge() 读文件录入，参考已录入条目 k_a933489efd 的做法）。
+  # 验证：python scripts/brain.py knowledge search <关键词> 或 knowledge show <id>
 python scripts/brain.py work | work done <序号> | work flush
 python scripts/brain.py status --json               # 水位唯一数据源（退出码 0/1=60%/2=75%/3=90%，面板/cron/doctor 都读它）
 python scripts/brain.py doctor [--json]             # 七合一体检（audit/人格/记忆诊断/写权限/副本sha/日志warn/engine-sync——副本漂移直接暴露）

@@ -1,5 +1,9 @@
 # 更新日志
 
+## v3.13（2026-11-16）
+
+- **文档：knowledge add 格式规范**：SKILL.md 命令速查补充 `knowledge add` 完整字段说明（title 位置参数 / --body/--topic/--points/--tags/--confidence/--source 等 8 个参数的语义、分隔规则与审核闸行为），并标注避坑：无 `--title`/`--file` 参数，长中文正文建议用脚本直调 `growth.add_knowledge()` 读文件录入（tags 须传列表，字符串会被逐字符拆分）。无代码变更。
+
 ## v3.12（2026-11-16）
 
 - **更新缓存失效（插件商店修复）**：`update_check` 结果缓存（TTL 6h）在技能安装/更新成功后不清理，面板刷新走 auto 只读缓存，表现为「更新完还显示有更新、版本号停在旧版」。修复：`apply`/install 成功后立即删除 `~/.brain-memory/update_check.json`，下次检查重新联网判定。
