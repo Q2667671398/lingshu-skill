@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v3.10**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.11**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -47,14 +47,24 @@
 - [命令速查](#命令速查)
 - [项目结构](#项目结构)
 
-## 最新特性速览（v3.10）
+## 最新特性速览（v3.11）
+
+- **CI 修复（第四轮#1）**：tests/ 本地化后 CI 里四个 tests step 一直空跑假绿——已删除，`py_compile` 只查 `scripts/`，CI 只留真检查（check_version / manifest / sync / checksums）。
+- **engine 副本一致性（第四轮#2）**：`doctor` 新增第 10 项 `engine-sync`——scripts/ 与 AstrBot engine/ 副本漂移直接在体检里暴露，附带修平命令提示。
+- **project 接线（第四轮#3）**：`remember` / `recall` 加 `--project`；同项目召回 +0.25 加分排前（**不硬过滤**，跨项目照常可见）；合并路径上旧 `default` 标记可被真实项目名补挂。
+- **importance 通胀治理（第四轮#4）**：`daily` metrics 新增 importance 直方图与 0.9+ 占比（通胀报警器）；注入星星改为**全库分位归一**——只有全库前 10% 的记忆吃满 ★★★★★（<20 条退回原始值），`--importance 8` 与 `--importance 7` 的差别重新拉开。
+- **性能基准（第四轮#5）**：新增 `scripts/bench.py`——隔离临时 HOME 生成 N 条合成记忆（`--n` / `--quick`），量 remember / recall / inject / doctor 的 p50/p95；改召回阈值前后的"有没有变慢"从手感变成数字。
+
+<details><summary>v3.10 及更早</summary>
 
 - **记忆管控**：`memory freeze/unfreeze <id>` 冻结的记忆不参与召回、注入与做梦；`remember --correction` 标记被用户纠正的记录（永不自动合并/淡忘/归档）；`remember --ttl-days N` 给事实设保质期，到期转「待复核」。
 - **数据结构与完整性**：`HOME/_meta.json` 记录 schema 版本（老版本遇到新 schema 自动降级只读，不写坏库）；每条记忆带 SHA-256 内容哈希并串成 prev-hash 链，`memory integrity` 一条命令定位篡改/损坏。
 - **召回与向量**：`recall --mode fast|deep|auto` 三档（纯词面 / 全量向量+冲突提示 / 自动择优）；`rebuild-embeds [--force]` 全量重算（含归档层），换 embedding 模型时缓存自动失效。
 - **自我进化**：`lesson "教训"` 一条命令三写（memory+knowledge 待审+note）；`lessons` 教训库带置信度——被后续对话验证 +0.10、被推翻 −0.15，低于 0.2 自动退役；`persona self-model` 输出机器可读的自模型（擅长/短板/还没弄清）。
-- **可观测性**：`doctor` 九项体检（含版本矩阵与当前写入者）；`auditlog` 统一审计流；`dream --verify` 复核做梦合并抽检；`status --json` 是唯一水位数据源（退出码按 60/75/90 分级）。
+- **可观测性**：`doctor` 十项体检（含版本矩阵、当前写入者与 engine 副本一致性）；`auditlog` 统一审计流；`dream --verify` 复核做梦合并抽检；`status --json` 是唯一水位数据源（退出码按 60/75/90 分级）。
 - **可靠性**：注入包顶部「上次会话写入失败 N 次」；`backup --drill` 恢复演练；日志超 1MB 自动轮转；Windows 文件占用给 rename→WMI 进程定位与退出引导，不再猜 taskkill。
+
+</details>
 
 ## 核心机制
 
@@ -511,7 +521,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 
 | 领域 | 命令 |
 |---|---|
-| 记忆 | `remember` / `recall [--mode fast\|deep\|auto]` / `inject` / `startup` / `list` / `forget` / `export --md [--out 文件]` |
+| 记忆 | `remember [--project 名]` / `recall [--mode fast\|deep\|auto] [--project 名]`（同项目 +0.25 加分，不硬过滤） / `inject` / `startup` / `list` / `forget` / `export --md [--out 文件]` |
 | 记忆管控 | `memory freeze <id>` / `memory unfreeze <id>` / `memory boost <id>` / `memory integrity` / `remember --correction` / `remember --ttl-days N` |
 | 上下文水位 | `check-context --used 68`（60 清点 / 75 做梦 / 90 封存） |
 | 原样封存 | `capture "<原文>" [--tag 逃生]` |
@@ -546,7 +556,8 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | 通道三元组 | `channel remember "内容" --group <id>\|recall "词" --group <id>\|user <id>`（群隔离/跨群记忆/按人回忆） |
 | 群友隐私 | `channel privacy status\|grant <用户>\|revoke <用户>`（本人授权门控，未授权查第三人返回退出码 4） |
 | 淡忘可逆 | `memory dust fold\|unfold\|revive <id>`（折叠只留 gist / 原文还原 / 复活回活跃层，面板 ⇲⇱⤴ 按钮） |
-| 诊断 | 面板「诊断」标签页 / `GET /api/diagnostics`（死链、冲突未裁决、数据膨胀、来源归属完整率） |
+| 诊断 | `doctor`（十项体检，含 engine 副本一致性）/ 面板「诊断」标签页 / `GET /api/diagnostics`（死链、冲突未裁决、数据膨胀、来源归属完整率） |
+| 性能基准 | `python scripts/bench.py [--n 1000] [--quick]`（隔离临时库量 p50/p95，不碰真实记忆库） |
 
 全局参数：`--home <目录>`（切换数据目录）、`--ro`（只读降级）。
 
@@ -575,6 +586,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
     ├── persona.py          # 人格/快照回滚/初识与自我设定
     ├── dream.py            # 做梦：聚类巩固与梦境应用
     ├── cli.py              # 子命令解析与执行/备份恢复/启动注入/每日例行
+    ├── bench.py            # 性能基准：隔离临时库量 remember/recall/inject/doctor 的 p50/p95
     ├── growth.py           # 成长系统：知识库/笔记/技能/进化日志/DSH 插件扫描
     ├── panel_server.py     # 本地面板 HTTP 服务（token 鉴权 + 来源校验）
     ├── astrbot_plugin_lingshu/  # AstrBot 插件（subprocess 进程隔离，通道三元组开箱即用）

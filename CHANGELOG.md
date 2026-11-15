@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.11（2026-11-16）
+
+> 本轮主题：**第四轮提案落地**——修真坏了的、接没接上的（CI / 副本 / project / importance）+ 性能基准。
+
+- **CI 修复（第四轮#1）**：tests/ 已本地化不入库后，CI 里四个 tests step 一直在空跑假绿。删除全部 tests 相关 step，`py_compile` 只查 `scripts/`；CI 只留真检查（check_version / manifest / sync / checksums / compileall）。顺带清理 `.gitignore` 里 `tests/` 重复块。
+- **engine 副本一致性（第四轮#2）**：跑 `sync_engine.py` 修平 scripts/ 与 engine/ 漂移；`doctor` 新增第 10 项 `engine-sync` 检查——副本漂移从此在体检里直接暴露，不用等 CI。
+- **project 接线（第四轮#3）**：`remember` / `recall` 加 `--project`；recall 同项目记忆 +0.25 加分（不是硬过滤，跨项目照常可见）；remember 合并路径上旧 `default` 项目标记可被真实项目名补挂。端到端验证：同项目召回相关分 0.577 → 0.827。
+- **importance 通胀治理（第四轮#4）**：`daily` metrics 新增 importance 直方图与 `importance_high_pct`（0.9+ 占比——通胀报警器）；注入（build_injection）星星改为全库分位归一——只有全库前 10% 的记忆吃满 ★★★★★，记忆 <20 条时退回原始值。
+- **性能基准（第四轮#5）**：新增 `scripts/bench.py`——隔离临时 HOME 生成 N 条合成记忆（`--n`，`--quick` 快速档），量 remember / recall / inject / doctor 四条主路径的 p50/p95，改召回阈值前后的手感问题变成数字问题。300 条实测：单次调用 ~1.0–1.4 s（含 Python 启动）。
+
 ## v3.10（2026-11-15）
 
 > 本轮主题：**文档同步**（无功能变更，仓库与已发能力对齐）。

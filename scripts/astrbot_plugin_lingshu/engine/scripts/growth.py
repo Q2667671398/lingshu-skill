@@ -50,6 +50,23 @@ SKILL_REG = HOME / "skills.json"
 EXT_DIR = HOME / "extensions"
 
 
+def _recompute_home() -> None:
+    """HOME 切换后重算本模块的派生路径常量（core._sync_state 会调用）。
+    growth 因 import brain 形成循环导入，无法进 core._SYNC_TARGETS，单独提供重算入口。"""
+    global HOME, KNOWLEDGE_FILE, KNOWLEDGE_DIR, INDEX_FILE, NOTES_FILE, \
+        EVOLUTION_FILE, SKILLS_DIR, SKILL_REG, EXT_DIR, UPDATE_CACHE_FILE
+    HOME = brain.HOME
+    KNOWLEDGE_FILE = HOME / "knowledge.jsonl"
+    KNOWLEDGE_DIR = HOME / "knowledge"
+    INDEX_FILE = KNOWLEDGE_DIR / "index.json"
+    NOTES_FILE = HOME / "notes.jsonl"
+    EVOLUTION_FILE = HOME / "evolution.jsonl"
+    SKILLS_DIR = HOME / "skills"
+    SKILL_REG = HOME / "skills.json"
+    EXT_DIR = HOME / "extensions"
+    UPDATE_CACHE_FILE = HOME / "update_check.json"
+
+
 def _panel_root() -> Path:
     """面板/当前进程实际运行所在的技能根目录（growth.py 所在目录的上一级）。
 
@@ -712,6 +729,10 @@ def apply_tidy(result: dict) -> dict:
         save_knowledge(rows)
         # 统计真实从库里消失的条数（含合并被吃掉的那 X-1 条），别只报 delete 清单
         done["deleted"] = len(removed)
+        # v4 #32：知识整理（合并/更新/新建/删除）生效审计
+        if any(done.values()):
+            brain.audit_log("ai", "apply_tidy", "knowledge.jsonl",
+                            " ".join(f"{k}={v}" for k, v in done.items()))
 
     pending = KNOWLEDGE_DIR / "pending.json"
     if pending.exists():
@@ -1437,6 +1458,49 @@ def _remote_api(url: str, host: str = "") -> object:
     raise last_exc
 
 
+def cleanup_stale_staging(older_than: float = 3600.0) -> dict:
+    """#21 清理被中断的更新留下的 staging 临时目录。
+
+    更新流程会先建 `staging-*`（下载解压）或 `<技能>.apply-staging-*`
+    （整目录替换的中转站），成功后 rename 走、失败时 finally 删。进程被强杀
+    （关面板/关机/任务管理器结束）时两者会残留，越积越多且看不出用途。
+    这里只清「超过 1 小时没动过」的——正在跑的更新不可能持有一个小时。
+    """
+    import shutil as _sh
+    removed = []
+    now = time.time()
+    targets = []
+    try:
+        cache = _remote_cache_dir()
+        if cache.is_dir():
+            targets += [p for p in cache.glob("staging-*") if p.is_dir()]
+    except OSError:
+        pass
+    try:
+        for root in _global_roots() or []:
+            parent = Path(root).parent
+            if parent.is_dir():
+                targets += [p for p in parent.glob("*.apply-staging-*") if p.is_dir()]
+    except OSError:
+        pass
+    seen = set()
+    for p in targets:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if now - p.stat().st_mtime < older_than:
+                continue
+            _sh.rmtree(p, ignore_errors=True)
+            removed.append(p.name)
+        except OSError:
+            continue
+    if removed:
+        log_event("maintenance", f"清理遗留 staging 临时目录 {len(removed)} 个：{', '.join(removed[:5])}")
+    return {"count": len(removed), "removed": removed}
+
+
 def _fetch_gitee_zip_source() -> Path:
     """Gitee API 被 403 风控时的兜底：直下仓库 zip 归档（浏览器 UA）并解压。
 
@@ -2148,6 +2212,11 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
     if outdated and src_v is not None and inst_v is not None and src_v < inst_v:
         outdated = False
         stale_source = True
+    # 改进清单 #3：源版本严格大于已装版本 ⇒ 一律 outdated（不再受签名/漂移启发式
+    # 干扰）。以前"installed 2.91 / source 2.94 却 outdated:false"就是因为
+    # _real_drift 没抓到差异、判定被两道启发式闸门拦掉了。
+    if src_v is not None and inst_v is not None and src_v > inst_v:
+        outdated = True
     if stale_source and out_src in ("gitee", "github") and not force_pull:
         # 缓存源比已装还旧：说明刚才拉取全链路失败、复用的旧缓存。静默再 force
         # 拉一次（内部有整体重试），拿到真源就正常对比；仍失败才报 stale。
@@ -2245,8 +2314,9 @@ def update_check(name: str = "lingshu", force_pull: bool = False, auto: bool = F
             res = dict(cache["result"])
             res["cached"] = True
             res["checked_at"] = int(cache.get("ts") or 0)
+            res["dsh_copies"] = dsh_lingshu_copy_state()
             return res
-        return {"cached": False}   # 没缓存也不联网：检测只发生在服务启动/手动检查
+        return {"cached": False, "dsh_copies": dsh_lingshu_copy_state()}
     if not force_pull and cache and isinstance(cache.get("result"), dict):
         try:
             fresh = time.time() - float(cache.get("ts") or 0) < UPDATE_CACHE_TTL
@@ -2256,9 +2326,11 @@ def update_check(name: str = "lingshu", force_pull: bool = False, auto: bool = F
             res = dict(cache["result"])
             res["cached"] = True
             res["checked_at"] = int(cache.get("ts") or 0)
+            res["dsh_copies"] = dsh_lingshu_copy_state()
             return res
     res = _update_check_live(name, force_pull=force_pull)
     _save_update_cache(res)
+    res["dsh_copies"] = dsh_lingshu_copy_state()
     return res
 
 
@@ -2995,6 +3067,329 @@ def list_dsh_plugins() -> list:
     return out
 
 
+def _dsh_pkg_version(pkg_dir: Path) -> str:
+    try:
+        pm = json.loads((pkg_dir / "package.json").read_text(encoding="utf-8-sig"))
+        return str(pm.get("version", ""))
+    except Exception:
+        return ""
+
+
+def _dsh_lockfile_specifier(profile_dir: Path, name: str) -> str | None:
+    """从 profile 的 pnpm-lock.yaml 里读出 name 的原始 specifier（如 github:xxx#sha）。
+
+    市场把插件从 package.json 移除时通常不会清 lockfile，所以这里能捞回原始声明，
+    恢复 dependencies 时与 lockfile 对齐，避免 pnpm 下次安装时解析失败。
+    """
+    lock = profile_dir / "pnpm-lock.yaml"
+    if not lock.is_file():
+        return None
+    try:
+        text = lock.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    # 匹配 name: 下一行的 specifier: xxx
+    pat = re.compile(rf"^\s+{re.escape(name)}:\s*\n\s+specifier:\s*(\S+)", re.MULTILINE)
+    m = pat.search(text)
+    return m.group(1) if m else None
+
+
+def _file_lock_probe(path: Path) -> dict:
+    """Windows 文件占用检测（提案 C-①：按顺序探测，绝不给猜出来的 taskkill）。
+
+    ① rename 探测：能改名 = 没被独占打开（Windows 独占句柄会锁 rename），
+       探测完立刻改回来；② WMI 查 Win32_Process 的 CommandLine/ExecutablePath
+       里是否引用了该路径；③ 都查不到就只给"完全退出宿主"引导。
+    返回 {locked, pids: [{pid, name, cmd}], hint}
+    """
+    out = {"locked": False, "pids": [], "hint": ""}
+    if sys.platform != "win32" or not path.exists():
+        return out
+    # ① rename 探测（最可靠、零依赖）：改名成功=没被独占
+    probe = path.with_name(path.name + ".lspobe")
+    try:
+        path.rename(probe)
+        probe.rename(path)
+        return out  # 能改走又能改回：没被锁
+    except OSError:
+        out["locked"] = True
+    except Exception:
+        return out
+    # ② WMI 找占用者（wmic 在新 Windows 被移除，优先 PowerShell Get-CimInstance）
+    try:
+        target = str(path).lower()
+        ps = ("Get-CimInstance Win32_Process | Where-Object {($_.CommandLine -and "
+              "$_.CommandLine.ToLower().Contains('" + target.replace("'", "''") + "')) -or "
+              "($_.ExecutablePath -and $_.ExecutablePath.ToLower().Contains('" +
+              target.replace("'", "''") + "'))} | "
+              "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress")
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, timeout=15)
+        rows = json.loads(r.stdout.decode("utf-8", "replace") or "[]")
+        if isinstance(rows, dict):
+            rows = [rows]
+        my_pid = os.getpid()
+        for row in rows or []:
+            try:
+                pid = int(row.get("ProcessId", 0))
+                # 排除自己（探测进程的命令行里也含目标路径）和跑查询的 powershell 子进程
+                if pid in (my_pid, r.pid):
+                    continue
+                out["pids"].append({"pid": pid,
+                                    "name": str(row.get("Name", "")),
+                                    "cmd": str(row.get("CommandLine", ""))[:200]})
+            except (TypeError, ValueError):
+                continue
+    except Exception:
+        pass  # WMI 查不到不影响结论：rename 已判定 locked
+    if out["locked"]:
+        if out["pids"]:
+            names = "、".join(f"{p['name']} (PID {p['pid']})" for p in out["pids"][:3])
+            out["hint"] = (f"该目录被进程占用，疑似：{names}。请完全退出对应宿主"
+                           f"（含其 pnpm 临时目录里的旧副本进程）后重试更新；"
+                           f"确认进程身份后再手动结束，不要盲杀。")
+        else:
+            out["hint"] = ("该目录被某进程独占（rename 探测失败），但查不到具体进程"
+                           "（可能是杀软/索引服务/已退出未释放句柄）。请完全退出宿主后重试，"
+                           "或稍等片刻再更新。")
+    return out
+
+
+def dsh_lingshu_copy_state() -> list:
+    """扫描所有 DSH profile 里 lingshu-skill 副本的健康状态。
+
+    每个命中 profile 返回：
+      - ok: package.json + SKILL.md 都在，且已声明在 bundles 里
+      - empty: 目录存在但 0 个交付文件（被商店清空的残缺副本）
+      - partial: 目录有文件但缺 package.json 或 SKILL.md
+      - missing_bundle: 副本完好但不在 dsh.profile.bundles 里（DSH 启动不会加载）
+      - missing_dep: 副本完好 + 在 bundles，但 dependencies 里没有声明
+      - not_installed: 该 profile 既没目录也没声明
+    """
+    out = []
+    if not DSH_PROFILES_ROOT.exists():
+        return out
+    for profile in sorted(DSH_PROFILES_ROOT.iterdir()):
+        if not profile.is_dir():
+            continue
+        pkg = profile / "package.json"
+        if not pkg.exists():
+            continue
+        try:
+            meta = json.loads(pkg.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        bundles = ((meta.get("dsh") or {}).get("profile") or {}).get("bundles") or []
+        deps = meta.get("dependencies") or {}
+        nm_dir = profile / "node_modules"
+        pkg_dir = nm_dir / "lingshu-skill"
+        in_bundles = "lingshu-skill" in bundles
+        in_deps = "lingshu-skill" in deps
+        has_pkg_json = (pkg_dir / "package.json").is_file()
+        has_skill_md = (pkg_dir / "SKILL.md").is_file()
+        file_count = 0
+        if pkg_dir.is_dir():
+            try:
+                file_count = sum(1 for f in pkg_dir.rglob("*") if f.is_file())
+            except OSError:
+                file_count = 0
+        if not pkg_dir.exists():
+            state = "not_installed"
+        elif file_count == 0:
+            state = "empty"
+        elif not has_pkg_json or not has_skill_md:
+            state = "partial"
+        elif not in_bundles:
+            state = "missing_bundle"
+        elif not in_deps:
+            state = "missing_dep"
+        else:
+            state = "ok"
+        out.append({
+            "profile": profile.name,
+            "path": str(pkg_dir),
+            "state": state,
+            "in_bundles": in_bundles,
+            "in_dependencies": in_deps,
+            "has_package_json": has_pkg_json,
+            "has_skill_md": has_skill_md,
+            "file_count": file_count,
+            "version": _dsh_pkg_version(pkg_dir),
+        })
+        # 文件占用检测（v3.01 C-①）：只对 empty/partial 残缺态探测——
+        # 残缺十有八九是更新时目录被占用、pnpm 替换失败留下的；ok 态没必要白跑 rename/WMI
+        if state in ("empty", "partial"):
+            try:
+                out[-1]["lock"] = _file_lock_probe(pkg_dir)
+            except Exception as exc:
+                brain.log_event("growth", f"文件占用探测失败 {pkg_dir}: {exc}", level="warn")
+    return out
+
+
+def repair_dsh_lingshu_copy(profile_name: str | None = None,
+                            force: bool = False) -> dict:
+    """修复 DSH 里残缺的 lingshu-skill 副本（空壳目录 + 被移除的声明）。
+
+    场景：dsh-market 在 DSH 运行时更新 lingshu-skill，pnpm 替换目录失败，
+    商店把目录清空并从 bundles/dependencies 移除声明，只剩空壳目录被 DSH 占用。
+    空目录可以直接写入（不触发占用锁），所以这里从面板所在的源仓库把交付物
+    补写进去，并恢复 profile 的 bundles/dependencies 声明。DSH 下次启动就会
+    自动加载，无需用户手动退出重装。
+
+    返回 {ok, repaired, skipped, errors, updated_files}（force 模式下 updated_files 为各 profile 覆盖的文件数）
+    """
+    src = _panel_root()
+    if not (src / "SKILL.md").is_file():
+        return {"ok": False, "error": f"源目录缺少 SKILL.md：{src}",
+                "repaired": [], "skipped": [], "errors": []}
+    # 源版本号（dependencies 兜底值）
+    try:
+        src_pkg = json.loads((src / "package.json").read_text(encoding="utf-8-sig"))
+        src_version = str(src_pkg.get("version", "0.0.0"))
+    except Exception:
+        src_version = "0.0.0"
+    # 交付物清单：优先 manifest.json（发布范围），没有就全量复制
+    manifest_files = None
+    manifest_hashes = {}
+    manifest_sizes = {}
+    mf = src / "manifest.json"
+    if mf.is_file():
+        try:
+            _mf = _read_json(mf).get("files") or {}
+            manifest_files = set(_mf.keys())
+            for _k, _v in _mf.items():
+                manifest_hashes[_k] = _v.get("sha256")
+                manifest_sizes[_k] = _v.get("size")
+        except (OSError, ValueError):
+            manifest_files = None
+
+    def sha256_file(p: Path) -> str:
+        """与 make_manifest 相同的规范形态哈希：CRLF→LF + 去 BOM（用于强制更新比对）。"""
+        h = hashlib.sha256()
+        size = 0
+        first = True
+        tail = b""
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 16), b""):
+                if first:
+                    first = False
+                    if chunk.startswith(b"\xef\xbb\xbf"):
+                        chunk = chunk[3:]
+                chunk = tail + chunk
+                tail = chunk[-1:] if chunk.endswith(b"\r") else b""
+                if tail:
+                    chunk = chunk[:-1]
+                chunk = chunk.replace(b"\r\n", b"\n")
+                h.update(chunk)
+                size += len(chunk)
+        if tail:
+            h.update(tail.replace(b"\r\n", b"\n"))
+        return h.hexdigest()
+
+    states = dsh_lingshu_copy_state()
+    repaired, skipped, errors = [], [], []
+    updated_files = {}
+    for st in states:
+        if profile_name and st["profile"] != profile_name:
+            continue
+        if st["state"] == "ok" and not force:
+            skipped.append(st["profile"])
+            continue
+        if st["state"] == "not_installed":
+            # 目录和声明都不存在 = 从来没装过，不是残缺，不修
+            skipped.append(st["profile"])
+            continue
+        profile_dir = DSH_PROFILES_ROOT / st["profile"]
+        pkg_dir = Path(st["path"])
+        profile_pkg = profile_dir / "package.json"
+        errs = []
+        # 1) 补全/覆盖目录内容：
+        #    普通修复（force=False）只处理 empty/partial，仅写缺失或 0 字节文件；
+        #    强制更新（force=True）按 manifest 清单对所有文件做"内容不一致才覆盖"
+        #    （sha256 相同跳过，避免无谓写锁），缺失照写，ok 状态也参与。
+        copied = 0
+        if force or st["state"] in ("empty", "partial"):
+            try:
+                pkg_dir.mkdir(parents=True, exist_ok=True)
+                # 有 manifest 就直接遍历清单项（O(清单)，不扫 .git 等大目录）；
+                # 没有 manifest 才 rglob 全仓，并跳过运行期垃圾目录。
+                if manifest_files:
+                    rels = sorted(manifest_files)
+                else:
+                    rels = []
+                    skip_dirs = {".git", "__pycache__", "data", ".tmp_refs",
+                                 ".screenshots", "node_modules"}
+                    for item in src.rglob("*"):
+                        if not item.is_file():
+                            continue
+                        rel = item.relative_to(src).as_posix()
+                        if any(part in skip_dirs for part in Path(rel).parts):
+                            continue
+                        if _is_runtime_junk(rel, item.name):
+                            continue
+                        rels.append(rel)
+                for rel in rels:
+                    target = pkg_dir / rel
+                    if not force and target.exists() and target.stat().st_size > 0:
+                        continue
+                    src_file = src / rel
+                    if not src_file.is_file():
+                        continue
+                    if force and target.is_file():
+                        try:
+                            if (sha256_file(target) == manifest_hashes.get(rel)
+                                    and target.stat().st_size
+                                    == manifest_sizes.get(rel)):
+                                continue  # 内容一致，跳过避免无谓写锁
+                        except OSError:
+                            pass  # 读取失败则直接覆盖
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copy2(src_file, target)
+                        copied += 1
+                    except OSError as e:
+                        errs.append(f"{rel}: {e}")
+                if copied == 0 and st["state"] == "empty" and not force:
+                    errs.append("没有复制任何文件（可能全部被占用）")
+            except Exception as e:
+                errs.append(f"补全目录失败：{e}")
+        if force:
+            updated_files[st["profile"]] = copied
+        # 2) 恢复 profile 的 bundles / dependencies 声明
+        if st["state"] in ("empty", "partial", "missing_bundle", "missing_dep"):
+            try:
+                meta = json.loads(profile_pkg.read_text(encoding="utf-8-sig"))
+                dsh = meta.setdefault("dsh", {})
+                prof = dsh.setdefault("profile", {})
+                bundles = list(prof.get("bundles") or [])
+                changed = False
+                if "lingshu-skill" not in bundles:
+                    bundles.append("lingshu-skill")
+                    prof["bundles"] = bundles
+                    changed = True
+                deps = meta.setdefault("dependencies", {})
+                if "lingshu-skill" not in deps:
+                    # 优先用 lockfile 里的原始 specifier（与 lockfile 对齐，pnpm 不会重解析）
+                    spec = _dsh_lockfile_specifier(profile_dir, "lingshu-skill")
+                    deps["lingshu-skill"] = spec or src_version
+                    changed = True
+                if changed:
+                    brain.atomic_json(profile_pkg, meta)
+            except Exception as e:
+                errs.append(f"恢复声明失败：{e}")
+        if errs:
+            errors.append({"profile": st["profile"], "errors": errs})
+        else:
+            repaired.append(st["profile"])
+        brain.log_event("growth",
+                        f"DSH 副本修复 {st['profile']}: state={st['state']} "
+                        f"→ {'ok' if not errs else 'errors'}")
+    result = {"ok": not errors, "repaired": repaired, "skipped": skipped, "errors": errors}
+    if force:
+        result["updated_files"] = updated_files
+    return result
+
+
 def _skill_roots() -> list:
     """(来源标签, 目录) 列表：自己写的在最前，其余按宿主名标注。"""
     roots = [("自己", SKILLS_DIR)]
@@ -3605,10 +4000,11 @@ def run(argv=None) -> int:
     try:
         return _run(argv)
     except (ValueError, FileExistsError, KeyError) as exc:
+        # 业务错误（参数非法/找不到对象）：退出码 1
         print(f"[错误] {exc}", file=sys.stderr)
-        return 2
+        return 1
     except OSError as exc:
-        # 文件被占用 / 读不到文件 / 目录不可写等，给可读信息而不是裸 traceback
+        # 文件被占用 / 读不到文件 / 目录不可写等：系统错误，退出码 2
         print(f"[错误] 文件操作失败：{exc}", file=sys.stderr)
         return 2
 
@@ -3827,7 +4223,7 @@ def _run(argv=None) -> int:
         if writing:
             print(f"[只读] 记忆库当前不可写，{args.cmd} {act} 需要写盘。"
                   "改用 --home 指向可写目录，或先解除写保护。", file=sys.stderr)
-            return 3
+            return 1
 
     # ---------------- knowledge
     if args.cmd == "knowledge":
@@ -3880,12 +4276,12 @@ def _run(argv=None) -> int:
                 path = Path(args.apply)
                 if not path.exists():
                     print(f"找不到整理结果：{path}", file=sys.stderr)
-                    return 2
+                    return 1
                 try:
                     result = brain.load_loose_json(path, "knowledge tidy --apply 的结果")
                 except ValueError as e:
                     print(str(e), file=sys.stderr)
-                    return 2
+                    return 1
                 res = apply_tidy(result)
                 print(f"知识整理完成：合并 {res['merged']} 组，更新 {res['updated']} 条，"
                       f"新建 {res['created']} 条，删除 {res['deleted']} 条")
@@ -3989,7 +4385,7 @@ def _run(argv=None) -> int:
             if args.act == "new":
                 if not body:
                     print("需要 --body 或 --file 提供正文。", file=sys.stderr)
-                    return 2
+                    return 1
                 res = create_skill(args.name, args.description, body, args.force)
                 print(f"技能已创建：{res['path']}（v{res['version']}）")
                 print("自检：python scripts/brain.py skill check " + res["name"])
@@ -4257,7 +4653,7 @@ def _run(argv=None) -> int:
         if args.act in ("new", "edit", "rm"):
             if _readonly():
                 print("[只读] 记忆库当前不可写，扩展模块需要写盘。", file=sys.stderr)
-                return 3
+                return 1
             if args.act == "new":
                 body = args.body
                 if getattr(args, "file", None):
@@ -4299,7 +4695,7 @@ def _run(argv=None) -> int:
             if not load_config().get("extensions_enabled", False):
                 print("扩展未启用（extensions_enabled=false，扩展是任意代码，默认不执行）。"
                       "确认信任后运行 `config set extensions_enabled true` 开启。", file=sys.stderr)
-                return 3
+                return 1
             mod = _load_ext(args.name)
             fn = getattr(mod, "run", None)
             if not callable(fn):

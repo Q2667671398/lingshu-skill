@@ -1033,6 +1033,18 @@ def daily(dry_run: bool = False, force: bool = False, feel_specs: list | None = 
         # ---- v3.02 #5：每日追加 metrics.jsonl（趋势数据源，面板可画曲线）
         try:
             s = stats()
+            # 第四轮#4：importance 分布直方图——通胀的报警器。
+            # 建议面板画堆叠面积图：若 ≥0.9 档占比持续上涨（>25% 要警惕），说明
+            # "记什么都偏高"的通胀在累积，该调 allow_reinforce 阈值或 daily_remind。
+            imp_hist = {"0-0.3": 0, "0.3-0.6": 0, "0.6-0.9": 0, "0.9+": 0}
+            n_imp = 0
+            for _m in load_all():
+                if not _m.get("id"):
+                    continue
+                _i = _num(_m.get("importance"), 0.5)
+                _k = "0-0.3" if _i < 0.3 else "0.3-0.6" if _i < 0.6 else "0.6-0.9" if _i < 0.9 else "0.9+"
+                imp_hist[_k] += 1
+                n_imp += 1
             _append_jsonl(HOME / "metrics.jsonl", {
                 "ts": now_ts(), "date": today,
                 "total": s.get("total"), "hippo": s.get("hippo"),
@@ -1043,6 +1055,8 @@ def daily(dry_run: bool = False, force: bool = False, feel_specs: list | None = 
                 "never_recalled_pct": s.get("never_recalled_pct"),
                 "avg_retention": s.get("avg_retention"),
                 "assoc": s.get("assoc"), "working": s.get("working"),
+                "importance_hist": imp_hist,
+                "importance_high_pct": (imp_hist["0.9+"] / n_imp * 100) if n_imp else None,
             })
         except Exception as e:
             print(f"[警告] metrics.jsonl 写入失败（不影响例行）：{e}", file=sys.stderr)
@@ -1175,6 +1189,8 @@ def _main(argv=None) -> int:
     p_rem.add_argument("--correction", action="store_true",
                        help="#41 改口标记：这条是用户纠正过的更正版，做梦合并/淡忘/归档永不自动动它"
                             "（教训提炼 #36 优先读它）")
+    p_rem.add_argument("--project", default="",
+                       help="项目名标记（第四轮#3）：recall --project 同名时此记忆排前")
 
     p_learn = sub.add_parser("lesson", help="一条命令记教训：memory(mistake) + knowledge(pending) + note 三写"
                                              "（brain.py learn 已被 growth 组的 learn ask/loop 占用，故名单独成词）")
@@ -1195,6 +1211,8 @@ def _main(argv=None) -> int:
                             "/ auto=自适应（默认）")
     p_rec.add_argument("--evidence", action="store_true",
                        help="带证据解引用：做梦合并/蒸馏产物命中时自动附最多 2 条证据原文（#46）")
+    p_rec.add_argument("--project", default="",
+                       help="项目上下文（第四轮#3）：同项目记忆加分排前（不硬过滤）")
 
     p_deref = sub.add_parser("deref", help="按需解引用：取一条记忆的证据原文（#46 Memex）")
     p_deref.add_argument("memory_id", help="记忆 id（通常是合并/蒸馏产物的 id）")
@@ -1487,6 +1505,10 @@ def _main(argv=None) -> int:
     p_mem_freeze.add_argument("id", help="记忆 id（如 m_xxx）")
     p_mem_unfreeze = mem_sub.add_parser("unfreeze", help="解冻记忆（#28）：恢复参与召回/注入")
     p_mem_unfreeze.add_argument("id", help="记忆 id（如 m_xxx）")
+    # #34 物理删除：双重确认（dust 冷静期 7 天 + --confirm <id 前 8 位>）
+    p_mem_purge = mem_sub.add_parser("purge", help="物理删除记忆（#34）：需先转 dust 满 7 天 + --confirm <id前8位>")
+    p_mem_purge.add_argument("id", help="记忆 id（如 m_xxx）")
+    p_mem_purge.add_argument("--confirm", required=True, help="确认码：必须等于 id 前 8 位")
     # v3.02 #10：事实保质期复核
     mem_sub.add_parser("review-list", help="列出已到期、该找用户复核的事实记忆（--ttl/--review-at）")
     p_mem_rc = mem_sub.add_parser("review-confirm", help="复核确认：这条事实用户确认过还作数，不再注入「待复核」提醒")
@@ -1664,6 +1686,19 @@ def _main(argv=None) -> int:
         p = load_persona()
         print(f"记忆库已就绪：{HOME}")
         print(f"人格档案：{HOME / 'persona.json'}")
+        # #22 首次演示：记忆库完全空时，顺手写一条示例记忆 + 立刻 recall 演示，
+        # 让新用户第一分钟就看到"以后我记住你的样子"。force 重置人格时不跑（用户明确要清空）。
+        if not args.force and not load_all() and not load_archive():
+            print("\n—— 首次记忆演示 ——")
+            demo_text = "这是一条示例记忆：你可以用 remember 把约定、偏好、情绪高点都记下来，我会在新会话里回忆起来。"
+            demo, _ = remember(demo_text, kind="fact", importance=0.6,
+                               tags=["演示", "示例"], entities=["灵枢"])
+            print(f"已写入示例记忆：{demo['id']}")
+            print("现在回忆它：")
+            for r in recall("示例记忆", k=3):
+                m = r[0] if isinstance(r, (list, tuple)) else r
+                print(f"  · [{m.get('layer')}] {m.get('text', '')[:60]}")
+            print("（演示记忆可随时 forget 删除）")
         if not p.get("onboarding", {}).get("completed"):
             print("还没有初识：先问用户希望你叫什么、是什么性格；用户不知道就自己定。")
         print(persona_brief(p))
@@ -1698,7 +1733,8 @@ def _main(argv=None) -> int:
                             args.source, args.layer,
                             emotion=(args.emotion or None),
                             ttl_days=_ttl_days, review_at=_review_ts,
-                            correction=args.correction)
+                            correction=args.correction,
+                            project=(getattr(args, "project", "") or "").strip() or None)
         if getattr(args, "correction", False) and how != "merged":
             print("  #41 改口记录：已打 correction 标，永不自动合并/淡忘/归档（教训提炼优先读它）")
         print(f"{'已合并' if how == 'merged' else '已写入'}：{rec['id']} ({rec['layer']}, 重要性 {rec['importance']})")
@@ -1774,7 +1810,8 @@ def _main(argv=None) -> int:
                 _print_mem(m)
             return 0
         results = recall(query, args.k, include_archive=args.include_archive,
-                         mode=args.mode, with_evidence=args.evidence)
+                         mode=args.mode, with_evidence=args.evidence,
+                         project=(getattr(args, "project", "") or "").strip() or None)
         record_retrieval(query, results, channel="recall")
         # 知识条目命中提示：recall 原本只查记忆层，顺带在 knowledge.jsonl 里做
         # 简单词面匹配——这个问题曾被沉淀成知识时先亮出来（含待审核条目），
@@ -2953,6 +2990,22 @@ def _main(argv=None) -> int:
         except Exception as e:
             checks.append(("writers", "WARN", str(e)))
 
+        # 10. 第四轮#2：engine 副本一致性——scripts/ vs engine/（换行归一化后逐文件比对）
+        #     AstrBot 宿主跑的是 engine 副本，漂了就是"同一记忆库、两个宿主行为不一致"。
+        try:
+            import subprocess as _sp
+            root = Path(__file__).resolve().parent.parent
+            r = _sp.run([sys.executable, str(root / "scripts" / "sync_engine.py"), "--check"],
+                        capture_output=True, text=True, timeout=60)
+            if r.returncode == 0:
+                detail = (r.stdout or "").strip().splitlines()[-1:] or ["一致"]
+                checks.append(("engine-sync", "PASS", detail[0].replace("[sync] ", "")))
+            else:
+                first = next((l for l in (r.stdout or "").splitlines() if "不一致" in l), "副本漂移")
+                checks.append(("engine-sync", "FAIL", f"{first}（跑 python scripts/sync_engine.py 修平）"))
+        except Exception as e:
+            checks.append(("engine-sync", "WARN", str(e)))
+
         fails = sum(1 for _, s, _ in checks if s == "FAIL")
         warns = sum(1 for _, s, _ in checks if s == "WARN")
         if args.json:
@@ -3711,6 +3764,16 @@ def _main(argv=None) -> int:
                 print(f"{'已冻结' if r['frozen'] else '已解冻'}：{r['id']}")
                 if r["frozen"]:
                     print("  冻结后不参与召回/启动注入/做梦合并，用 show 仍可查看；解冻立即恢复。")
+            return 0
+        # #34 物理删除：双重确认（dust 冷静期 7 天 + --confirm <id前8位>）
+        if mem_cmd == "purge":
+            try:
+                r = purge(args.id, args.confirm)
+            except (ValueError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            print(f"已物理删除：{args.id}（原在 {r['layer']} 层，关联边已切断）")
+            print("  此操作不可恢复。")
             return 0
         # v3.02 #10：事实保质期复核——到期列出 / 用户确认后静音
         if mem_cmd == "review-list":

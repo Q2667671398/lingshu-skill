@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 3.10
+version: 3.11
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -214,7 +214,7 @@ python scripts/brain.py ext rm <名字>                    # 删除
 ## 淡忘可逆与记忆来源（v2.41+）
 
 - **淡忘不是终点**：dust 层记忆可 `fold`（原文收进 folded_text 只留 gist，数据还在）/ `unfold`（想起来，原文还原）/ `revive`（复活回活跃层）。面板 dust 卡片带 ⇲⇱⤴ 按钮。
-- **记忆带来源**：每条记忆有 `project` / `session` 归属（缺省 `default`）；冲突检测只在同源比较——A 项目用 MySQL、B 项目用 PostgreSQL 是并存事实，不误报冲突。`/api/remember` 可显式传入。
+- **记忆带来源**：每条记忆有 `project` / `session` 归属（缺省 `default`）；冲突检测只在同源比较——A 项目用 MySQL、B 项目用 PostgreSQL 是并存事实，不误报冲突。CLI 用 `remember --project` / `recall --project` 显式传入，同项目召回加分排前（不硬过滤，跨项目照常可见）。
 - **面板「诊断」标签页**：`GET /api/diagnostics`（`brain.diagnose()`）归因数据异常——死链、冲突未裁决、数据膨胀、来源归属完整率、折叠状态。
 - **群聊通道**（聊天机器人宿主）：记忆带 `channel`/`group_id`/`user` 三元组，同一用户跨群共享画像、群内话题按群隔离；涉及第三人的记忆需本人 `channel privacy grant` 授权后他人才能查。`channel owner add/list` 管理主人白名单。
 
@@ -286,8 +286,8 @@ python scripts/brain.py topic drop "加班"                  # 用户明确说�
 
 ```bash
 python scripts/brain.py startup --query "..." [--budget 1400]   # 会话开始（最重要）
-python scripts/brain.py remember "内容" --kind fact --importance 7
-python scripts/brain.py recall "关键词" --k 6
+python scripts/brain.py remember "内容" --kind fact --importance 7 [--project 项目名]
+python scripts/brain.py recall "关键词" --k 6 [--project 项目名]   # 同项目记忆 +0.25 加分（不硬过滤）
 python scripts/brain.py check-context --used 68      # 60 清点 / 75 做梦 / 90 封存
 python scripts/brain.py capture "原文" --tag 逃生
 python scripts/brain.py dream --auto                 # 做梦整理
@@ -304,7 +304,7 @@ python scripts/brain.py ext new|list|edit|run|rm      # 扩展模块（可执行
 python scripts/brain.py knowledge add|search|review
 python scripts/brain.py work | work done <序号> | work flush
 python scripts/brain.py status --json               # 水位唯一数据源（退出码 0/1=60%/2=75%/3=90%，面板/cron/doctor 都读它）
-python scripts/brain.py doctor [--json]             # 六合一体检（audit/人格/记忆诊断/写权限/副本sha/日志warn）
+python scripts/brain.py doctor [--json]             # 七合一体检（audit/人格/记忆诊断/写权限/副本sha/日志warn/engine-sync——副本漂移直接暴露）
 python scripts/brain.py lesson "教训内容"            # 一条命令三写：memory(mistake)+knowledge(pending)+note
 python scripts/brain.py persona suggest [list|scan|adopt N|discard N]  # 从记忆/笔记归纳人格画像候选，确认后生效
 python scripts/brain.py persona viewed              # 确认已浏览人格近期改动
@@ -317,6 +317,7 @@ python scripts/brain.py lessons [list]               # 教训库（被验证+0.1
 python scripts/brain.py export --md [--out 文件]      # 人类可读 Markdown 导出
 python scripts/brain.py auditlog [limit]             # 审计日志（谁/何时/做了什么）
 python scripts/brain.py serve                        # 可视化面板 :8765
+python scripts/bench.py [--n 1000|--quick]           # 性能基准：隔离临时库量 remember/recall/inject/doctor 的 p50/p95（不碰真实记忆库）
 ```
 
 其余命令（人格编辑、mind、assoc、note、learn、skill、growth、evolve、backup、sync 等）见 [`docs/commands.md`](docs/commands.md)。

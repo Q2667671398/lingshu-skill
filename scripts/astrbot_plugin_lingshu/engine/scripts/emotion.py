@@ -115,6 +115,11 @@ DESIRE_EMO_MAP = {
 }
 EMOTION_HALF_LIFE = 6 * HOUR  # 情绪余波：6 小时衰减一半
 
+# #38 峰值情绪（formative）：强度 ≥ 此值的"成形时刻"会被打上 formative 标记，
+# 做梦整理人格 traits 时这些事件权重 ×2.5 且不受漂移门限压制——
+# 一次大喜/大怒对人格的塑造不该和普通情绪一个概率。
+FORMATIVE_INTENSITY = 0.85
+
 # 理智被情绪压制的上限（杏仁核劫持：会压低，但永远压不掉判断力的一半以上）
 EMOTION_SUPPRESS_MAX = 0.40
 # arousal 达到此值视为"情绪上头"（激动情绪超过一定程度会影响理智）
@@ -122,6 +127,30 @@ STORM_AROUSAL = 0.65
 # 理智没有成形时的中性值（与好奇心一致）
 RATIONAL_DEFAULT = 50
 ASSOC_FILE = HOME / "assoc.jsonl"   # 记忆关联边（无向，附关系与权重）
+
+
+def _num(v, default: float = 0.0) -> float:
+    """把可能是 None/字符串/bool/NaN 的值安全转成 float（与 memory._num 同语义）。
+    情绪流里老事件、手改数据都可能让 ts/intensity 变成 null 或字符串，硬 float() 会整条崩。"""
+    if v is None or isinstance(v, bool):
+        return float(default)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    if math.isnan(f) or math.isinf(f):
+        return float(default)
+    return f
+
+
+def _dedupe(items: list) -> list:
+    """保序去重（与 memory._dedupe 同语义），供情绪抑制清单等使用。"""
+    out, seen = [], set()
+    for x in items or []:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 
 def _emotion_coord(name: str) -> tuple:
@@ -215,6 +244,17 @@ def emotion_events(limit: int = 0) -> list:
     rows = read_jsonl(HOME / "emotions.jsonl")
     rows.sort(key=lambda r: _num(r.get("ts"), 0), reverse=True)
     return rows[:limit] if limit else rows
+
+
+def formative_events(days: float = 14) -> list:
+    """#38 取最近 N 天的峰值情绪事件（formative=True）。
+
+    供做梦 traits 漂移使用：这些事件权重 ×2.5 且不受漂移门限压制。
+    防御式读取——老事件没有 formative 字段，直接过滤掉。
+    """
+    cutoff = now_ts() - max(0.0, float(days)) * 86400
+    return [e for e in emotion_events()
+            if e.get("formative") and _num(e.get("ts"), 0) >= cutoff]
 
 
 def _locate_event(rows: list, ref) -> dict | None:
@@ -380,6 +420,11 @@ def feel(name: str, intensity: float = 0.6, why: str = "",
     if suppressed:
         ev["intensity"] = round(ev["intensity"] * 0.4, 3)
         ev["suppressed_by"] = cfg.get("notes") or "情感设置里被我自己抑制"
+    # #38 峰值情绪（formative）：抑制打折之后强度仍达到门槛，才算"成形时刻"。
+    # 标记就写在事件本行（emotions.jsonl），不另开 formative 列表——侵入最小，
+    # 且事件被 adjust/del 时标记天然跟随，不会出现标记与事件脱节。
+    if float(ev.get("intensity") or 0) >= FORMATIVE_INTENSITY:
+        ev["formative"] = True
     # 写入与序号定位共用一把锁：emotion adjust/del 的"第 n 条"以锁内看到的
     # 最新状态为准，并发 feel 追加不会让序号错位改/删错条（append 收进锁内）。
     with _locked(HOME / "emotions.jsonl"):
@@ -622,8 +667,8 @@ def mood_brief() -> str:
                 st["count"] = int(st.get("count") or 0) + 1
                 st["sig"] = sig
                 atomic_json(path, st)
-        except Exception:
-            pass   # 闸门状态读写失败绝不挡正常注入
+        except Exception as exc:
+            log_event("mood-gate", f"心境注入闸门状态读写失败（限流可能短暂失效）：{exc}", level="warn")
     if gated:
         return ""
     top = m["active"][0]
@@ -690,8 +735,8 @@ def _log_emotion_check(row: dict) -> None:
         rows = read_jsonl(p)[-199:]
         rows.append(row)
         write_jsonl(p, rows)
-    except Exception:
-        pass
+    except Exception as exc:
+        log_event("emotion-check", f"情绪记录落盘失败（不影响主流程）：{exc}", level="warn")
 
 
 def emotion_consistency_check(reply_text: str, record: bool = True) -> dict:
@@ -887,8 +932,8 @@ def _log_emotion_audit(row: dict) -> None:
         rows = read_jsonl(p)[-199:]
         rows.append(row)
         write_jsonl(p, rows)
-    except Exception:
-        pass
+    except Exception as exc:
+        log_event("emotion-audit", f"情绪审计落盘失败（不影响主流程）：{exc}", level="warn")
 
 
 def emotion_audit_recent(limit: int = 20) -> list:
@@ -952,6 +997,61 @@ def emotion_evaluate(event: str, polarity: str = "auto", importance: float = 0.6
         "event_id": (ev or {}).get("id"),
     })
     return rv
+
+
+# —— v3.02 #11：情绪自动输入（轻量启发式，只产候选不落盘）——
+# 用户消息里带明显情绪信号词时，AI 还没来得及调 emotion_evaluate/mirror，
+# 这里先给出一个"要不要记一笔情绪"的候选建议；采不采纳、强度多少由 AI 定。
+# 绝不直接写情绪流：误判一条"用户随口一句"成情绪事件比漏判更伤。
+
+_AUTO_POS_WORDS = ("谢谢", "太好了", "真棒", "好厉害", "帮大忙", "开心", "高兴",
+                   "太可爱", "喜欢", "感动", "哈哈", "嘿嘿", "辛苦了")
+_AUTO_NEG_WORDS = ("烦死了", "气死", "难受", "难过", "失望", "生气", "委屈",
+                   "崩溃", "哭", "好累", "太累", "害怕", "担心", "焦虑", "无聊")
+
+
+def emotion_auto_candidate(user_text: str) -> dict | None:
+    """扫描用户一句话，产出情绪候选（不写盘、不改状态）。
+
+    返回 None = 没有情绪信号，不用记；否则返回候选字典：
+      {emotion, intensity, why, hits, decision: "candidate"}
+    emotion 直接复用现有情绪词表（EMOTIONS），确保 feel() 能接受。
+    """
+    t = (user_text or "").strip()
+    if not t or len(t) > 500:  # 超长文本大概率是粘贴内容，不做情绪输入
+        return None
+    pos_hits = [w for w in _AUTO_POS_WORDS if w in t]
+    neg_hits = [w for w in _AUTO_NEG_WORDS if w in t]
+    if not pos_hits and not neg_hits:
+        return None
+    if pos_hits and neg_hits:  # 正负混着说（"烦死了不过还是谢谢"）不猜，交人工
+        return None
+    strong = any(w in t for w in ("气死", "崩溃", "哭", "太好了", "帮大忙", "委屈", "害怕"))
+    # 量化：命中 1 词=弱信号 0.35，2 词=0.5，3+ 或强烈词=0.7；感叹号再加一档
+    n = len(pos_hits or neg_hits)
+    intensity = 0.7 if (n >= 3 or strong) else (0.5 if n == 2 else 0.35)
+    if ("!" in t or "！" in t) and intensity < 0.7:
+        intensity += 0.1
+    if neg_hits:
+        emotion = "难过" if any(w in t for w in ("难过", "哭", "委屈")) else (
+            "焦虑" if any(w in t for w in ("害怕", "担心", "焦虑")) else "烦躁")
+        why = f"用户的话里带负面信号：{'、'.join(neg_hits[:3])}"
+    else:
+        emotion = "开心" if any(w in t for w in ("开心", "高兴", "哈哈")) else (
+            "感动" if "感动" in t else "满足")
+        why = f"用户的话里带正面信号：{'、'.join(pos_hits[:3])}"
+    # 词表校验：情绪名必须在 EMOTIONS 里，不在就退回通用词
+    if emotion not in EMOTIONS:
+        emotion = "满足" if pos_hits else "难过"
+        if emotion not in EMOTIONS:
+            return None
+    return {
+        "emotion": emotion,
+        "intensity": round(min(1.0, intensity), 2),
+        "why": why,
+        "hits": pos_hits[:3] + neg_hits[:3],
+        "decision": "candidate",  # 只是候选：AI 决定要不要 feel()/mirror()
+    }
 
 
 def emotion_mirror(user_emotion: str, intensity: float = 0.5, what: str = "") -> dict:

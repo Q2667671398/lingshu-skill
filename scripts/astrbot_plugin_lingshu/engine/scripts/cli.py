@@ -132,6 +132,68 @@ def _open_backup_zip(zp: Path, password: str | None):
     return zipfile.ZipFile(zp)
 
 
+def _latest_valid_backup(bad_path: Path) -> Path | None:
+    """v3.02 #6：坏包回退——在坏包同目录找最近一份 testzip 通过的备份。
+
+    找不到/校验失败返回 None（只有这一个搜索结果，不做任何自动恢复决策）。
+    """
+    try:
+        cands = sorted(bad_path.parent.glob("brain-memory_*.zip*"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return None
+    for p in cands:
+        if p == bad_path:
+            continue
+        if not p.is_file():
+            continue
+        try:
+            with _open_backup_zip(p, None) as zf:
+                if zf.testzip() is None:
+                    return p
+        except Exception:
+            continue
+    return None
+
+
+def _backup_drill(zip_path: Path, password: str | None) -> bool:
+    """v3.02 #7：备份抽样恢复演练。
+
+    从备份包抽关键文件解到临时目录验证：JSON 可 parse / jsonl 行数非 0。
+    persona.json 是底线（丢了就是灾难），缺一个即 False；
+    jsonl 层文件缺了不算失败——刚 init 的空库还没写过记忆，属正常形态，
+    但只要在包里就必须内容非空。
+    任何异常按演练失败处理但不抛——演练本身绝不能让备份命令崩溃。
+    """
+    must_have = ("persona.json",)
+    check = list(must_have) + ["hippocampus.jsonl", "config.json"]
+    try:
+        with _open_backup_zip(zip_path, password) as zf:
+            names = set(zf.namelist())
+            missing = [x for x in must_have if x not in names]
+            if missing:
+                log_event("backup", f"演练失败：关键文件未入包 {missing}", level="warn")
+                return False
+            tmp = Path(__import__("tempfile").mkdtemp(prefix="lingshu-drill-"))
+            try:
+                for name in check:
+                    if name not in names:
+                        continue
+                    data = zf.read(name)
+                    if name.endswith(".json"):
+                        json.loads(data.decode("utf-8-sig"))
+                    else:  # jsonl：行数非 0
+                        if not len([l for l in data.decode("utf-8", "replace").splitlines() if l.strip()]):
+                            log_event("backup", f"演练失败：{name} 为空", level="warn")
+                            return False
+                return True
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+    except Exception as exc:
+        log_event("backup", f"演练异常：{exc}", level="warn")
+        return False
+
+
 def cmd_backup(target: str | None = None, keep: int = 20, password: str | None = None,
                assume_yes: bool = False) -> int:
     """把整个记忆库打成 zip。保留最近 keep 份，旧的自动修剪。
@@ -141,7 +203,7 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
     """
     if not HOME.exists():
         print(f"[错误] 记忆库还不存在：{HOME}（先运行 init）", file=sys.stderr)
-        return 2
+        return 1
     if not password and not assume_yes:
         # 明文备份会扩大泄露面（备份文件与明文数据同盘甚至可能更分散）：显式确认
         if sys.stdin and sys.stdin.isatty():
@@ -196,6 +258,32 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
         return 2
     if skipped:
         print(f"跳过 {skipped} 个敏感文件（密钥/凭据不进备份）")
+    # —— v3.02 #6：备份完整性自检 + sha256 sidecar ——
+    # 写完立刻 testzip：防磁盘满/编码问题产出坏包却当成功；坏了删掉并报错。
+    # .sha256 sidecar 让备份文件本身可被第三方对账（sha256sum -c）。
+    intact = False
+    try:
+        with _open_backup_zip(zip_path, None) as zf:
+            intact = zf.testzip() is None
+    except Exception:
+        intact = False
+    if not intact:
+        try:
+            zip_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        print("[错误] 备份包完整性校验失败（testzip 报坏/打不开），已删除坏包。"
+              "请检查磁盘空间后重试。", file=sys.stderr)
+        log_event("backup", "backup testzip 校验失败，坏包已删除", level="error")
+        return 2
+    # —— v3.02 #7：抽样恢复演练 ——
+    # 抽最多 3 个关键文件解到临时目录验证：JSON 可 parse、行数非 0。
+    # 关键件（persona.json/cortex.jsonl）没进包或解析失败 → 报 warn（下次注入/doctor 可见），
+    # 不删备份：可解析说明当时的数据本身就有问题，删了更糟，人来裁决。
+    drill_ok = _backup_drill(zip_path, password)
+    if not drill_ok:
+        print("[警告] 备份抽样演练未通过：包能打开，但关键文件缺失或解析失败。"
+              "建议尽快重做一份备份并人工检查。", file=sys.stderr)
     if password:
         # 加密：zip 字节 → 口令派生密钥加密 → .zip.enc，明文 zip 不留盘
         try:
@@ -219,6 +307,15 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
                 pass
     size_mb = zip_path.stat().st_size / 1024 / 1024
     print(f"已备份 {n} 个文件 → {zip_path}（{size_mb:.1f} MB）{'（口令加密）' if password else ''}")
+    # sha256 sidecar 在加密之后对最终产物计算（明文包会被 .enc 替换）
+    try:
+        import hashlib as _hl
+        _sha = _hl.sha256(zip_path.read_bytes()).hexdigest()
+        zip_path.with_name(zip_path.name + ".sha256").write_text(
+            f"{_sha}  {zip_path.name}\n", encoding="ascii")
+    except Exception as exc:
+        log_event("backup", f"sha256 sidecar 写入失败（备份本身完好）：{exc}", level="warn")
+        print(f"[警告] sha256 校验文件写入失败：{exc}", file=sys.stderr)
     if not password:
         print("[提示] 备份未加密，含全部记忆原文；加 --password 可生成加密备份。", file=sys.stderr)
     if removed:
@@ -240,40 +337,55 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
     zp = Path(zip_path).expanduser()
     if not zp.exists():
         print(f"[错误] 找不到备份文件：{zp}", file=sys.stderr)
-        return 2
+        return 1
     try:
         zf = _open_backup_zip(zp, password)
-    except ValueError as exc:
-        print(f"[错误] {exc}", file=sys.stderr)
-        return 2
-    except zipfile.BadZipFile:
-        print("[错误] 不是有效的 zip 文件", file=sys.stderr)
+        # v3.02 #6：恢复前完整性校验——坏包绝不往库里写半截数据
+        if zf.testzip() is not None:
+            zf.close()
+            bad = True
+        else:
+            bad = False
+    except (ValueError, zipfile.BadZipFile) as exc:
+        bad = True
+        if isinstance(exc, ValueError):
+            print(f"[错误] {exc}", file=sys.stderr)
+    if bad:
+        # v3.02 #6：坏包自动回退——尝试列表里最近一份通过校验的旧备份
+        prev = _latest_valid_backup(zp)
+        if prev:
+            print(f"[错误] {zp.name} 是坏包，且发现上一份完好备份：{prev}",
+                  file=sys.stderr)
+            print(f"[提示] 请人工确认后改用：restore \"{prev}\"", file=sys.stderr)
+        else:
+            print("[错误] 该备份包损坏，且同目录找不到其他完好的备份。", file=sys.stderr)
+        log_event("restore", f"restore 拒绝坏包：{zp.name}", level="error")
         return 2
     with zf:
         names = zf.namelist()
-        bad = [x for x in names
-               if x.startswith("/") or ".." in Path(x).parts or ":" in x]
-        if bad:
-            print(f"[错误] 备份里包含非法路径，已拒绝：{bad[:3]}", file=sys.stderr)
-            return 2
+        illegal = [x for x in names
+                   if x.startswith("/") or ".." in Path(x).parts or ":" in x]
+        if illegal:
+            print(f"[错误] 备份里包含非法路径，已拒绝：{illegal[:3]}", file=sys.stderr)
+            return 1
         # 防 zip 炸弹：条目数、解压后总大小都要有上限
         if len(names) > MAX_RESTORE_ENTRIES:
             print(f"[错误] 备份条目过多（{len(names)} > {MAX_RESTORE_ENTRIES}），拒绝恢复", file=sys.stderr)
-            return 2
+            return 1
         total_size = sum(i.file_size for i in zf.infolist() if not i.is_dir())
         if total_size > MAX_RESTORE_BYTES:
             print(f"[错误] 备份解压后过大（{total_size / 1024 / 1024:.0f} MB > {MAX_RESTORE_BYTES / 1024 / 1024:.0f} MB），拒绝恢复",
                   file=sys.stderr)
-            return 2
+            return 1
         if not any(x in ("persona.json", "hippocampus.jsonl", "cortex.jsonl", "config.json") for x in names):
             print("[错误] 这不像灵枢的记忆备份（缺 persona.json / hippocampus.jsonl）", file=sys.stderr)
-            return 2
+            return 1
         if not yes:
             # 非交互环境（管道/脚本/AI 调用）没有确认提示可用：必须显式 --yes
             # 才允许覆盖写回，否则静默覆盖数据的风险太大，直接拒绝。
             if not (sys.stdin and sys.stdin.isatty()):
                 print("[错误] 非交互环境下恢复会覆盖现有数据，必须显式加 --yes 确认。", file=sys.stderr)
-                return 2
+                return 1
             try:
                 mode = "【--exact】先删除现有受管文件、再" if exact else ""
                 extra = "（备份之后新增的文件会被删除）" if exact else "（备份之后新增的文件不会被删除）"
@@ -336,10 +448,10 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
                     os.replace(str(extracted), str(final))
     except ValueError as exc:
         print(f"[错误] {exc}", file=sys.stderr)
-        return 2
+        return 1
     except PermissionError as exc:
         print(f"[错误] 恢复被拒绝（当前环境可能只读）：{exc}", file=sys.stderr)
-        return 3
+        return 1
     finally:
         # 无论成功还是失败，都清掉临时目录
         try:
@@ -364,7 +476,7 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
             r = archive_run(dry_run=dry_run)
         except PermissionError as exc:
             print(f"[只读] {exc}", file=sys.stderr)
-            return 3
+            return 1
         verb = "可归档" if dry_run else "已雪藏"
         print(f"{verb} {r['count']} 条冷记忆 → 归档层（原文保留，archive search / restore 可找回）。")
         for x in r["archived"][:max(limit, 1)]:
@@ -379,7 +491,7 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
     if action == "search":
         if not arg:
             print("用法：archive search <关键词>", file=sys.stderr)
-            return 2
+            return 1
         q = terms(arg)
         hits = [m for m in rows if q and any(t in _hay(m) for t in q)]
         if not hits:
@@ -394,10 +506,10 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
     if action == "restore":
         if not arg:
             print("用法：archive restore <id>", file=sys.stderr)
-            return 2
+            return 1
         if READONLY:
             print("[只读] 记忆库当前不可写，无法回捞。", file=sys.stderr)
-            return 3
+            return 1
         with _locked(HOME / "hippocampus.jsonl"), _locked(HOME / "archive.jsonl"):
             rows = load_archive()
             hit = next((m for m in rows if m.get("id") == arg), None)
@@ -413,6 +525,7 @@ def cmd_archive(action: str = "show", arg: str = "", limit: int = 20,
             hot.append(hit)
             save_all(hot)
             write_jsonl(HOME / "archive.jsonl", [m for m in rows if m.get("id") != arg])
+        audit_log("cli", "archive_restore", arg, "归档回捞到长期记忆")
         print(f"已回捞 {arg} → 长期记忆（重新参与回忆）。")
         return 0
 
@@ -439,7 +552,7 @@ def cmd_relink(limit: int = 0, min_score: float = 1.0, max_links: int = 5) -> in
     import memory as _mem
     if READONLY:
         print("[只读] 记忆库当前不可写，relink 需要写盘。", file=sys.stderr)
-        return 3
+        return 1
     ensure_home()
     # 记忆上万后全库 jaccard 两两比对是 O(n²)，但与 recall/dream 现有全量扫描
     # 同量级；先按创建时间倒序截 limit，保证"最近的最先补到"。
@@ -509,11 +622,11 @@ def cmd_home(action: str = "show", dest: str = "") -> int:
     if action == "move":
         if not dest:
             print("用法：home move <目标目录>", file=sys.stderr)
-            return 2
+            return 1
         dst = Path(dest).expanduser()
         if not HOME.exists():
             print(f"[错误] 源记忆库不存在：{HOME}", file=sys.stderr)
-            return 2
+            return 1
         try:
             dst_res, home_res = dst.resolve(), HOME.resolve()
         except OSError:
@@ -524,13 +637,13 @@ def cmd_home(action: str = "show", dest: str = "") -> int:
         try:
             dst_res.relative_to(home_res)
             print(f"[错误] 目标目录不能是记忆库内部（会边复制边膨胀）：{dst}", file=sys.stderr)
-            return 2
+            return 1
         except ValueError:
             pass
         if dst.exists():
             if any(dst.iterdir()) and not (dst / "persona.json").exists():
                 print(f"[错误] 目标目录非空且不像记忆库：{dst}", file=sys.stderr)
-                return 2
+                return 1
         else:
             try:
                 dst.mkdir(parents=True, exist_ok=True)
@@ -557,7 +670,7 @@ def cmd_home(action: str = "show", dest: str = "") -> int:
         print(f"  python scripts/brain.py --home \"{dst}\" ...   # 单次")
         return 0
     print("用法：home [show | verify | move <目标目录>]", file=sys.stderr)
-    return 2
+    return 1
 
 
 # ---------------------------------------------------------------- startup（会话开始钩子）
@@ -573,16 +686,39 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
     if not p_path.exists() and not any(m.exists() for m in mem_paths):
         print("[灵枢] 记忆库未初始化：先运行 python scripts/brain.py init"
               "（只读环境可用 --home 指到已有目录）", file=sys.stderr)
-        return 2
+        return 1
     print(build_injection(query, budget))
+    # 水位提醒块：与 status 同一实现（memory._water_level），别两套口径。
+    try:
+        wl = memory._water_level()
+        pct = int(wl.get("pct", 0))
+        lines = [f"水位：{pct}%（上次会话结束水位 {wl.get('last_session_pct', '未知')}）",
+                 f"第 {wl.get('wake_count', 1)} 次醒来"]
+        if wl.get("hours_since_dream") is not None:
+            lines.append(f"距上次做梦 {wl['hours_since_dream']:.1f}h")
+        if wl.get("hours_since_handoff") is not None:
+            lines.append(f"距上次交接 {wl['hours_since_handoff']:.1f}h")
+        act = wl.get("action")
+        if act:
+            lines.append(f"建议：{act}")
+        print("── 水位提醒 ──")
+        for ln in lines:
+            print(ln)
+    except Exception:
+        pass  # 提醒失败不阻塞注入
     if not READONLY:
         try:
             with _locked(HOME / "config.json"):
                 cfg = load_config()
                 cfg["last_startup"] = {"ts": now_ts(), "query": (query or "")[:60]}
+                # 第几次醒来：每次 startup 自增（status --json / 面板水位卡读它）
+                cfg["wake_count"] = int(cfg.get("wake_count", 0) or 0) + 1
                 atomic_json(HOME / "config.json", cfg)
         except Exception:
             pass
+        # startup 标记：写入失败可见化的分界线——这条之后出现的 warn/error
+        # 就是"上次会话期间的失败"，注入包顶部会亮出来。
+        log_event("startup", "会话开始，注入完成", level="info")
     return 10 if READONLY else 0
 
 
@@ -615,7 +751,7 @@ def cmd_sync_dsh(days: int = 1, dry_run: bool = False, force: bool = False,
     dsh = _resolve_dsh_dir(explicit)
     if not dsh:
         print("[错误] 没找到 DSH 记忆目录。用 --dir 指定，或设 DSH_MEMORY_HOME。", file=sys.stderr)
-        return 2
+        return 1
     try:
         import growth
     except Exception as exc:
@@ -894,6 +1030,36 @@ def daily(dry_run: bool = False, force: bool = False, feel_specs: list | None = 
         st["last_date"] = today
         st["note_id"] = note.get("id")
         _save_daily_state(st)
+        # ---- v3.02 #5：每日追加 metrics.jsonl（趋势数据源，面板可画曲线）
+        try:
+            s = stats()
+            # 第四轮#4：importance 分布直方图——通胀的报警器。
+            # 建议面板画堆叠面积图：若 ≥0.9 档占比持续上涨（>25% 要警惕），说明
+            # "记什么都偏高"的通胀在累积，该调 allow_reinforce 阈值或 daily_remind。
+            imp_hist = {"0-0.3": 0, "0.3-0.6": 0, "0.6-0.9": 0, "0.9+": 0}
+            n_imp = 0
+            for _m in load_all():
+                if not _m.get("id"):
+                    continue
+                _i = _num(_m.get("importance"), 0.5)
+                _k = "0-0.3" if _i < 0.3 else "0.3-0.6" if _i < 0.6 else "0.6-0.9" if _i < 0.9 else "0.9+"
+                imp_hist[_k] += 1
+                n_imp += 1
+            _append_jsonl(HOME / "metrics.jsonl", {
+                "ts": now_ts(), "date": today,
+                "total": s.get("total"), "hippo": s.get("hippo"),
+                "cortex": s.get("cortex"), "dust": s.get("dust"),
+                "archive": s.get("archive"),
+                "recall_rate": (s.get("recall_usage") or {}).get("rate"),
+                "bad": (s.get("recall_usage") or {}).get("bad"),
+                "never_recalled_pct": s.get("never_recalled_pct"),
+                "avg_retention": s.get("avg_retention"),
+                "assoc": s.get("assoc"), "working": s.get("working"),
+                "importance_hist": imp_hist,
+                "importance_high_pct": (imp_hist["0.9+"] / n_imp * 100) if n_imp else None,
+            })
+        except Exception as e:
+            print(f"[警告] metrics.jsonl 写入失败（不影响例行）：{e}", file=sys.stderr)
 
     return {
         "skipped": False, "date": today, "dry_run": dry_run,
@@ -920,14 +1086,16 @@ def _print_mem(m: dict, score: float | None = None, parts: dict | None = None) -
 
 
 class _BrainParser(argparse.ArgumentParser):
-    """用法错误退出码用 64（EX_USAGE），避免与 startup 的"记忆库未初始化=2"撞码。
+    """用法错误退出码统一为 1（业务错误：命令/参数写错）。
 
-    宿主据此区分：64=命令/参数写错（改命令即可）；2=记忆库没初始化（要 init）。
+    退出码约定（docs/修复待办.md #20）：
+    0=成功；1=业务错误（含参数/用法错误、找不到对象、READONLY 拒绝写）；
+    2=系统错误（IO/文件损坏/依赖缺失）；3=鉴权拒绝；4=隐私拒绝；130=用户中断。
     """
     def error(self, message):
         self.print_usage(sys.stderr)
         print(f"{self.prog}: 参数错误：{message}", file=sys.stderr)
-        raise SystemExit(64)
+        raise SystemExit(1)
 
 
 def _require_privileged(user, channel, cmd, action="") -> bool:
@@ -1014,6 +1182,23 @@ def _main(argv=None) -> int:
     p_rem.add_argument("--source", default="user", choices=["ai", "user", "dream"],
                        help="来源标记：本机亲手记录默认 user；AI 提炼/做梦请显式传 ai/dream")
     p_rem.add_argument("--layer", default="hippo", choices=["hippo", "cortex"])
+    p_rem.add_argument("--ttl", default=None, metavar="DAYS",
+                       help="保质期（天，可小数）：到期后注入标「待复核」，提醒找用户确认还作数吗（v3.02 #10）")
+    p_rem.add_argument("--review-at", default=None, metavar="DATE",
+                       help="显式指定复核时间点（YYYY-MM-DD 或时间戳），优先于 --ttl 推算")
+    p_rem.add_argument("--correction", action="store_true",
+                       help="#41 改口标记：这条是用户纠正过的更正版，做梦合并/淡忘/归档永不自动动它"
+                            "（教训提炼 #36 优先读它）")
+    p_rem.add_argument("--project", default="",
+                       help="项目名标记（第四轮#3）：recall --project 同名时此记忆排前")
+
+    p_learn = sub.add_parser("lesson", help="一条命令记教训：memory(mistake) + knowledge(pending) + note 三写"
+                                             "（brain.py learn 已被 growth 组的 learn ask/loop 占用，故名单独成词）")
+    p_learn.add_argument("text", nargs="+", help="教训内容：哪条路走不通、为什么、下次怎么办")
+    p_learn.add_argument("--tags", default="")
+    p_learn.add_argument("--entities", default="")
+    p_learn.add_argument("--importance", type=float, default=0.8,
+                         help="0-1 或 0-10（默认 0.8：教训值得记牢）")
 
     p_rec = sub.add_parser("recall", help="模糊回忆")
     p_rec.add_argument("query", nargs="*", default=[])
@@ -1021,23 +1206,47 @@ def _main(argv=None) -> int:
     p_rec.add_argument("--json", action="store_true")
     p_rec.add_argument("--include-archive", action="store_true",
                        help="连归档层的冷记忆一起找（默认不搜归档）")
+    p_rec.add_argument("--mode", default="auto", choices=["fast", "deep", "auto"],
+                       help="召回模式：fast=只词面（低延迟）/ deep=全量（向量+关联+冲突提示）"
+                            "/ auto=自适应（默认）")
+    p_rec.add_argument("--evidence", action="store_true",
+                       help="带证据解引用：做梦合并/蒸馏产物命中时自动附最多 2 条证据原文（#46）")
+    p_rec.add_argument("--project", default="",
+                       help="项目上下文（第四轮#3）：同项目记忆加分排前（不硬过滤）")
+
+    p_deref = sub.add_parser("deref", help="按需解引用：取一条记忆的证据原文（#46 Memex）")
+    p_deref.add_argument("memory_id", help="记忆 id（通常是合并/蒸馏产物的 id）")
+    p_deref.add_argument("--json", action="store_true")
 
     p_inj = sub.add_parser("inject", help="生成记忆注入包")
     p_inj.add_argument("query", nargs="*", default=[])
     p_inj.add_argument("--budget", type=int, default=None)
+    p_inj.add_argument("--user-said", default=None, metavar="TEXT",
+                       help="用户最新一句话：过情绪启发式产候选提示（v3.02 #11，只产候选不落盘）")
 
     p_dream = sub.add_parser("dream", help="做梦：整理与巩固记忆")
     p_dream.add_argument("--trigger", default="manual")
     p_dream.add_argument("--apply", default=None, help="应用整理结果 JSON")
     p_dream.add_argument("--dry-run", action="store_true")
     p_dream.add_argument("--auto", action="store_true", help="自动做梦：重放→启发式压缩→沉淀，不依赖外部脚本")
+    # #19 梦抽检：看最近一次合并的前后对照，--done 标记已复核
+    p_dream.add_argument("--verify", action="store_true", help="查看最近一次做梦的合并前后对照（抽检 3 组）")
+    p_dream.add_argument("--done", action="store_true", help="配合 --verify：标记这次抽检已复核")
 
     p_per = sub.add_parser("persona", help="人格查看与编辑")
     p_per.add_argument("action", nargs="?", default="show",
                        choices=["show", "set", "sync", "path", "interview", "self", "onboarding",
                                 "lock", "unlock", "history", "rollback", "check",
-                                "snapshot", "snapshots", "restore", "drift"])
+                                "snapshot", "snapshots", "restore", "drift",
+                                "auto-snapshots", "auto-rollback",
+                                "suggest", "audit", "viewed", "self-model"])
     p_per.add_argument("pair", nargs="?", default=None, help="例如 traits.幽默=70 / rollback 的序号")
+    p_per.add_argument("tail", nargs="?", default=None,
+                       help="suggest adopt/discard：候选序号（persona suggest adopt 3）；self-model：内容文本")
+    p_per.add_argument("--add", default=None, choices=["strength", "limitation", "uncertainty"],
+                       help="self-model：登记一条自认识（strength/limitation/uncertainty）")
+    p_per.add_argument("--index", type=int, default=None,
+                       help="suggest adopt/discard：候选序号（--index 3，与 tail 二选一）")
     p_per.add_argument("--json", action="store_true")
     p_per.add_argument("--name", default="", help="interview：用户给你起的名字")
     p_per.add_argument("--traits", default="", help="interview：性格，如 温柔:70,好奇:85")
@@ -1102,12 +1311,21 @@ def _main(argv=None) -> int:
     p_daily.add_argument("--feel", action="append", default=[], metavar="情绪:强度:原因",
                          help="顺手记一条当天情绪（可重复）。如 --feel \"开心:0.7:用户夸我讲清楚了\"")
 
-    p_usage = sub.add_parser("usage", help="回忆使用反馈：核对上一轮找回的记忆有没有出现在回复里")
-    p_usage.add_argument("--reply", required=True, help="本轮回复文本（关键词重叠粗判）")
+    p_usage = sub.add_parser("usage", help="回忆使用反馈：核对上轮找回的记忆 / 记负反馈 usage --bad <id>")
+    p_usage.add_argument("--reply", default=None, help="本轮回复文本（关键词重叠粗判）")
+    p_usage.add_argument("--bad", default=None, metavar="ID", help="否定一条被找回的记忆（记 assoc 负边）")
     p_usage.add_argument("--json", action="store_true")
 
     p_stats = sub.add_parser("stats", help="记忆统计")
     p_stats.add_argument("--json", action="store_true")
+
+    p_st = sub.add_parser("status", help="水位体检：各层条数 / 距上次做梦交接 / 阈值 / 醒来次数（唯一水位数据源）")
+    p_st.add_argument("--used", type=float, default=None,
+                      help="当前上下文已用百分比 0-100（缺省用最近一次 check-context 记下的水位）")
+    p_st.add_argument("--json", action="store_true")
+
+    p_doc = sub.add_parser("doctor", help="六合一体检：audit / persona / diagnose / 写权限 / 备份对账 / 日志异常计数")
+    p_doc.add_argument("--json", action="store_true")
 
     p_logs = sub.add_parser("logs", help="运行日志：锁冲突 / 内部异常 / 解析报错（面板「日志」页同源）")
     p_logs.add_argument("--limit", type=int, default=30)
@@ -1132,8 +1350,20 @@ def _main(argv=None) -> int:
     p_rev = sub.add_parser("review", help="审核 AI 整理出来的记忆 / 知识 / 人格变更（防幻觉沉淀成事实）")
     p_rev.add_argument("action", nargs="?", default="list",
                        choices=["list", "confirm", "discard", "approve", "deny"])
-    p_rev.add_argument("id", nargs="?", default="", help="confirm/discard/approve/deny：那条的 id（m_ 开头的记忆 / k_ 开头的知识）")
+    p_rev.add_argument("id", nargs="?", default="", help="confirm/discard/approve/deny：那条的 id（m_ 开头的记忆 / k_ 开头的知识 / les_ 开头的教训）")
     p_rev.add_argument("--json", action="store_true")
+
+    # #36 教训库 CLI：list / add / validate。教训是失败闭环的产物——
+    # 做梦提炼（pending）+ 人工补录（active），validate 校准置信度，低置信自动退役。
+    p_les = sub.add_parser("lessons", help="教训库：列表 / 添加 / 校验（#36 失败闭环）")
+    p_les.add_argument("action", nargs="?", default="list", choices=["list", "add", "validate"])
+    p_les.add_argument("text", nargs="*", default=[],
+                       help="add：教训内容；validate：教训 id（les_ 开头）")
+    p_les.add_argument("--bad", action="store_true",
+                       help="validate：标记这次教训没用/踩坑（降权，低于 0.2 自动退役）")
+    p_les.add_argument("--confidence", type=float, default=0.5, help="add：初始置信度 0-1（默认 0.5）")
+    p_les.add_argument("--evidence", default="", help="add：证据记忆 id，逗号分隔")
+    p_les.add_argument("--json", action="store_true")
 
     p_audit = sub.add_parser("audit", help="整体自查：待审核项 + 冲突记忆 + 该做什么")
     p_audit.add_argument("--json", action="store_true")
@@ -1147,6 +1377,19 @@ def _main(argv=None) -> int:
     p_list.add_argument("--limit", type=int, default=30)
     p_list.add_argument("--layer", default=None, choices=LAYERS)
     p_list.add_argument("--json", action="store_true")
+
+    # v3.02 #8：人类可读导出——备份 zip 是给机器恢复的，这份是给人看的。
+    p_exp = sub.add_parser("export", help="导出记忆库为人类可读格式（v3.02 #8）")
+    p_exp.add_argument("--format", default="md", choices=["md"],
+                       help="导出格式（当前仅 markdown）")
+    p_exp.add_argument("--out", default=None,
+                       help="输出文件路径（默认打印到 stdout）")
+    p_exp.add_argument("--layer", default=None,
+                       help="只导指定层：hippo/cortex/dust/archive（默认全部）")
+    p_exp.add_argument("--limit", type=int, default=0,
+                       help="最多导出 N 条记忆（0=不限）")
+    p_exp.add_argument("--no-notes", action="store_true",
+                       help="不附带知识库与笔记分节（默认附带）")
 
     p_forget = sub.add_parser("forget", help="忘记一条记忆")
     p_forget.add_argument("id")
@@ -1223,6 +1466,14 @@ def _main(argv=None) -> int:
     p_arch.add_argument("--limit", type=int, default=20)
     p_arch.add_argument("--dry-run", action="store_true", help="run：只预览可归档的，不落盘")
 
+    p_audit = sub.add_parser("auditlog", help="审计日志：查看敏感写/删/导出操作的最近记录（audit.jsonl）")
+    p_audit.add_argument("limit", nargs="?", type=int, default=50, help="显示最近 N 条（默认 50）")
+    p_audit.add_argument("--json", action="store_true", help="输出 JSON 行")
+
+    p_rel = sub.add_parser("rebuild-embeds", help="一键重建全库 embedding 向量（换模型/缓存损坏/历史缺向量时用）")
+    p_rel.add_argument("--force", action="store_true",
+                       help="全部重算（默认只补缺失或与当前模型不符的）")
+
     p_rel = sub.add_parser("relink", help="联想建链：给全库记忆按词面相似度补挂 links（双向）")
     p_rel.add_argument("--limit", type=int, default=0,
                        help="只处理最近 N 条（0=全库）；已有 links 的也会补挂新邻居")
@@ -1247,6 +1498,23 @@ def _main(argv=None) -> int:
                             help="revive 的目标活跃层（默认 cortex）")
     mem_sub.add_parser("diagnose", help="数据自诊断：死链、冲突未裁决、数据膨胀、来源归属完整率、折叠状态")
     mem_sub.add_parser("fix-links", help="一键清理死链：摘除指向不存在 id 的 links/conflicts/superseded_by（不删记忆）")
+    p_mem_boost = mem_sub.add_parser("boost", help="遗忘纠正（v3.01）：判定某条淡忘记忆仍重要时拉回——R 回 1、稳定度 ×1.5")
+    p_mem_boost.add_argument("id", help="记忆 id（如 m_xxx）")
+    # #28 记忆冻结：保留但不主动出现（召回/注入/做梦都跳过），可随时解冻
+    p_mem_freeze = mem_sub.add_parser("freeze", help="冻结记忆（#28）：保留但不参与召回/注入/做梦，可解冻")
+    p_mem_freeze.add_argument("id", help="记忆 id（如 m_xxx）")
+    p_mem_unfreeze = mem_sub.add_parser("unfreeze", help="解冻记忆（#28）：恢复参与召回/注入")
+    p_mem_unfreeze.add_argument("id", help="记忆 id（如 m_xxx）")
+    # #34 物理删除：双重确认（dust 冷静期 7 天 + --confirm <id 前 8 位>）
+    p_mem_purge = mem_sub.add_parser("purge", help="物理删除记忆（#34）：需先转 dust 满 7 天 + --confirm <id前8位>")
+    p_mem_purge.add_argument("id", help="记忆 id（如 m_xxx）")
+    p_mem_purge.add_argument("--confirm", required=True, help="确认码：必须等于 id 前 8 位")
+    # v3.02 #10：事实保质期复核
+    mem_sub.add_parser("review-list", help="列出已到期、该找用户复核的事实记忆（--ttl/--review-at）")
+    p_mem_rc = mem_sub.add_parser("review-confirm", help="复核确认：这条事实用户确认过还作数，不再注入「待复核」提醒")
+    p_mem_rc.add_argument("id", help="记忆 id（如 m_xxx）")
+    mem_sub.add_parser("integrity",
+                       help="记忆哈希链完整性校验（v3.02 #25）：报告第一条断裂的 id 与位置，只报告不修复")
 
     p_res = sub.add_parser("restore", help="从备份恢复记忆库（恢复前自动留现状备份）")
     p_res.add_argument("archive", help="备份 zip 路径（加密备份为 .zip.enc）")
@@ -1367,7 +1635,7 @@ def _main(argv=None) -> int:
             or (args.cmd == "topic" and action in ("touch", "feedback", "drop"))
             or (args.cmd == "persona" and action not in ("show", "path", "onboarding",
                                                          "history", "snapshots", "drift",
-                                                         "check"))
+                                                         "check", "self-model"))
             or (args.cmd == "mind" and action in ("set", "tune"))
             or (args.cmd == "emotion" and action in ("feel", "evaluate", "mirror",
                                                      "adjust", "del", "cool"))
@@ -1393,13 +1661,14 @@ def _main(argv=None) -> int:
                 and getattr(args, "action", "") in ("grant", "revoke", "capture-on", "capture-off"))
             or (args.cmd == "memory" and getattr(args, "mem_cmd", None) == "dust")
             or (args.cmd == "relink")                                  # 建链写盘，全量都算写
+            or (args.cmd == "rebuild-embeds")                          # 重建向量写回各层文件
             or (args.cmd == "drift")                                   # 漂移走 persona.json 写盘
             or (args.cmd == "auto-archive" and not args.dry_run)
         )
         if writing:
             print(f"[只读] 记忆库当前不可写，{args.cmd} 需要写盘。"
                   "改用 --home 指向可写目录，或先解除写保护。", file=sys.stderr)
-            return 3
+            return 1
 
     if args.cmd == "init":
         ensure_home()
@@ -1417,18 +1686,61 @@ def _main(argv=None) -> int:
         p = load_persona()
         print(f"记忆库已就绪：{HOME}")
         print(f"人格档案：{HOME / 'persona.json'}")
+        # #22 首次演示：记忆库完全空时，顺手写一条示例记忆 + 立刻 recall 演示，
+        # 让新用户第一分钟就看到"以后我记住你的样子"。force 重置人格时不跑（用户明确要清空）。
+        if not args.force and not load_all() and not load_archive():
+            print("\n—— 首次记忆演示 ——")
+            demo_text = "这是一条示例记忆：你可以用 remember 把约定、偏好、情绪高点都记下来，我会在新会话里回忆起来。"
+            demo, _ = remember(demo_text, kind="fact", importance=0.6,
+                               tags=["演示", "示例"], entities=["灵枢"])
+            print(f"已写入示例记忆：{demo['id']}")
+            print("现在回忆它：")
+            for r in recall("示例记忆", k=3):
+                m = r[0] if isinstance(r, (list, tuple)) else r
+                print(f"  · [{m.get('layer')}] {m.get('text', '')[:60]}")
+            print("（演示记忆可随时 forget 删除）")
         if not p.get("onboarding", {}).get("completed"):
             print("还没有初识：先问用户希望你叫什么、是什么性格；用户不知道就自己定。")
         print(persona_brief(p))
         return 0
 
     if args.cmd == "remember":
+        # v3.02 #10：--ttl / --review-at 解析。ttl 支持天数（可小数）；
+        # review-at 支持 YYYY-MM-DD（当天末尾）或裸时间戳。
+        _ttl_days = _review_ts = None
+        try:
+            if args.ttl:
+                _ttl_days = float(args.ttl)
+                if _ttl_days <= 0:
+                    raise ValueError
+        except ValueError:
+            print(f"[错误] --ttl 需要正数天数（可小数，如 30 或 0.5），收到：{args.ttl}", file=sys.stderr)
+            return 1
+        if args.review_at:
+            s = args.review_at.strip()
+            try:
+                _review_ts = int(s)
+            except ValueError:
+                try:
+                    _review_ts = int(datetime.strptime(s, "%Y-%m-%d")
+                                     .replace(hour=23, minute=59, second=59).timestamp())
+                except ValueError:
+                    print(f"[错误] --review-at 需要 YYYY-MM-DD 或时间戳，收到：{args.review_at}", file=sys.stderr)
+                    return 1
         rec, how = remember(" ".join(args.text), args.kind, args.importance,
                             [t for t in args.tags.split(",") if t],
                             [e for e in args.entities.split(",") if e],
                             args.source, args.layer,
-                            emotion=(args.emotion or None))
+                            emotion=(args.emotion or None),
+                            ttl_days=_ttl_days, review_at=_review_ts,
+                            correction=args.correction,
+                            project=(getattr(args, "project", "") or "").strip() or None)
+        if getattr(args, "correction", False) and how != "merged":
+            print("  #41 改口记录：已打 correction 标，永不自动合并/淡忘/归档（教训提炼优先读它）")
         print(f"{'已合并' if how == 'merged' else '已写入'}：{rec['id']} ({rec['layer']}, 重要性 {rec['importance']})")
+        if rec.get("review_by"):
+            print(f"  保质期：{fmt_date(rec['review_by'])} 到期，过期后注入标「待复核」"
+                  "（复核确认：memory review-confirm <id>）")
         if rec.get("review") == "pending":
             print("  ⚠ 重要性高，已进待审池——用户确认前不当既定事实引用（brain.py review list 查看）")
         if rec.get("emotion"):
@@ -1448,6 +1760,7 @@ def _main(argv=None) -> int:
                       "上下文可能在积累，跑 `dream --auto` 压缩一下。")
         except Exception:
             pass
+        _wait_embeds()   # 等异步嵌入收尾再退出，防止 daemon 线程持锁被硬杀留残锁
         return 0
 
     if args.cmd == "capture":
@@ -1485,7 +1798,7 @@ def _main(argv=None) -> int:
             return 0
         except PermissionError:
             print("[只读] 记忆库不可写，extract 跳过", file=sys.stderr)
-            return 3
+            return 1
         except Exception as exc:
             print(f"[extract] 静默失败：{exc}", file=sys.stderr)
             return 2
@@ -1496,8 +1809,40 @@ def _main(argv=None) -> int:
             for m in recent(args.k):
                 _print_mem(m)
             return 0
-        results = recall(query, args.k, include_archive=args.include_archive)
+        results = recall(query, args.k, include_archive=args.include_archive,
+                         mode=args.mode, with_evidence=args.evidence,
+                         project=(getattr(args, "project", "") or "").strip() or None)
         record_retrieval(query, results, channel="recall")
+        # 知识条目命中提示：recall 原本只查记忆层，顺带在 knowledge.jsonl 里做
+        # 简单词面匹配——这个问题曾被沉淀成知识时先亮出来（含待审核条目），
+        # 提醒"该问题曾有记录"，避免同一结论反复踩。
+        try:
+            import growth
+            q_terms = {t for t in query.lower().split() if len(t) >= 2}
+            k_hits = []
+            for kb in growth.load_knowledge():
+                if kb.get("status") == "discarded":
+                    continue
+                hay = (str(kb.get("title", "")) + " " + str(kb.get("body", ""))).lower()
+                if q_terms and sum(1 for t in q_terms if t in hay) >= max(1, len(q_terms) // 2):
+                    k_hits.append(kb)
+            if k_hits:
+                st = "、".join(sorted({str(x.get("status")) for x in k_hits}))
+                print(f"  💡 该问题曾有记录：命中知识条目 {len(k_hits)} 条（状态 {st}），"
+                      "brain.py knowledge list 查看；pending 条目需确认后再引用。")
+        except Exception:
+            pass  # 知识提示是加分项，失败不影响回忆
+        # #36 教训命中提示：与知识命中同理——教训库里已有相关教训时先亮出来
+        # （「已有教训：xxx」），别让同一个坑再踩一次。
+        try:
+            l_hits = injectable_lessons(query, k=5)
+            l_hit = [l for l in l_hits if l.get("_hit")]
+            if l_hit:
+                print("  ⚠️ 已有教训："
+                      + "；".join(str(l.get("text", ""))[:60] for l in l_hit[:2])
+                      + "（lessons 查看 / lessons validate 校准）")
+        except Exception:
+            pass  # 教训提示是加分项，失败不影响回忆
         if args.json:
             print(json.dumps([{"memory": m, "score": s, "parts": p} for m, s, p in results], ensure_ascii=False, indent=2))
         else:
@@ -1506,11 +1851,51 @@ def _main(argv=None) -> int:
                 _print_mem(m, s, parts)
         return 0
 
+    if args.cmd == "deref":
+        # #46 Memex 按需解引用：摘要/蒸馏产物 → 证据原文
+        try:
+            ev = dereference(args.memory_id)
+        except (PermissionError, ValueError) as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps({"memory_id": args.memory_id, "evidence": ev},
+                             ensure_ascii=False, indent=2))
+            return 0
+        if not ev:
+            print(f"「{args.memory_id}」没有可解引用的证据（无指针或证据已清理）。")
+            return 0
+        print(f"「{args.memory_id}」的证据原文 {len(ev)} 条：\n")
+        for e in ev:
+            tag = "（已过时·被取代）" if e.get("superseded_by") else ""
+            print(f"  {e['id']}  {e.get('kind', '')} {tag}  {fmt_time(e.get('created'))}")
+            print(f"    {(e.get('text') or '')[:300]}")
+        return 0
+
     if args.cmd == "usage":
+        if args.bad and args.reply:
+            print("--bad 与 --reply 不能同时用：负反馈和核对分开跑。", file=sys.stderr)
+            return 1
+        if args.bad:
+            # v3.02 #9：召回负反馈
+            try:
+                r = usage_bad(args.bad)
+            except (KeyError, ValueError, PermissionError) as exc:
+                print(f"[错误] {exc}", file=sys.stderr)
+                return 1
+            if args.json:
+                print(json.dumps(r, ensure_ascii=False, indent=2))
+                return 0
+            print(f"已记负反馈：{r['id']}（第 {r['bad_count']} 次否定，"
+                  f"assoc 负边权重 {r['weight']}）。下次召回会降权。")
+            return 0
+        if not args.reply:
+            print("用法：usage --reply <本轮回复文本> 或 usage --bad <记忆id>", file=sys.stderr)
+            return 1
         r = evaluate_retrieval_usage(args.reply)
         if r.get("error"):
             print(r["error"], file=sys.stderr)
-            return 2
+            return 1
         if args.json:
             print(json.dumps(r, ensure_ascii=False, indent=2))
             return 0
@@ -1523,16 +1908,49 @@ def _main(argv=None) -> int:
         return 0
 
     if args.cmd == "inject":
-        print(build_injection(" ".join(args.query), args.budget))
+        injection = build_injection(" ".join(args.query), args.budget)
+        # v3.02 #11：情绪自动输入——用户最新一句话过轻量启发式，命中就附候选。
+        # 只产候选：落不落盘、强度调多少，由 AI 自己判断后调 feel()/mirror()。
+        if getattr(args, "user_said", None):
+            try:
+                from emotion import emotion_auto_candidate
+                cand = emotion_auto_candidate(args.user_said)
+                if cand:
+                    injection += ("\n\n## 情绪候选（启发式，仅供参考，没写入）\n"
+                                  f"- 检测到用户可能情绪：{cand['emotion']}"
+                                  f"（强度约 {cand['intensity']:.0%}）——{cand['why']}\n"
+                                  "- 如属实可调 feel()/emotion_mirror() 记录；拿不准就忽略，别硬演。")
+            except Exception:
+                pass
+        print(injection)
         return 0
 
     if args.cmd == "dream":
+        if getattr(args, "verify", False):
+            sample = load_verify_sample()
+            if not sample:
+                print("还没有抽检样本：等下一次 dream --apply 合并过记忆后再看。")
+                return 0
+            if getattr(args, "done", False):
+                mark_verify_reviewed()
+                print("已标记本次抽检为已复核。")
+                return 0
+            print(f"梦抽检（任务 {sample.get('task_id') or '—'}）：本次共合并 {sample.get('total_merges', 0)} 组，"
+                  f"抽 {len(sample.get('items') or [])} 组对照"
+                  + ("（已复核）" if sample.get("reviewed") else "") + "\n")
+            for i, it in enumerate(sample.get("items") or [], 1):
+                print(f"--- 第 {i} 组 ---")
+                for b in it.get("before") or []:
+                    print(f"合并前 [{b.get('id')}]：{b.get('text')}")
+                print(f"合并后 [{it.get('new_id')}]：{it.get('after')}\n")
+            print("看完用 `brain.py dream --verify --done` 标记已复核。")
+            return 0
         if args.auto:
             try:
                 res = auto_dream(args.trigger, args.dry_run)
             except RuntimeError as exc:
                 print(f"[中止] {exc}", file=sys.stderr)
-                return 2
+                return 1
             if res.get("applied"):
                 print(f"自动做梦完成：新增长期记忆 {res['memories']} 条，遗忘 {res['forgotten']} 条，"
                       f"{res.get('clusters', 0)} 组碎片已合并。")
@@ -1546,16 +1964,16 @@ def _main(argv=None) -> int:
         if args.apply:
             if READONLY:
                 print("[只读] 记忆库当前只读，无法沉淀梦境结果。", file=sys.stderr)
-                return 3
+                return 1
             path = Path(args.apply)
             if not path.exists():
                 print(f"找不到整理结果文件：{path}", file=sys.stderr)
-                return 2
+                return 1
             try:
                 result = load_loose_json(path, "dream --apply 的结果")
             except ValueError as e:
                 print(str(e), file=sys.stderr)
-                return 2
+                return 1
             if args.dry_run:
                 print(json.dumps(result, ensure_ascii=False, indent=2)[:4000])
                 print("\n（--dry-run：只预览将沉淀的内容，未落盘）")
@@ -1569,7 +1987,7 @@ def _main(argv=None) -> int:
             report = dream(args.trigger, args.dry_run)
         except RuntimeError as exc:
             print(f"[中止] {exc}", file=sys.stderr)
-            return 2
+            return 1
         print(f"做梦完成（{args.trigger}）")
         print(f"  重放 {sum(len(c['texts']) for c in report['clusters'])} 条 / {len(report['clusters'])} 组")
         print(f"  巩固 {len(report['promoted'])} 条，遗忘 {len(report['forgotten'])} 条，模糊化 {report['faded']} 条")
@@ -1592,13 +2010,44 @@ def _main(argv=None) -> int:
             print("人格档案已整理（保留原有设定）。")
             print(persona_brief(p))
             return 0
+        if args.action == "self-model":
+            import persona as _persona
+            if args.add:
+                # --add 是选项，内容落在第一个位置参数 pair 上（tail 是给 suggest 的）
+                text = ((args.tail or args.pair) or "").strip()
+                if not text:
+                    print("用法：persona self-model --add limitation \"内容\"", file=sys.stderr)
+                    return 1
+                if args.pair and args.tail:
+                    print("内容只要一段：persona self-model --add limitation \"内容\"", file=sys.stderr)
+                    return 1
+                r = _persona.self_model_add(args.add, text)
+                if r.get("ok"):
+                    print(f"已记入「{r['bucket']}」（现存 {r['count']} 条）：{r['text']}")
+                else:
+                    print(f"没记成：{r.get('error')}", file=sys.stderr)
+                    return 1
+                return 0
+            sm = _persona.self_model_get()
+            for label, key in (("擅长", "strengths"), ("短板", "limitations"), ("还没弄清", "uncertainties")):
+                items = sm.get(key) or []
+                print(f"{label}：" + ("；".join(items) if items else "（还没有）"))
+            ab = sm.get("autobiography") or []
+            print("自传片段（最近 5 条）：")
+            if ab:
+                for e in ab[:5]:
+                    ts = int(e.get("ts") or 0)
+                    print(f"  - [{fmt_time(ts) if ts else '未知时间'}] {e.get('text', '')}")
+            else:
+                print("  （还没有。做梦遇到成形时刻后会自动沉淀）")
+            return 0
         if args.action == "path":
             print(HOME / "persona.json")
             return 0
         if args.action == "set":
             if not args.pair or "=" not in args.pair:
                 print("用法：persona set traits.幽默=70", file=sys.stderr)
-                return 2
+                return 1
             key, val = args.pair.split("=", 1)
             try:
                 p = set_persona_field(key.strip(), val.strip())
@@ -1612,7 +2061,7 @@ def _main(argv=None) -> int:
             item = (args.pair or "").strip()
             if not item:
                 print("用法：persona lock 名字", file=sys.stderr)
-                return 2
+                return 1
             with _locked(HOME / "persona.json"):
                 p = load_persona()
                 locks = p.setdefault("locked", [])
@@ -1649,12 +2098,12 @@ def _main(argv=None) -> int:
                     idx = int(args.pair.strip())
                 except ValueError:
                     print("序号得是数字：persona rollback <序号>", file=sys.stderr)
-                    return 2
+                    return 1
             try:
                 r = persona_rollback(idx)
             except (ValueError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             print(f"已回滚 {r['field']}：{r['from'] if r['from'] is not None else '∅'} → "
                   f"{r['to'] if r['to'] is not None else '∅'}（原来是「{r['why']}」）")
             if r.get("overwrote_later"):
@@ -1677,15 +2126,41 @@ def _main(argv=None) -> int:
                 print(f"  {i}. {fmt_time(r['ts'])}  {r['label']}  [{r['name']}]")
             print("还原：persona restore <名字>")
             return 0
+        if args.action == "auto-snapshots":
+            # 自动快照（persona_snapshots.jsonl，P0-3a 体系）：每次改人格前自动落一份，
+            # 与 persona snapshot（手动命名快照）并存。列表 + 按 version 回滚。
+            rows = list_persona_snapshots(getattr(args, "limit", 50) or 50)
+            if not rows:
+                print("还没有自动快照。任何一次人格修改（面板/CLI/做梦）都会自动拍一张。")
+                return 0
+            print(f"自动快照（最新在前，共 {len(rows)} 张，存 persona_snapshots.jsonl）：")
+            for r in rows:
+                print(f"  v{r['version']}  {fmt_time(r['ts'])}  [{r['action']}]"
+                      f"  {r.get('why') or r.get('source') or ''}")
+            print("回滚：persona auto-rollback <版本号>")
+            return 0
+        if args.action == "auto-rollback":
+            try:
+                ver = int(args.pair or 0)
+            except ValueError:
+                print("用法：persona auto-rollback <版本号>（用 persona auto-snapshots 看版本）", file=sys.stderr)
+                return 1
+            p = rollback_persona_snapshot(ver)
+            if p is None:
+                print(f"没找到版本 v{ver} 的快照，或当前只读。", file=sys.stderr)
+                return 1
+            print(f"已按自动快照 v{ver} 回滚人格（回滚前的状态也已另存快照）。")
+            print(persona_brief(load_persona()))
+            return 0
         if args.action == "restore":
             if not args.pair:
                 print("用法：persona restore <快照名字>（用 persona snapshots 看名字）", file=sys.stderr)
-                return 2
+                return 1
             try:
                 r = persona_restore(args.pair)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             print(f"已从快照恢复人格：{r['label']}（{fmt_time(r['ts'])}）")
             print(persona_brief(load_persona()))
             return 0
@@ -1717,6 +2192,8 @@ def _main(argv=None) -> int:
                 print(f"对比基准快照：{d['baseline']}（{fmt_time(d['baseline_ts'])}）")
             if not d["changes"] and not d["ai_changes"]:
                 print("没有检测到人格漂移。")
+            print(f"稳定度分：{d.get('stability', 100)}/100（100=纹丝未动；AI 改动与稳定特征变化都会扣分）")
+            if not d["changes"] and not d["ai_changes"]:
                 return 0
             if d["changes"]:
                 print(f"结构变化 {len(d['changes'])} 处：")
@@ -1730,6 +2207,69 @@ def _main(argv=None) -> int:
                           f"（{h['why']}{src}）")
             if d["alert"]:
                 print(" ⚠ 漂移偏大：确认这些变化是不是你想要的；不是就 persona rollback 或 persona restore 快照。")
+            return 0
+        if args.action == "suggest":
+            # 画像候选：list / adopt <序号> / discard <序号>
+            sub_action = (args.pair or "list").strip().lower()
+            import persona as _persona
+            if sub_action == "list":
+                rows = _persona.persona_suggest_list()
+                if args.json:
+                    print(json.dumps(rows, ensure_ascii=False, indent=2))
+                    return 0
+                if not rows:
+                    print("没有待确认的画像候选。手动归纳一轮：persona suggest scan")
+                    return 0
+                print(f"待确认画像候选 {len(rows)} 条（采纳：persona suggest adopt <序号>；忽略：discard <序号>）：")
+                for i, r in enumerate(rows, 1):
+                    src = "、".join(r.get("source_ids") or []) or "无来源"
+                    print(f"  {i}. [{r.get('field')}] {r.get('text', '')}"
+                          f"（来自 {src}）")
+                return 0
+            if sub_action in ("scan",):
+                added = _persona.persona_suggest_scan(getattr(args, "days", 3) or 3)
+                print(f"本轮归纳出 {len(added)} 条新候选（已带证据链，进待确认池）。"
+                      "用 persona suggest list 查看。")
+                return 0
+            if sub_action in ("adopt", "discard"):
+                idx = getattr(args, "index", None) or getattr(args, "tail", None) or 0
+                try:
+                    idx = int(idx)
+                except (TypeError, ValueError):
+                    idx = 0
+                if not idx:
+                    print("用法：persona suggest adopt <序号> / persona suggest discard <序号>（先 list 看序号）",
+                          file=sys.stderr)
+                    return 1
+                try:
+                    r = (_persona.persona_suggest_adopt(idx) if sub_action == "adopt"
+                         else _persona.persona_suggest_discard(idx))
+                except (ValueError, PermissionError) as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 1
+                print(f"已{'采纳' if sub_action == 'adopt' else '忽略'}：[{r.get('field')}] {r.get('text', '')}"
+                      + ("（已写进人格，带来源证据）" if sub_action == "adopt" else "（不写人格，留痕可追溯）"))
+                return 0
+            print("用法：persona suggest [list|scan|adopt <序号>|discard <序号>]", file=sys.stderr)
+            return 1
+        if args.action == "audit":
+            import persona as _persona
+            r = _persona.persona_audit(getattr(args, "days", 30) or 30)
+            if args.json:
+                print(json.dumps(r, ensure_ascii=False, indent=2))
+                return 0
+            print(f"人格变更审计链（最近 {r['days']} 天，共 {r['total']} 条）：")
+            for h in r["timeline"][:30]:
+                ev = "、".join(str(x) for x in (h.get("evidence") or [])[:3]) or "无证据记录"
+                print(f"  · {fmt_time(h.get('ts'))} [{h.get('source') or '?'}] {h.get('field')}: "
+                      f"{h.get('from')} → {h.get('to')}  触发：{h.get('why') or '-'}  证据：{ev}")
+            if not r["timeline"]:
+                print("  该时段内没有人格变更。")
+            return 0
+        if args.action == "viewed":
+            import memory as _memory
+            _memory.mark_persona_changes_viewed()
+            print("人格变动提示已标记为已读（概览「人格有变动」卡关闭）。")
             return 0
         if args.action == "interview":
             p = persona_interview(args.name, args.traits, args.style, args.values,
@@ -1780,7 +2320,7 @@ def _main(argv=None) -> int:
         if args.action == "tune":
             if args.curiosity is None and args.reason is None:
                 print("用法：mind tune --curiosity +5 --reason -3 --why \"用户嫌我啰嗦\"", file=sys.stderr)
-                return 2
+                return 1
             dr = mind_tune(args.curiosity or 0, args.reason or 0, why=args.why)
             print("已按用户态度调整：" + " / ".join(
                 f"{'好奇心' if k == 'curiosity' else '理智'} {dr.get(k, '未成形')}" for k in DRIVE_KEYS))
@@ -1789,7 +2329,7 @@ def _main(argv=None) -> int:
         if args.action == "weigh":
             if not args.topic:
                 print("用法：mind weigh \"这件事\" --benefit 7 --cost 3 --confidence 0.6", file=sys.stderr)
-                return 2
+                return 1
             r = mind_weigh(args.topic, args.benefit, args.cost, args.confidence, args.urgency)
             print(f"事项：{r['topic']}")
             print(f"  好处 {r['benefit']:g} × 把握 {r['confidence']:.0%}，坏处/代价 {r['cost']:g}")
@@ -1817,7 +2357,7 @@ def _main(argv=None) -> int:
         if args.action == "evaluate":
             if not args.emotion:
                 print("用法：emotion evaluate \"用户骂我了\" --polarity auto --intensity 0.8", file=sys.stderr)
-                return 2
+                return 1
             r = emotion_evaluate(args.emotion, args.polarity,
                                  args.intensity if args.intensity is not None else 0.6,
                                  why=args.why, about=args.about)
@@ -1836,7 +2376,7 @@ def _main(argv=None) -> int:
         if args.action == "mirror":
             if not args.emotion:
                 print("用法：emotion mirror \"用户很难过\" [--intensity 0.6]", file=sys.stderr)
-                return 2
+                return 1
             r = emotion_mirror(args.emotion,
                                args.intensity if args.intensity is not None else 0.5)
             print(r["note"])
@@ -1875,7 +2415,7 @@ def _main(argv=None) -> int:
         if args.action == "feel":
             if not args.emotion:
                 print("用法：emotion feel 开心 --intensity 0.7 --why \"用户夸我了\"", file=sys.stderr)
-                return 2
+                return 1
             ev = feel(args.emotion,
                       args.intensity if args.intensity is not None else 0.6,
                       why=args.why, about=args.about,
@@ -1957,18 +2497,18 @@ def _main(argv=None) -> int:
         if args.action == "adjust":
             if not args.emotion:
                 print("用法：emotion adjust <事件id或序号> [--intensity 0.3] [--emotion-name 委屈] [--why \"其实还好\"]", file=sys.stderr)
-                return 2
+                return 1
             ref = args.emotion.strip()
             if not (ref.startswith("e") and len(ref) > 1):
                 try:
                     ref = int(ref)
                 except ValueError:
                     print("事件定位得是 id（e 开头）或序号（数字）：emotion adjust <id|序号>", file=sys.stderr)
-                    return 2
+                    return 1
             if (args.intensity is None and not args.emotion_name and not args.why
                     and not args.about and args.decay_hours is None):
                 print("至少要改一项：--intensity / --emotion-name / --why / --about / --decay-hours", file=sys.stderr)
-                return 2
+                return 1
             try:
                 r = emotion_modify(ref, emotion=args.emotion_name,
                                    intensity=args.intensity,
@@ -1976,7 +2516,7 @@ def _main(argv=None) -> int:
                                    decay_hours=args.decay_hours)
             except (ValueError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             ev = r["event"]
             label = ev.get("id") or f"第 {ref} 条"
             print(f"已微调 {label}：{ev.get('emotion')}（强度 {float(ev.get('intensity', 0)):.0%}）")
@@ -1986,19 +2526,19 @@ def _main(argv=None) -> int:
         if args.action == "del":
             if not args.emotion:
                 print("用法：emotion del <事件id或序号>（先 emotion events 看事件 id）", file=sys.stderr)
-                return 2
+                return 1
             ref = args.emotion.strip()
             if not (ref.startswith("e") and len(ref) > 1):
                 try:
                     ref = int(ref)
                 except ValueError:
                     print("事件定位得是 id（e 开头）或序号（数字）：emotion del <id|序号>", file=sys.stderr)
-                    return 2
+                    return 1
             try:
                 r = emotion_delete(ref)
             except (ValueError, PermissionError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             label = r["deleted"].get("id") or "该条"
             print(f"已删除 {label}：{r['deleted'].get('emotion')}；还剩 {r['remaining']} 条。")
             return 0
@@ -2015,7 +2555,7 @@ def _main(argv=None) -> int:
             if not args.emotion:
                 print("用法：emotion check \"<你刚发的回复>\" —— 把内部情绪状态和回复语气做一致性核对",
                       file=sys.stderr)
-                return 2
+                return 1
             r = emotion_consistency_check(args.emotion)
             print(f"此刻内部情绪：{r['mood_label']}（valence {r['mood_valence']:+.2f}，强度 {r['mood_intensity']:.0%}）")
             print(f"回复语气极性：{r['reply_valence']:+.2f}")
@@ -2057,7 +2597,7 @@ def _main(argv=None) -> int:
         if args.action == "link":
             if len(args.ids) != 2:
                 print("用法：assoc link <记忆A的id> <记忆B的id> --relation 因果 --why \"...\"", file=sys.stderr)
-                return 2
+                return 1
             r = link_memory(args.ids[0], args.ids[1], args.relation, args.weight, args.why)
             print(f"已关联 {r['src']} ↔ {r['dst']}（{r['relation']}，权重 {r['weight']}）"
                   + ("，反复连，权重加强了" if not r["created"] else ""))
@@ -2065,7 +2605,7 @@ def _main(argv=None) -> int:
         if args.action == "unlink":
             if len(args.ids) != 2:
                 print("用法：assoc unlink <idA> <idB>", file=sys.stderr)
-                return 2
+                return 1
             ok = unlink_memory(args.ids[0], args.ids[1])
             print("已断开。" if ok else "本来就没有这条关联。")
             return 0 if ok else 1
@@ -2081,7 +2621,7 @@ def _main(argv=None) -> int:
         if args.action == "of":
             if not args.ids:
                 print("用法：assoc of <记忆id>", file=sys.stderr)
-                return 2
+                return 1
             mid = args.ids[0]
             nb = assoc_of(mid)
             if not nb:
@@ -2138,7 +2678,7 @@ def _main(argv=None) -> int:
             text = " ".join(args.text).strip()
             if not text:
                 print("用法：work add \"先记着这件事\" --tag 任务 --why \"怕等下忘了\"", file=sys.stderr)
-                return 2
+                return 1
             rows = work_add(text, args.tag, args.why)
             print(f"已写入会话暂存（{len(rows)}/{WORKING_CAPACITY}）。它不是长期记忆，{int(WORKING_TTL / HOUR)} 小时后自动丢。")
             return 0
@@ -2146,17 +2686,17 @@ def _main(argv=None) -> int:
             text = " ".join(args.text).strip()
             if not text:
                 print("用法：work done 2  （暂存里的第 2 条已完成）", file=sys.stderr)
-                return 2
+                return 1
             try:
                 idx = int(text.split()[0])
             except ValueError:
                 print("序号得是数字：work done <第几条>", file=sys.stderr)
-                return 2
+                return 1
             # 先校验序号、后执行：越界时不能先标记完成再报错（先执行后校验会有副作用）
             cur = work_status()
             if idx < 1 or idx > cur["count"]:
                 print(f"序号越界：当前暂存只有 {cur['count']} 条。", file=sys.stderr)
-                return 2
+                return 1
             rows = work_done(idx)
             done = rows[idx - 1]
             print(f"第 {idx} 条已标记完成：{done.get('text', '')}——做完的事不再占心思。")
@@ -2200,7 +2740,7 @@ def _main(argv=None) -> int:
         if args.action in ("touch", "feedback", "drop") and not name:
             print(f"用法：topic {args.action} \"话题名\" [--why \"...\"]"
                   + (" --good/--bad" if args.action == "feedback" else ""), file=sys.stderr)
-            return 2
+            return 1
         if args.action == "touch":
             kw = {"why": args.why}
             if args.type:
@@ -2222,7 +2762,7 @@ def _main(argv=None) -> int:
             pos = args.good and not args.bad
             if not (args.good or args.bad):
                 print("feedback 需要 --good（用户展开多说）或 --bad（敷衍/转移话题）二选一。", file=sys.stderr)
-                return 2
+                return 1
             rows = topic_feedback(name, positive=pos, why=args.why)
             cur = next((r for r in rows if r["name"] == name), None)
             if cur is None:
@@ -2278,6 +2818,240 @@ def _main(argv=None) -> int:
             print(f"  {t} [{r.get('level', 'info')}] {r.get('kind', '?')} · {r.get('msg', '')}")
         return 0
 
+    if args.cmd == "auditlog":
+        # v4 #32：查看审计日志（HOME/audit.jsonl），只读展示，不写任何文件
+        # 注意与原有 `audit`（整体自查）命令区分
+        f = HOME / "audit.jsonl"
+        rows = []
+        if f.exists():
+            try:
+                lines = [x for x in f.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
+                for x in lines:
+                    try:
+                        rows.append(json.loads(x))
+                    except Exception:
+                        continue
+            except OSError as e:
+                print(f"[错误] 读取审计日志失败：{e}", file=sys.stderr)
+                return 2
+        rows = rows[-max(args.limit, 1):]
+        if args.json:
+            for r in rows:
+                print(json.dumps(r, ensure_ascii=False))
+            return 0
+        if not rows:
+            print("审计日志是空的：还没有删除 / 批量 / 归档 / 导出等敏感操作记录。")
+            return 0
+        print(f"审计日志（最新 {len(rows)} 条）：")
+        for r in reversed(rows):  # 最新在前
+            t = fmt_time(r.get("ts", 0)) if r.get("ts") else "??"
+            print(f"  {t} [{r.get('actor', '?')}] {r.get('action', '?')} · {r.get('target', '')}"
+                  + (f" — {r.get('detail', '')}" if r.get("detail") else ""))
+        return 0
+
+    if args.cmd == "status":
+        # 水位唯一数据源（C 项修正）：面板水位卡 / cron / doctor 全读 memory._water_level
+        try:
+            wl = memory._water_level(args.used)
+        except Exception as e:
+            print(f"[错误] 水位读取失败：{e}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(wl, ensure_ascii=False, indent=2))
+        else:
+            th = wl["thresholds"]
+            print(f"水位 {wl['pct']:.0f}%（清点 {th['review']:.0%} / 做梦 {th['dream']:.0%} / "
+                  f"封存 {th['escape']:.0%}）· 级别 {wl['level']}")
+            print(f"  各层条数：{wl['counts']}")
+            print(f"  距上次做梦 {wl['hours_since_dream']}h，距上次交接 {wl['hours_since_handoff']}h，"
+                  f"第 {wl['wake_count']} 次醒来")
+            print(f"  最近一次 session 结束水位：{wl['last_session_pct']}")
+            if wl.get("action"):
+                print(f"  建议：{wl['action']}")
+        return wl["exit_code"]
+
+    if args.cmd == "doctor":
+        # 六合一体检：已有实现直接复用，不重写逻辑；单项失败不影响其他项
+        checks = []
+        # 1. audit 自查
+        try:
+            a = audit()
+            c = a.get("counts", {})
+            bad = sum(int(c.get(k, 0) or 0) for k in ("memories", "knowledge", "persona"))
+            checks.append(("audit", "PASS" if bad == 0 else "WARN",
+                           f"待审记忆 {c.get('memories', 0)} · 待审知识 {c.get('knowledge', 0)} · "
+                           f"AI 改人格 {c.get('persona', 0)} · 疑似冲突 {c.get('conflicts', 0)}"))
+        except Exception as e:
+            checks.append(("audit", "FAIL", str(e)))
+        # 2. persona check
+        try:
+            import persona as _persona
+            pr = _persona.persona_check()
+            issues = pr.get("issues") or pr.get("problems") or []
+            checks.append(("persona", "PASS" if not issues else "WARN",
+                           "; ".join(map(str, issues)) or "人格完整"))
+        except Exception as e:
+            checks.append(("persona", "FAIL", str(e)))
+        # 3. memory diagnose
+        try:
+            d = diagnose()
+            warns = [f"{k}: {v}" for k, v in d.items()
+                     if isinstance(v, (list, str)) and (v if isinstance(v, list) else [v])]
+            checks.append(("diagnose", "PASS" if not warns else "WARN",
+                           "; ".join(warns[:3]) or "记忆库结构正常"))
+        except Exception as e:
+            checks.append(("diagnose", "FAIL", str(e)))
+        # 4. 数据目录写权限
+        try:
+            ok = _home_writable()
+            checks.append(("writable", "PASS" if ok else "FAIL",
+                           "可写" if ok else "只读降级中（检查磁盘/权限）"))
+        except Exception as e:
+            checks.append(("writable", "FAIL", str(e)))
+        # 5. 备份副本 sha 对比（备份目录存在才查）
+        try:
+            import hashlib
+            backup_dir = HOME / "backups"
+            if backup_dir.exists() and any(backup_dir.glob("*.jsonl")):
+                mismatch = 0
+                for bf in backup_dir.glob("*.jsonl"):
+                    src = HOME / bf.name
+                    if src.exists():
+                        if hashlib.sha256(bf.read_bytes()).hexdigest() != \
+                           hashlib.sha256(src.read_bytes()).hexdigest():
+                            mismatch += 1
+                checks.append(("backup-sha", "PASS" if mismatch == 0 else "WARN",
+                               f"{mismatch} 个备份与当前库不一致（可能是正常更新）"))
+            else:
+                checks.append(("backup-sha", "PASS", "无备份可对账（python scripts/brain.py backup 生成）"))
+        except Exception as e:
+            checks.append(("backup-sha", "FAIL", str(e)))
+        # 6. lingshu.log warn/error 计数
+        try:
+            wcnt = ecnt = 0
+            if LOG_FILE.exists():
+                for ln in LOG_FILE.read_text(encoding="utf-8-sig").splitlines():
+                    try:
+                        lv = str(json.loads(ln).get("level", "")).lower()
+                    except Exception:
+                        continue
+                    if lv in ("warn", "warning"):
+                        wcnt += 1
+                    elif lv == "error":
+                        ecnt += 1
+            checks.append(("log-anomalies", "PASS" if (wcnt + ecnt) < 10 else "WARN",
+                           f"warn {wcnt} 条 / error {ecnt} 条（累计）"))
+        except Exception as e:
+            checks.append(("log-anomalies", "FAIL", str(e)))
+        # 7. v3.02 #14：三副本版本矩阵——SKILL.md / 根 package.json / 插件 metadata.yaml
+        #    三处版本互相对账，谁落后一眼看出（engine 副本无版本文件，靠 sync --check 对内容）。
+        try:
+            import re as _re
+            root = Path(__file__).resolve().parent.parent
+
+            def _ver_of(p: Path, pat: str) -> str:
+                try:
+                    m = _re.search(pat, p.read_text(encoding="utf-8-sig"))
+                    return m.group(1) if m else "?"
+                except OSError:
+                    return "缺失"
+
+            v_skill = _ver_of(root / "SKILL.md", r'version["\']?\s*[:=]\s*["\']?([0-9][0-9a-zA-Z.\-]*)')
+            v_pkg = _ver_of(root / "package.json", r'"version"\s*:\s*"([^"]+)"')
+            v_meta = _ver_of(root / "scripts/astrbot_plugin_lingshu/metadata.yaml", r'version:\s*([0-9][0-9a-zA-Z.\-]*)')
+            vers = {"SKILL.md": v_skill, "package.json": v_pkg, "metadata.yaml": v_meta}
+            known = [v for v in vers.values() if v not in ("?", "缺失")]
+            drift = len(set(known)) > 1
+            detail = " · ".join(f"{k}={v}" for k, v in vers.items())
+            status = ("WARN" if drift or len(known) < len(vers) else "PASS")
+            if drift:
+                detail += "（版本漂移：升版时三处要一起改，check_version.py 会拦）"
+            checks.append(("version-matrix", status, detail))
+        except Exception as e:
+            checks.append(("version-matrix", "FAIL", str(e)))
+
+        # 8. #21 自动清理被中断的更新留下的 staging 临时目录（>1 小时没动才清）
+        try:
+            import growth as _growth
+            cl = _growth.cleanup_stale_staging()
+            checks.append(("staging", "PASS",
+                           f"清理遗留临时目录 {cl['count']} 个" if cl["count"] else "无遗留临时目录"))
+        except Exception as e:
+            checks.append(("staging", "WARN", str(e)))
+        # 9. #24 当前写入者：锁文件里记的 pid/主机（多机共享记忆库时能看见另一台）
+        try:
+            writers = lock_writers()
+            if writers:
+                checks.append(("writers", "PASS", " · ".join(
+                    f"{w['file']}@{w['host'] or '?'}:{w['pid']}{'' if w['alive'] else '(已退出)'}"
+                    for w in writers[:4])))
+            else:
+                checks.append(("writers", "PASS", "当前没有进行中的写入"))
+        except Exception as e:
+            checks.append(("writers", "WARN", str(e)))
+
+        # 10. 第四轮#2：engine 副本一致性——scripts/ vs engine/（换行归一化后逐文件比对）
+        #     AstrBot 宿主跑的是 engine 副本，漂了就是"同一记忆库、两个宿主行为不一致"。
+        try:
+            import subprocess as _sp
+            root = Path(__file__).resolve().parent.parent
+            r = _sp.run([sys.executable, str(root / "scripts" / "sync_engine.py"), "--check"],
+                        capture_output=True, text=True, timeout=60)
+            if r.returncode == 0:
+                detail = (r.stdout or "").strip().splitlines()[-1:] or ["一致"]
+                checks.append(("engine-sync", "PASS", detail[0].replace("[sync] ", "")))
+            else:
+                first = next((l for l in (r.stdout or "").splitlines() if "不一致" in l), "副本漂移")
+                checks.append(("engine-sync", "FAIL", f"{first}（跑 python scripts/sync_engine.py 修平）"))
+        except Exception as e:
+            checks.append(("engine-sync", "WARN", str(e)))
+
+        fails = sum(1 for _, s, _ in checks if s == "FAIL")
+        warns = sum(1 for _, s, _ in checks if s == "WARN")
+        if args.json:
+            print(json.dumps({"checks": [{"name": n, "status": s, "detail": dt} for n, s, dt in checks],
+                              "summary": {"pass": len(checks) - fails - warns,
+                                          "warn": warns, "fail": fails}},
+                             ensure_ascii=False, indent=2))
+        else:
+            print("六合一体检：")
+            for n, s, dt in checks:
+                print(f"  [{s:^4}] {n}：{dt}")
+            print(f"汇总：{len(checks) - fails - warns} PASS / {warns} WARN / {fails} FAIL")
+        return 0 if fails == 0 else (1 if warns == 0 else 2)
+
+    if args.cmd == "lesson":
+        # 一条命令三写：memory(kind=mistake) + knowledge(pending, source_ids) + note
+        import growth
+        text = " ".join(args.text)
+        try:
+            rec, how = remember(text, "mistake", args.importance,
+                                [t for t in args.tags.split(",") if t],
+                                [e for e in args.entities.split(",") if e],
+                                "user")
+        except Exception as e:
+            print(f"[错误] 教训写入失败：{e}", file=sys.stderr)
+            return 1
+        print(f"{'已合并' if how == 'merged' else '已写入'}教训：{rec['id']}（mistake，重要性 {rec['importance']}）")
+        kb = None
+        try:
+            kb, khow = growth.add_knowledge("教训 · " + str(rec.get("gist") or text[:18]), text,
+                                            tags=[t for t in args.tags.split(",") if t],
+                                            entities=[e for e in args.entities.split(",") if e],
+                                            source_ids=[rec["id"]], source="user", review="pending")
+            print(f"  知识沉淀：{kb['id']}（status={kb.get('status')}，{khow}）")
+        except Exception as e:
+            print(f"  ⚠ 知识沉淀失败（教训本身已记住）：{e}")
+        try:
+            nt, _ = growth.write_note("growth", "教训 · " + str(rec.get("gist") or text[:18]), text,
+                                      tags=[t for t in args.tags.split(",") if t],
+                                      memory_ids=[rec["id"]])
+            print(f"  成长笔记：{nt['id']}")
+        except Exception as e:
+            print(f"  ⚠ 笔记写入失败（教训本身已记住）：{e}")
+        _wait_embeds()   # 同 remember：等异步嵌入收尾再退出
+        return 0
+
     if args.cmd == "stats":
         s = stats()
         if args.json:
@@ -2300,6 +3074,83 @@ def _main(argv=None) -> int:
                 print("  高频标签：" + "、".join(f"{t}×{c}" for t, c in s["top_tags"]))
         return 0
 
+    # v3.02 #8：export --md —— 把记忆库导成人类可读的 Markdown。
+    # 备份 zip 给机器恢复用，这份给人读/给人审：按层分节、按时间排，
+    # 每条带 id/时间/类型/重要度/标签，正文截到 300 字防一页一条。
+    if args.cmd == "export":
+        import memory as _mem
+        ensure_home()
+        layers = [args.layer] if args.layer else ["hippo", "cortex", "dust", "archive"]
+        layer_titles = {"hippo": "短期（海马体）", "cortex": "长期（新皮层）",
+                        "dust": "淡忘区", "archive": "冷归档"}
+        out_lines = ["# 灵枢记忆库导出", "",
+                     f"- 导出时间：{fmt_time(now_ts())}",
+                     f"- 数据目录：`{HOME}`",
+                     f"- 范围：{'、'.join(layer_titles.get(x, x) for x in layers)}"
+                     + (f"（最多 {args.limit} 条）" if args.limit else ""), ""]
+        total = 0
+        for layer in layers:
+            if layer == "archive":
+                recs = _mem.load_archive()
+            else:
+                recs = [m for m in _mem.load_all() if m.get("layer") == layer]
+            recs.sort(key=lambda m: float(m.get("created") or 0), reverse=True)
+            if args.limit:
+                recs = recs[:args.limit]
+            out_lines.append(f"## {layer_titles.get(layer, layer)}（{len(recs)} 条）")
+            out_lines.append("")
+            if not recs:
+                out_lines.append("（空）")
+                out_lines.append("")
+                continue
+            for m in recs:
+                total += 1
+                text = str(m.get("text", "")).replace("\n", " ").strip()
+                if len(text) > 300:
+                    text = text[:300] + "…"
+                tags = " ".join(f"#{t}" for t in (m.get("tags") or []))
+                meta = f"`{m.get('id', '?')}` · {fmt_time(m.get('created') or 0)}" \
+                       f" · {m.get('kind', '?')} · 重要度 {m.get('importance', 0)}"
+                if m.get("pinned"):
+                    meta += " · 📌置顶"
+                out_lines.append(f"- **{text}**" if m.get("kind") in ("fact", "preference")
+                                 else f"- {text}")
+                out_lines.append(f"  - {meta}" + (f" · {tags}" if tags else ""))
+            out_lines.append("")
+        if not args.no_notes:
+            import growth
+            kb = growth.load_knowledge()
+            out_lines.append(f"## 知识库（{len(kb)} 条）")
+            out_lines.append("")
+            for k in kb[:200]:
+                body = str(k.get("content") or k.get("text") or "").replace("\n", " ")
+                if len(body) > 200:
+                    body = body[:200] + "…"
+                out_lines.append(f"- {body}")
+            out_lines.append("")
+            notes = growth.list_notes(limit=200)
+            out_lines.append(f"## 笔记 / 日记（最近 {len(notes)} 条）")
+            out_lines.append("")
+            for n in notes:
+                body = str(n.get("body") or n.get("content") or "").replace("\n", " ")
+                if len(body) > 200:
+                    body = body[:200] + "…"
+                out_lines.append(f"- **{n.get('type', n.get('kind', '?'))}** · "
+                                 f"{fmt_time(n.get('created') or 0)}：{body}")
+            out_lines.append("")
+        out_lines.append(f"---")
+        out_lines.append(f"共 {total} 条记忆。")
+        text = "\n".join(out_lines) + "\n"
+        if args.out:
+            p = Path(args.out).expanduser()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+            audit_log("cli", "export", str(p.name), f"导出 {total} 条记忆")
+            print(f"已导出 {total} 条记忆 → {p}")
+        else:
+            print(text, end="")
+        return 0
+
     if args.cmd == "config":
         if args.action == "show":
             print(json.dumps(load_config(), ensure_ascii=False, indent=2))
@@ -2307,14 +3158,14 @@ def _main(argv=None) -> int:
         if args.action == "set":
             if not args.key or not args.value:
                 print("用法：config set model_tier small / config set budget_tokens 800", file=sys.stderr)
-                return 2
+                return 1
             cfg = config_set(args.key, args.value)
             print(f"已设置 {args.key} = {json.dumps(cfg[args.key], ensure_ascii=False)}")
             return 0
         if args.action == "unset":
             if not args.key:
                 print("用法：config unset <key>", file=sys.stderr)
-                return 2
+                return 1
             config_unset(args.key)
             print(f"已移除 {args.key}")
             return 0
@@ -2356,7 +3207,7 @@ def _main(argv=None) -> int:
         if args.action in ("confirm", "discard"):
             if not args.id:
                 print("用法：review confirm <id> / review discard <id>（先 review 看清单）", file=sys.stderr)
-                return 2
+                return 1
             target = args.id.strip()
             if target.startswith("k_"):
                 import growth
@@ -2367,6 +3218,19 @@ def _main(argv=None) -> int:
                     return 1
                 print(f"知识「{r.get('title', target)}」已{'确认' if args.action == 'confirm' else '废弃'}。")
                 return 0
+            # #36：les_ 开头的是教训——confirm 转正开始注入，discard 弃用
+            if target.startswith("les_"):
+                try:
+                    r = set_lesson_status(target, "active" if args.action == "confirm" else "discarded")
+                except ValueError as exc:
+                    print(f"[未命中] {exc}", file=sys.stderr)
+                    return 1
+                except PermissionError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 1
+                print(f"教训已{'确认（转 active，开始注入）' if args.action == 'confirm' else '废弃'}："
+                      f"{r.get('text', '')[:60]}")
+                return 0
             try:
                 r = set_memory_review(target, args.action)
             except ValueError as exc:
@@ -2374,10 +3238,10 @@ def _main(argv=None) -> int:
                     print(f"[未命中] {exc}", file=sys.stderr)
                     return 1
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             except PermissionError as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             print(f"记忆已{'确认' if args.action == 'confirm' else '废弃'}："
                   f"{r.get('gist') or r.get('text', '')[:40]}")
             return 0
@@ -2385,10 +3249,16 @@ def _main(argv=None) -> int:
         if args.json:
             print(json.dumps(rep, ensure_ascii=False, indent=2))
             return 0
-        total = len(rep["memories"]) + len(rep["knowledge"])
+        total = len(rep["memories"]) + len(rep["knowledge"]) + len(rep.get("lessons", []))
         if not total and not rep["persona"]:
             print("没有待审核项，干净。")
             return 0
+        if rep.get("lessons"):
+            print(f"\n待审核教训 {len(rep['lessons'])} 条（做梦从改口/冲突/被取代记忆里提炼的）：")
+            for l in rep["lessons"]:
+                print(f"  · {l['id']}  {l['text'][:70]}（置信度 {l.get('confidence', 0.5):.2f}，"
+                      f"证据 {len(l.get('evidence', []))} 条）")
+                print(f"    review confirm {l['id']}   /   review discard {l['id']}")
         if rep["memories"]:
             print(f"待审核记忆 {len(rep['memories'])} 条（AI 做梦等整理出来的，确认前不当事实）：")
             for m in rep["memories"]:
@@ -2412,9 +3282,72 @@ def _main(argv=None) -> int:
             return 0
         c = a["counts"]
         print(f"自查：待审记忆 {c['memories']} · 待审知识 {c['knowledge']} · "
+              f"待审教训 {c.get('lessons', 0)} · "
               f"AI 改人格 {c['persona']} · 疑似冲突 {c['conflicts']}")
         for t in a["tips"]:
             print(f"  - {t}")
+        return 0
+
+    if args.cmd == "lessons":
+        # #36 教训库 CLI。教训是失败闭环的产物：remember --correction 改口 →
+        # 做梦提炼 pending → review confirm 转正注入 → lessons validate 校准。
+        action = args.action
+        if action == "add":
+            text = " ".join(args.text).strip()
+            if not text:
+                print('用法：lessons add "教训内容" [--confidence 0.5] [--evidence m_xxx,m_yyy]', file=sys.stderr)
+                return 2
+            try:
+                lesson = add_lesson(
+                    text,
+                    evidence=[e.strip() for e in args.evidence.split(",") if e.strip()],
+                    confidence=args.confidence,
+                    status="active",  # 人工手写的教训默认直接生效；做梦提炼的才走 pending 闸
+                )
+            except (ValueError, PermissionError) as exc:
+                print(f"[失败] {exc}", file=sys.stderr)
+                return 1
+            print(f"已添加教训 {lesson['id']}（active，注入时按置信度参与）")
+            print(f"  {lesson['text']}")
+            return 0
+        if action == "validate":
+            lid = (args.text[0].strip() if args.text else "")
+            if not lid:
+                print("用法：lessons validate <les_id>（--bad 表示这次没用/踩坑了）", file=sys.stderr)
+                return 2
+            try:
+                r = validate_lesson(lid, ok=not args.bad)
+            except ValueError as exc:
+                print(f"[未命中] {exc}", file=sys.stderr)
+                return 1
+            except PermissionError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            if r.get("retired"):
+                print(f"教训 {lid} 置信度已低于 0.2，自动退役（不再注入，仅留档）。")
+            else:
+                word = "确认有效" if not args.bad else "踩坑反馈"
+                print(f"教训 {lid} {word}：置信度 {r['confidence']:.2f}，"
+                      f"累计验证 {r['times_validated']} 次")
+            return 0
+        # list（默认；退役的教训只在 --json 里能看到）
+        ls = list_lessons(include_retired=False)
+        if args.json:
+            print(json.dumps(ls, ensure_ascii=False, indent=2))
+            return 0
+        if not ls:
+            print("教训库还是空的。做梦会从改口（--correction）/冲突/被取代记忆里提炼，"
+                  '也可以手动：lessons add "别再犯……"')
+            return 0
+        print(f"教训 {len(ls)} 条（按置信度排序）：")
+        for l in ls:
+            flag = "（已退役）" if l.get("retired") else \
+                   ("（待审，review confirm 后生效）" if l.get("status") == "pending" else "")
+            print(f"  · {l['id']}  置信 {l.get('confidence', 0.5):.2f}  "
+                  f"验证 {int(l.get('times_validated', 0))} 次{flag}")
+            print(f"    {l.get('text', '')[:100]}")
+            if l.get("evidence"):
+                print(f"    证据：{'、'.join(l['evidence'][:4])}")
         return 0
 
     if args.cmd == "detect-conflicts":
@@ -2468,7 +3401,7 @@ def _main(argv=None) -> int:
                 if not sep:
                     print(f"[错误] --section 需为 \"键=值\" 形式（键：状态/目标/死路及原因/下一步），收到：{item}",
                           file=sys.stderr)
-                    return 2
+                    return 1
                 if val:
                     sections[key.strip()] = val.strip()
             if not sections:
@@ -2494,6 +3427,15 @@ def _main(argv=None) -> int:
             return 0
         cfg = load_config()
         used = float(args.used)
+        # 记下本次水位：status --json / startup 水位提醒块的"最近一次 session 结束水位"
+        if not READONLY:
+            try:
+                with _locked(HOME / "config.json"):
+                    cfg = load_config()
+                    cfg["last_session_pct"] = round(used, 1)
+                    atomic_json(HOME / "config.json", cfg)
+            except Exception:
+                pass
         review = _cfg_num(cfg, "review_threshold", 0.60) * 100
         dream_pct = _cfg_num(cfg, "dream_threshold", 0.75) * 100
         escape = _cfg_num(cfg, "escape_threshold", 0.90) * 100
@@ -2525,13 +3467,13 @@ def _main(argv=None) -> int:
     if args.cmd == "channel":
         if not args.channel_cmd:
             print("用法：channel remember|recall|user|owner …（channel --help 查看）", file=sys.stderr)
-            return 64
+            return 1
 
         if args.channel_cmd == "remember":
             text = " ".join(args.text).strip()
             if not text:
                 print("记忆内容为空", file=sys.stderr)
-                return 2
+                return 1
             rec, how = remember(text, args.kind, args.importance,
                                 [t for t in args.tags.split(",") if t], [],
                                 args.source, args.layer,
@@ -2599,7 +3541,7 @@ def _main(argv=None) -> int:
             if args.action in ("grant", "revoke", "capture-on", "capture-off") and not u:
                 print(f"用法：channel privacy {args.action} --user <user>。"
                       "授权只能由本人执行，不能替别人操作。", file=sys.stderr)
-                return 64
+                return 1
             if args.action == "grant":
                 g = (getattr(args, "group", "") or "").strip()
                 rec = consent_grant(u, getattr(args, "channel", "") or "", g,
@@ -2654,7 +3596,7 @@ def _main(argv=None) -> int:
                 return 0
             if not args.user:
                 print(f"用法：channel owner {args.action} <user>，如 qq:10001", file=sys.stderr)
-                return 64
+                return 1
             # 门控：owner 管理只能本机（无 --caller）执行，或由已有 owner 在通道上下文执行；
             # admin 不行（防通道内自封 owner）。--caller 是调用者身份，位置参数 user 是操作目标。
             _ou = (getattr(args, "caller", "") or "").strip()
@@ -2688,6 +3630,12 @@ def _main(argv=None) -> int:
     if args.cmd == "serve":
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import panel_server
+        # #21 面板启动顺手清一次遗留 staging（被强杀的更新留下的临时目录）
+        try:
+            import growth as _growth
+            _growth.cleanup_stale_staging()
+        except Exception:
+            pass
         port = args.port or int(load_config().get("panel_port", 8765))
         try:
             panel_server.serve(port, open_browser=not args.no_browser)
@@ -2710,6 +3658,23 @@ def _main(argv=None) -> int:
 
     if args.cmd == "relink":
         return cmd_relink(args.limit, args.min_score, args.max_links)
+
+    if args.cmd == "rebuild-embeds":
+        import memory as _mem
+        try:
+            r = _mem.rebuild_embeddings(force=args.force)
+        except PermissionError as exc:
+            print(f"[只读] {exc}", file=sys.stderr)
+            return 1
+        except RuntimeError as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            return 2
+        print(f"embedding 重建完成：重建 {r['rebuilt']}，跳过 {r['skipped']}，"
+              f"失败 {len(r['failed'])}，模型 {r['model']}")
+        if r["failed"]:
+            print(f"  失败条目（向量缺失，可稍后重试）：{'、'.join(r['failed'][:20])}"
+                  + ("…" if len(r["failed"]) > 20 else ""), file=sys.stderr)
+        return 0
 
     if args.cmd == "drift":
         import persona as _persona
@@ -2756,7 +3721,7 @@ def _main(argv=None) -> int:
                 m = fn(args.id, args.layer) if args.action == "revive" else fn(args.id)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
-                return 2
+                return 1
             verb = {"fold": "已折叠（原文收进 folded_text，只留 gist；unfold 可还原）",
                     "unfold": "已展开还原（原文回到正文，记忆仍在淡忘区；revive 可复活）",
                     "revive": f"已复活 → {m.get('layer')} 层"}[args.action]
@@ -2775,10 +3740,79 @@ def _main(argv=None) -> int:
             else:
                 print("没有死链，库里干干净净。")
             return 0
+        if mem_cmd == "boost":
+            try:
+                r = boost(args.id)
+            except (LookupError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            print(f"遗忘纠正完成：{r['id']}（{r.get('layer') or '?'} 层）")
+            print(f"  last_access→现在（R 回 1），稳定度 {r['old_stability']:.0f}s→{r['stability']:.0f}s")
+            if (r.get("layer") or "") == "dust":
+                print("  提示：这条在淡忘区，想整条复活回活跃层用 `memory dust revive <id>`。")
+            return 0
+        # #28 记忆冻结：保留但不主动出现（召回/注入/做梦都跳过），可随时解冻
+        if mem_cmd in ("freeze", "unfreeze"):
+            try:
+                r = set_frozen(args.id, frozen=(mem_cmd == "freeze"))
+            except (LookupError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            if not r.get("changed"):
+                print(f"{r['id']} 已经是{'冻结' if r['frozen'] else '解冻'}状态，没有改动。")
+            else:
+                print(f"{'已冻结' if r['frozen'] else '已解冻'}：{r['id']}")
+                if r["frozen"]:
+                    print("  冻结后不参与召回/启动注入/做梦合并，用 show 仍可查看；解冻立即恢复。")
+            return 0
+        # #34 物理删除：双重确认（dust 冷静期 7 天 + --confirm <id前8位>）
+        if mem_cmd == "purge":
+            try:
+                r = purge(args.id, args.confirm)
+            except (ValueError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            print(f"已物理删除：{args.id}（原在 {r['layer']} 层，关联边已切断）")
+            print("  此操作不可恢复。")
+            return 0
+        # v3.02 #10：事实保质期复核——到期列出 / 用户确认后静音
+        if mem_cmd == "review-list":
+            due = due_for_review(50)
+            if not due:
+                print("没有到期待复核的记忆。")
+                return 0
+            print(f"{len(due)} 条到期待复核（最早优先）：")
+            for m in due:
+                print(f"- {m['id']} · {fmt_date(m.get('review_by'))} 到期 · "
+                      f"[{m.get('layer')}] {display_text(m)[:80]}")
+            print("用户确认仍有效：memory review-confirm <id>；已过时就重新 remember 覆盖。")
+            return 0
+        if mem_cmd == "review-confirm":
+            try:
+                m = mark_reviewed(args.id)
+            except (LookupError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            print(f"已确认复核：{m['id']}（下次到期前不再提醒「待复核」）")
+            print(f"  [{m.get('layer')}] {display_text(m)[:80]}")
+            return 0
+        # v3.02 #25：记忆哈希链完整性校验——只报告，不自动修复
+        if mem_cmd == "integrity":
+            import memory as _mem_mod
+            r = _mem_mod.verify_integrity()
+            if getattr(args, "json", False):
+                print(json.dumps(r, ensure_ascii=False, indent=2))
+            elif r["ok"]:
+                print(f"完整性校验通过：{r['count']} 条记忆（热层+归档），哈希链完好。")
+            else:
+                print(f"完整性校验失败：第 {r['broken_pos']} 条（id={r['broken_at']}）处链断裂，"
+                      f"共扫描 {r['count']} 条。可能被手工改动或中间条目被增删；只报告不修复，"
+                      "请核对后从备份恢复或重建。", file=sys.stderr)
+            return 0 if r["ok"] else 1
         print("用法：memory dust fold|unfold|revive <id> [--layer cortex|hippo] / "
-              "memory diagnose / memory fix-links",
+              "memory boost <id> / memory diagnose / memory fix-links / memory integrity",
               file=sys.stderr)
-        return 64
+        return 1
 
     if args.cmd == "restore":
         return cmd_restore(args.archive, args.yes,
@@ -2799,7 +3833,7 @@ def _main(argv=None) -> int:
             if not text:
                 print("用法：user-rules add <规则内容>，如 `user-rules add 不要动 DSH 数据目录`",
                       file=sys.stderr)
-                return 2
+                return 1
             ensure_home()
             need_nl = False
             if path.exists():
@@ -2846,7 +3880,9 @@ def _main(argv=None) -> int:
 
 
 def main(argv=None) -> int:
-    """入口：给 AI 的中文报错，不甩 Python 堆栈。"""
+    """入口：统一退出码约定——
+    0=成功；1=业务错误（找不到对象/参数非法/READONLY 拒绝写等 ValueError 类）；
+    2=系统错误（IO/文件损坏/依赖缺失等）；3=鉴权拒绝；4=隐私拒绝；130=用户中断。"""
     # Python 版本预检：代码使用 `int | None` 等 3.10+ 语法，低版本解释器 import 即语法错误，
     # 这里提前给出可读报错而不是让宿主拿到一屏 SyntaxError
     if sys.version_info < (3, 10):
@@ -2856,10 +3892,11 @@ def main(argv=None) -> int:
         return 2
     try:
         return _main(argv)
-    except (ValueError, KeyError, FileExistsError, PermissionError) as exc:
+    except (ValueError, KeyError, LookupError, FileExistsError, PermissionError) as exc:
+        # 业务错误：简短中文提示，无堆栈，退出码 1
         log_event("run", f"CLI 出错：{exc}", level="error")
         print(f"[错误] {exc}", file=sys.stderr)
-        return 2
+        return 1
     except KeyboardInterrupt:
         print("\n已停止")
         return 130
@@ -2878,4 +3915,5 @@ def main(argv=None) -> int:
         print(f"[错误] {type(exc).__name__}: {exc}"
               + (f"（完整堆栈已写入：{diag}）" if diag.exists() else "（详情见运行日志）"),
               file=sys.stderr)
-        return 1
+        traceback.print_exc(file=sys.stderr)
+        return 2

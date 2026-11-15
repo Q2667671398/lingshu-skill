@@ -77,6 +77,9 @@ def default_persona() -> dict:
         "notes": [],
         "state": {"mood": "", "mood_note": "", "energy": None, "closeness": None, "updated": now_ts()},
         "evolved": {"habits": [], "learned_likes": [], "learned_dislikes": [], "insights": []},
+        # 自认识（self-model）：擅长/短板/还没弄清 + 自传片段——由 AI 自己维护，
+        # 不等于 traits 数值，是它对自己能力边界的文字化认知。
+        "self_model": {"strengths": [], "limitations": [], "uncertainties": [], "autobiography": []},
         "history": [],
     }
 
@@ -89,6 +92,62 @@ def _split_kv(line: str):
     else:
         return None
     return k.strip().lstrip("-* ").strip(), v.strip()
+
+
+# —— 自认识（self-model）——
+_SELF_MODEL_MAX = 20  # 每个桶最多存 20 条：自认识是提炼出来的，不是流水账
+_SELF_MODEL_BUCKETS = ("strengths", "limitations", "uncertainties")
+
+
+def _ensure_self_model(p: dict) -> bool:
+    """保证 persona.self_model 四键结构完好：字符串桶为 [str]，autobiography 为 [{ts,text}]。
+    返回 True = 做了修复（调用方据此决定是否落盘）。防御式：坏类型条目直接丢弃。"""
+    sm = p.get("self_model")
+    if not isinstance(sm, dict):
+        p["self_model"] = {"strengths": [], "limitations": [],
+                           "uncertainties": [], "autobiography": []}
+        return True
+    fixed = False
+    for b in _SELF_MODEL_BUCKETS:
+        cur = sm.get(b)
+        if cur is None:
+            sm[b] = []
+            fixed = True
+        elif isinstance(cur, str):
+            sm[b] = [cur] if cur.strip() else []
+            fixed = True
+        elif not isinstance(cur, list):
+            sm[b] = []
+            fixed = True
+        else:
+            clean = [str(x).strip() for x in cur
+                     if isinstance(x, str) and str(x).strip()]
+            if clean != cur:
+                fixed = True
+            if len(clean) > _SELF_MODEL_MAX:
+                clean = clean[-_SELF_MODEL_MAX:]
+                fixed = True
+            sm[b] = clean
+    ab = sm.get("autobiography")
+    if ab is None or not isinstance(ab, list):
+        sm["autobiography"] = []
+        fixed = True
+    else:
+        clean = []
+        for x in ab:
+            if isinstance(x, dict) and str(x.get("text") or "").strip():
+                clean.append({"ts": _num(x.get("ts"), 0), "text": str(x["text"]).strip()})
+            elif isinstance(x, str) and x.strip():
+                clean.append({"ts": 0, "text": x.strip()})
+            else:
+                fixed = True
+        if len(clean) > _SELF_MODEL_MAX:
+            clean = sorted(clean, key=lambda e: e["ts"], reverse=True)[:_SELF_MODEL_MAX]
+            fixed = True
+        if clean != ab:
+            fixed = True
+        sm["autobiography"] = clean
+    return fixed
 
 
 def compile_persona() -> dict:
@@ -145,6 +204,12 @@ def load_persona() -> dict:
     if "drives" not in p or not isinstance(p.get("drives"), dict):
         p["drives"] = {}
         changed = True
+    # 自认识（self_model）迁移：旧档案没有这个块，或块被写坏（不是 dict）时修复。
+    if not isinstance(p.get("self_model"), dict):
+        p["self_model"] = {"strengths": [], "limitations": [], "uncertainties": [], "autobiography": []}
+        changed = True
+    elif _ensure_self_model(p):
+        changed = True
     # v2.62 迁移：旧结构 traits（裸数字）→ 溯源结构；history 缺 source 的补记。
     # 纯读路径（check/注入）不该每次都报警，升级一次即静默；只读模式不动盘。
     tr = p.get("traits")
@@ -168,6 +233,119 @@ def load_persona() -> dict:
 def save_persona(p: dict) -> None:
     with _locked(HOME / "persona.json"):
         atomic_json(HOME / "persona.json", p)
+
+
+def _snapshot_path() -> Path:
+    return HOME / "persona_snapshots.jsonl"
+
+
+def _next_snapshot_version() -> int:
+    """快照版本号：读 jsonl 最后一行 + 1；空文件从 1 开始。
+
+    并发 race 容忍：两个线程同时读到 N 并都写 N+1 是允许的，rollback 时按
+    version+ts 匹配最接近目标版本的那一个即可。
+    """
+    path = _snapshot_path()
+    if not path.exists():
+        return 1
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = [ln for ln in f if ln.strip()]
+        if rows:
+            d = json.loads(rows[-1])
+            return int(d.get("version", 0)) + 1
+    except (OSError, ValueError, TypeError):
+        pass
+    return 1
+
+
+def save_persona_snapshot(p_before: dict, action: str = "update",
+                          source: str = "", why: str = "") -> int | None:
+    """把当前 persona 完整快照追加进 persona_snapshots.jsonl。
+
+    调用时机：update_persona 里在 load_persona() 后、改字段前。任何改 persona
+    的路径（dream/面板/CLI）自动覆盖。返回快照版本号，失败返回 None（不阻断
+    主流程——快照丢了不应该让人格更新也丢）。
+    """
+    if READONLY:
+        return None
+    try:
+        path = _snapshot_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        version = _next_snapshot_version()
+        row = {
+            "version": version,
+            "ts": now_ts(),
+            "action": action,
+            "source": source,
+            "why": why,
+            "persona": json.loads(json.dumps(p_before, ensure_ascii=False)),  # 深拷贝
+        }
+        with _locked(path):
+            with open(path, "a", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return version
+    except Exception as exc:
+        log_event("persona", f"保存 persona 快照失败：{exc}", level="warn")
+        return None
+
+
+def list_persona_snapshots(limit: int = 50) -> list:
+    """列出最近的快照（新的在前）。每条含 version / ts / action / source / why，
+    不含完整 persona 数据（避免面板一次塞进大对象）。"""
+    path = _snapshot_path()
+    if not path.exists():
+        return []
+    try:
+        rows = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                    rows.append({k: d.get(k) for k in ("version", "ts", "action", "source", "why")})
+                except ValueError:
+                    continue
+        return list(reversed(rows[-limit:]))
+    except OSError:
+        return []
+
+
+def rollback_persona_snapshot(version: int) -> dict | None:
+    """按版本号回溯 persona.json 到指定快照。返回回溯后的完整 persona，找不到
+    返回 None。找不到或异常都不抛——rollback 是用户选的安全兜底。"""
+    if READONLY:
+        return None
+    path = _snapshot_path()
+    if not path.exists():
+        return None
+    target = None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                    if int(d.get("version", 0)) == int(version):
+                        target = d
+                        break
+                except (ValueError, TypeError):
+                    continue
+    except OSError:
+        return None
+    if not target or not isinstance(target.get("persona"), dict):
+        return None
+    # 先存一份"回滚前"的快照，这样用户回滚错了还能再回回来
+    try:
+        save_persona_snapshot(load_persona(), action="pre_rollback", source="rollback",
+                              why=f"即将回滚到 v{version}")
+    except Exception:
+        pass
+    p = target["persona"]
+    save_persona(p)
+    return p
 
 
 def _is_locked(p: dict, label: str) -> bool:
@@ -233,10 +411,10 @@ def persona_brief(p: dict, mood: bool = True) -> str:
         lines.append("我说话的方式：" + "；".join(p["style"][:5]) + "。")
     if p.get("values"):
         lines.append("我的底线：" + "；".join(p["values"][:5]) + "。")
-    likes = p.get("likes", []) + p.get("evolved", {}).get("learned_likes", [])
+    likes = p.get("likes", []) + _bucket_texts(p.get("evolved", {}).get("learned_likes", []))
     if likes:
         lines.append("我喜欢：" + "、".join(_dedupe(likes)[:6]) + "。")
-    dislikes = p.get("dislikes", []) + p.get("evolved", {}).get("learned_dislikes", [])
+    dislikes = p.get("dislikes", []) + _bucket_texts(p.get("evolved", {}).get("learned_dislikes", []))
     if dislikes:
         lines.append("我讨厌：" + "、".join(_dedupe(dislikes)[:5]) + "。")
     if p.get("relationship"):
@@ -252,21 +430,58 @@ def persona_brief(p: dict, mood: bool = True) -> str:
     habits = p.get("evolved", {}).get("habits", [])
     if habits:
         lines.append("我养成的习惯：" + "；".join(h["name"] if isinstance(h, dict) else str(h) for h in habits[-4:]) + "。")
+    # 自认识概览：擅长/短板/还没弄清——只在自己真的积累了认知时才说，空块不出声
+    sm = p.get("self_model") if isinstance(p.get("self_model"), dict) else {}
+    if sm.get("strengths"):
+        lines.append("我擅长的：" + "、".join(sm["strengths"][:3]) + "。")
+    if sm.get("limitations"):
+        lines.append("我的短板：" + "、".join(sm["limitations"][:3]) + "。")
+    if sm.get("uncertainties"):
+        lines.append("我还没弄清的：" + "、".join(sm["uncertainties"][:2]) + "。")
     return "\n".join(lines)
 
 
 def update_persona(updates: dict, why: str = "做梦整理", source: str = "",
-                   evidence: list | None = None) -> list:
+                   evidence: list | None = None, bypass_gate: bool = False,
+                   formative_event: str = "") -> list:
     """应用人格变更，写入 evolution history。返回被拒绝的字段。
 
     source：谁发起的（dream/自我总结/面板/…）；evidence：依据的记忆/事件 id 列表。
     两人格漂移要能溯源：这条改动来自哪场梦、哪段对话。
+    bypass_gate：做梦遇到"成形时刻"（峰值情绪）时才可置 True——跳过漂移双门限
+    与 EMA，按 ±25 的封顶幅度直接改值，并在 history 里留 formative_event 叙事。
     """
     if not isinstance(updates, dict):
         return []
     # load→改→save 整体加锁：否则并发的两次改动后写者会把先写者的字段覆盖回旧值
     with _locked(HOME / "persona.json"):
-        return _update_persona_inner(updates, why, source, evidence)
+        return _update_persona_inner(updates, why, source, evidence,
+                                     bypass_gate=bypass_gate,
+                                     formative_event=formative_event)
+
+
+def _num(v, default: float = 0.0) -> float:
+    """把可能是 None/字符串/bool/NaN 的值安全转成 float（与 memory._num 同语义，
+    避免环形 import）。drift 账本、history 时间戳都可能被写坏。"""
+    if v is None or isinstance(v, bool):
+        return float(default)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    if math.isnan(f) or math.isinf(f):
+        return float(default)
+    return f
+
+
+def _dedupe(items: list) -> list:
+    """保序去重（与 memory._dedupe 同语义），供 persona_brief 喜好合并等使用。"""
+    out, seen = [], set()
+    for x in items or []:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 
 def _num_or_none(val):
@@ -284,8 +499,14 @@ def _num_or_none(val):
 
 
 def _update_persona_inner(updates: dict, why: str, source: str,
-                          evidence: list | None) -> list:
+                          evidence: list | None, bypass_gate: bool = False,
+                          formative_event: str = "") -> list:
     p = load_persona()
+    # —— 永久记忆：改人格前先存快照——
+    # 任何 update_persona 路径（dream / 面板 / CLI / 回滚）都会进这里，
+    # 改前先深拷贝一份快照进 persona_snapshots.jsonl。改砸了能回滚。
+    save_persona_snapshot(json.loads(json.dumps(p, ensure_ascii=False)),
+                          action="update", source=source or "unknown", why=why)
     rejected = []
     now = now_ts()
     st = p.setdefault("state", {})
@@ -323,23 +544,42 @@ def _update_persona_inner(updates: dict, why: str, source: str,
             if why == "做梦整理" and isinstance(fval, (int, float)):
                 # old 可能是合法的 0：不能用 `old or 50`（0 会被当成 50）
                 base = 50 if old is None else int(old_val)
-                # —— 人格漂移双门限 + EMA ——
-                # 人格是长年累月养成的，不该被一两场对话带偏：做梦给出的微调先记在
-                # drift 账本上，小幅波动（低于门限）只是心里动了一下，不落盘；同向
-                # 攒够门限才真正改人格，改的幅度也打六折——越大的转变越要慢慢来。
-                drift = st.setdefault("trait_drift", {})
-                acc = _num(drift.get(key), 0.0) + max(-10, min(10, int(val)))
-                if abs(acc) < TRAIT_DRIFT_GATE:
-                    drift[key] = round(acc, 2)
-                    log(f"traits.{key}(漂移累积)", old_val, f"账面 {acc:+.1f}，未过门限未改动")
-                    continue
-                eff = acc * TRAIT_DRIFT_EMA
-                new = base + int(round(eff))
-                drift[key] = round(acc - eff, 2)   # 平滑掉的余额留在账上，下次接着攒
-                new = max(0, min(100, new))
-                if new == old_val:
-                    log(f"traits.{key}", old_val, f"倾向 {acc:+.1f} 但撞在边界上，未变")
-                    continue
+                if bypass_gate:
+                    # —— 成形时刻（峰值情绪）旁路 ——
+                    # 平时的漂移门限防的是"一两句话带偏人格"；但一次真正的峰值
+                    # 情绪本来就足以重塑人。幅度仍封顶 ±25，改动直接落盘不走账本。
+                    eff = max(-25.0, min(25.0, float(val)))
+                    new = max(0, min(100, base + int(round(eff))))
+                    if new != old_val:
+                        # 溯源叙事：这次改变不是因为攒了账，是因为那次真实发生过的事
+                        p.setdefault("history", []).append({
+                            "ts": now, "field": "narrative",
+                            "text": f"因为那次{formative_event or '一场强烈的情绪'}，"
+                                    f"我的「{key}」更{'强' if eff > 0 else '弱'}了",
+                            "why": why, "source": source or "dream_formative",
+                            "evidence": list(evidence)[:10] if evidence else []})
+                    else:
+                        log(f"traits.{key}(成形旁路)", old_val,
+                            f"倾向 {eff:+.1f} 但撞在边界上，未变")
+                        continue
+                else:
+                    # —— 人格漂移双门限 + EMA ——
+                    # 人格是长年累月养成的，不该被一两场对话带偏：做梦给出的微调先记在
+                    # drift 账本上，小幅波动（低于门限）只是心里动了一下，不落盘；同向
+                    # 攒够门限才真正改人格，改的幅度也打六折——越大的转变越要慢慢来。
+                    drift = st.setdefault("trait_drift", {})
+                    acc = _num(drift.get(key), 0.0) + max(-10, min(10, int(val)))
+                    if abs(acc) < TRAIT_DRIFT_GATE:
+                        drift[key] = round(acc, 2)
+                        log(f"traits.{key}(漂移累积)", old_val, f"账面 {acc:+.1f}，未过门限未改动")
+                        continue
+                    eff = acc * TRAIT_DRIFT_EMA
+                    new = base + int(round(eff))
+                    drift[key] = round(acc - eff, 2)   # 平滑掉的余额留在账上，下次接着攒
+                    new = max(0, min(100, new))
+                    if new == old_val:
+                        log(f"traits.{key}", old_val, f"倾向 {acc:+.1f} 但撞在边界上，未变")
+                        continue
             else:
                 new = int(val)                     # 面板 / CLI：绝对值 0-100
                 new = max(0, min(100, new))
@@ -378,9 +618,15 @@ def _update_persona_inner(updates: dict, why: str, source: str,
             log("evolved.habits", None, name)
     for key, bucket in (("likes", "learned_likes"), ("dislikes", "learned_dislikes")):
         for item in updates.get(key) or []:
-            if item and item not in ev[bucket]:
-                ev[bucket].append(item)
-                log(f"evolved.{bucket}", None, item)
+            # v3.01：支持 {"text":..., "evidence":[memory_id...]} 形式——画像候选采纳时带证据链
+            text = item.get("text") if isinstance(item, dict) else str(item or "")
+            ev_ids = item.get("evidence") if isinstance(item, dict) else None
+            if text and text not in [x.get("text") if isinstance(x, dict) else x for x in ev[bucket]]:
+                entry = {"text": text, "since": now}
+                if ev_ids:
+                    entry["evidence"] = [str(x) for x in ev_ids][:10]
+                ev[bucket].append(entry)
+                log(f"evolved.{bucket}", None, text)
     for item in updates.get("insights") or []:
         if item and item not in ev["insights"]:
             ev["insights"].append(item)
@@ -395,6 +641,11 @@ def _update_persona_inner(updates: dict, why: str, source: str,
             p["drives"][key] = new_v
             log(f"drives.{key}", old, p["drives"][key])
     save_persona(p)
+    # v4 #32：人格变更审计——只记改了哪些字段与来源，不落字段全文
+    applied = [h.get("field", "?") for h in hist if h.get("ts") == now]
+    if applied:
+        audit_log("ai" if (source or why) in ("做梦整理", "dream") else "user",
+                  "persona_update", ",".join(applied[:5]), f"source={source or why}; 拒绝 {len(rejected)} 项")
     return rejected
 
 
@@ -420,6 +671,8 @@ def set_persona_field(path: str, value: str) -> dict:
 
 def _set_persona_field_inner(path: str, value: str) -> dict:
     p = load_persona()
+    # 自动快照：CLI/面板单字段改写也会动人格，改坏了要能回滚
+    save_persona_snapshot(p, action="edit", source="字段改写", why=f"set {path}")
     root = path.split(".")[0]
     if root not in _PERSONA_ROOTS:
         raise ValueError(f"不认识的字段：{path}（可用 identity.* / traits.* / drives.* / state.* / "
@@ -544,6 +797,7 @@ def _persona_rollback_inner(p: dict, index: int | None = None) -> dict:
     hist.append({"ts": now_ts(), "field": field,
                  "from": to, "to": frm, "why": "回滚"})
     save_persona(p)
+    audit_log("user", "persona_rollback", field, f"回滚：{to} → {frm}")
     return {"field": field, "from": to, "to": frm, "why": entry.get("why", ""),
             "overwrote_later": overwrote}
 
@@ -567,7 +821,14 @@ def _prune_snapshots(keep: int = PERSONA_SNAP_KEEP) -> None:
 
 
 def persona_snapshot(label: str = "") -> dict:
-    """给当前人格拍一张快照（完整副本）。恢复基准 + 漂移对比都靠它。"""
+    """给当前人格拍一张快照（完整副本）。恢复基准 + 漂移对比都靠它。
+
+    注意：本函数走**目录版快照**（PERSONA_SNAP_DIR/persona_snapshots/），与
+    save_persona_snapshot 的 JSONL 版（persona_snapshots.jsonl 自动快照链）是
+    两套互相独立的机制——目录版不进 JSONL 自动链；回滚目录版快照请用对应的
+    目录版 diff/restore 入口（persona_diff / persona_restore），不要用
+    rollback_persona_snapshot（那个只认 JSONL 版）。
+    """
     if READONLY:
         raise PermissionError("记忆库当前只读，无法拍快照。")
     p = load_persona()
@@ -579,7 +840,9 @@ def persona_snapshot(label: str = "") -> dict:
         _prune_snapshots()
     except Exception:
         pass
-    return {"path": str(path), "ts": now_ts(), "label": label.strip() or "快照"}
+    return {"path": str(path), "ts": now_ts(), "label": label.strip() or "快照",
+            "note": "此快照走目录版（persona_snapshots/ 目录），不进 persona_snapshots.jsonl "
+                    "自动快照链；回滚请用对应的目录版 diff/restore 入口"}
 
 
 def persona_snapshots(limit: int = 30) -> list:
@@ -591,7 +854,8 @@ def persona_snapshots(limit: int = 30) -> list:
         if not isinstance(d, dict):
             continue
         rows.append({"name": f.stem, "ts": int(d.get("ts", 0)),
-                     "label": d.get("label", f.stem)})
+                     "label": d.get("label", f.stem),
+                     "action": str(d.get("action") or "")})
     rows.sort(key=lambda x: -x["ts"])
     return rows[:limit]
 
@@ -638,6 +902,7 @@ def persona_restore(name: str) -> dict:
         {"ts": now_ts(), "field": "persona", "from": "(自动备份)",
          "to": name, "why": "persona restore"})
     save_persona(persona)
+    audit_log("user", "persona_restore", name, "人格从快照恢复（restore前已自动备份）")
     return {"restored": name, "ts": d.get("ts", 0), "label": d.get("label", name)}
 
 
@@ -676,11 +941,90 @@ def persona_drift(days: int = 7) -> dict:
                         "from": h.get("from"), "to": h.get("to"), "why": h.get("why"),
                         "source": h.get("source", "")} for h in ai],
         "counts": {"diff": len(diff), "ai_changes": len(ai)},
+        # 稳定度分（借鉴 muu driftReport）：0-100，100=纹丝未动。
+        # 与下面 alert 同口径——只扣稳定特征（traits/identity）的 diff 与 AI 改动，
+        # drives 自然波动不扣分（否则两次对话就掉到不及格）。
+        "stability": _persona_stability_score(diff, len(ai)),
         # 告警只盯稳定特征（traits/identity 的变动）+ AI 主动改动；
         # drives 的自然波动不算（否则两次对话就误报"漂移偏大"）
         "alert": (len([d for d in diff if d.get("section") != "drives"]) >= 3
                   or len(ai) >= 3),
     }
+
+
+def _persona_stability_score(diff: list, ai_count: int) -> int:
+    """人格稳定度分 0-100：每处稳定特征 diff 扣 10，AI 主动改动每条扣 5，下限 0。"""
+    stable_diff = len([d for d in diff if d.get("section") != "drives"])
+    score = 100 - stable_diff * 10 - ai_count * 5
+    return max(0, min(100, score))
+
+
+# ---------------------------------------------------------------- 月度漂移自检（#44）
+# 借鉴 muu driftReport：AI 定期对照一份"冻结基准"自省——我是不是变得不像当初
+# 的我了？基准是显式冻结的 persona snapshot（月检触发时自动拍一张），不依赖
+# "碰巧最近有没有快照"；对比结果落盘 persona.json 的 drift_selfcheck 记录，
+# 大漂移写 history 让 ai_persona_changes 能提醒用户。梦是建议不是判决：只报告、
+# 不回滚——要不要恢复基准由用户决定（走已有 restore 流程）。
+
+def freeze_persona_baseline(label: str = "drift-baseline") -> int | None:
+    """冻结当前人格为漂移自检基准（完整快照，独立 label 便于识别）。"""
+    return save_persona_snapshot(load_persona(), action="baseline-freeze",
+                                 source="漂移自检", why="冻结漂移自检基准")
+
+
+def monthly_drift_selfcheck(days: int = 30) -> dict:
+    """月度人格漂移自检：与冻结基准（或最近有效快照）对比稳定特征。
+
+    流程：没有 baseline 快照就先冻结一张当基准（首次=零漂移）；有则对比
+    traits/identity（drives 自然波动不计），算稳定度分；结果记入 persona
+    的 drift_selfcheck，稳定度 < 60 写 history（source="漂移自检"）提醒用户。
+    只读模式只出报告不落盘。
+    """
+    p = load_persona()
+    snaps = [s for s in persona_snapshots(40)
+             if s.get("action") == "baseline-freeze" and s.get("label") != "restore前自动备份"]
+    froze_baseline = False
+    if not snaps:
+        # 首次自检：把当前人格冻结为基准，本次 diff 恒为空
+        if not READONLY:
+            freeze_persona_baseline()
+            froze_baseline = True
+        return {"at": now_ts(), "days": days, "first_run": True,
+                "froze_baseline": froze_baseline, "baseline": None,
+                "stability": 100, "diff": [], "alert": False}
+    base = json.loads((PERSONA_SNAP_DIR / f"{snaps[0]['name']}.json").read_text(encoding="utf-8"))
+    bp = base.get("persona") or {}
+    diff = []
+    for section in ("traits", "identity"):   # 稳定特征；drives 自然波动不比
+        b, c = bp.get(section) or {}, p.get(section) or {}
+        for k in set(b) | set(c):
+            if b.get(k) != c.get(k):
+                diff.append({"section": section, "key": k,
+                             "from": b.get(k), "to": c.get(k)})
+    stability = _persona_stability_score(diff, 0)   # 只看 diff，AI 改动数不计入月检
+    report = {"at": now_ts(), "days": days, "first_run": False,
+              "baseline": snaps[0]["name"], "baseline_ts": snaps[0]["ts"],
+              "baseline_age_days": round((now_ts() - snaps[0]["ts"]) / 86400, 1),
+              "stability": stability, "diff": diff,
+              "alert": stability < 60}
+    if READONLY:
+        return report
+    # 记账进 persona.json：roll 最多留 12 条（一年），大漂移另写 history 提醒
+    log = p.setdefault("drift_selfcheck", [])
+    log.append({k: v for k, v in report.items() if k != "diff"} | {"diff_count": len(diff)})
+    del log[:-12]
+    if report["alert"]:
+        p.setdefault("history", []).append({
+            "ts": now_ts(), "field": "drift_selfcheck",
+            "from": f"基准 {snaps[0]['name']}", "to": f"稳定度 {stability}",
+            "why": f"月度漂移自检：与基准相比 {len(diff)} 处稳定特征变动，"
+                   "建议在面板查看 diff 并决定是否恢复基准",
+            "source": "漂移自检"})
+        p["_ai_changes_viewed_at"] = 0.0   # 让 ai_persona_changes 能看到这条
+    save_persona(p)
+    audit_log("ai", "monthly_drift_selfcheck", "drift_selfcheck",
+              f"stability={stability} diff={len(diff)}")
+    return report
 
 
 # ---------------------------------------------------------------- 每日静默漂移
@@ -764,6 +1108,8 @@ def daily_drift(days: int = 1) -> dict:
                     "source": "drift"})
                 save_persona(p)
                 applied = True
+                audit_log("ai", "daily_drift", "state.mood_score",
+                          f"{int(cur)}→{new}（近{days}天 net={net}）")
         return {
             "days": days, "memories": len(recent),
             "emotion_hits": hits, "positive": positive, "negative": negative,
@@ -832,6 +1178,8 @@ def edit_persona(identity: dict | None = None, traits: dict | None = None,
                  why: str = "自我编辑") -> dict:
     """直接改写人格档案（绝对值，不是增量）。每次变更都写入演化历史，可回滚。"""
     p = load_persona()
+    # 自动快照：手动编辑也会改人格，改坏了要能一键回到这一刻之前
+    save_persona_snapshot(p, action="edit", source="手动编辑", why=why)
     now = now_ts()
     hist = p.setdefault("history", [])
     ident = p.setdefault("identity", {})
@@ -1159,8 +1507,16 @@ def onboarding_state() -> dict:
         "name": ident.get("名字", ""),
         "traits": p.get("traits", {}),
         "drives": p.get("drives", {}),
-        "likes": (p.get("likes") or []) + (p.get("evolved", {}).get("learned_likes") or []),
+        "likes": (p.get("likes") or []) + _bucket_texts(p.get("evolved", {}).get("learned_likes") or []),
     }
+
+
+def _bucket_texts(entries: list) -> list:
+    """evolved 喜好/讨厌桶归一成纯文本：v3.01 起条目可为 {"text","evidence","since"} 字典。"""
+    out = []
+    for x in entries or []:
+        out.append(str(x.get("text")) if isinstance(x, dict) else str(x))
+    return [t for t in out if t]
 
 
 def _check_num(name, val, lo, hi, fails, warns):
@@ -1229,3 +1585,378 @@ def persona_check() -> dict:
         info.append("初识还没完成（onboarding.completed=false）——这是正常状态，不是错误")
 
     return {"fails": fails, "warns": warns, "info": info}
+
+
+# ------------------------------------------------ 画像自动归纳（persona_pending.jsonl）
+# 人格是派生品，不是表单（perch/whale 借鉴）：从记忆/笔记/知识里归纳出的候选特征
+# 先进待确认池（带证据链），用户/采纳者点头才真正写进 persona——防记忆幻觉污染人格。
+
+_PERSONA_PENDING = HOME / "persona_pending.jsonl"
+
+# 关键词桶：极简规则归纳，宁少勿滥——命中才收，收的全带原文出处
+_SUGGEST_BUCKETS = {
+    "likes": ("喜欢", "偏爱", "偏好", "爱用", "习惯用", "更愿意"),
+    "dislikes": ("讨厌", "不喜欢", "别再", "反感", "受不了", "别让我"),
+    "relationship": ("在意", "重要的人", "很关心", "欠", "帮过我", "答应过"),
+}
+
+
+def _persona_pending_path() -> Path:
+    return _PERSONA_PENDING
+
+
+def _read_persona_pending() -> list:
+    """读全部候选（含 adopted/discarded，供去重与追溯）。坏行跳过不抛。"""
+    path = _persona_pending_path()
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+            if isinstance(r, dict):
+                rows.append(r)
+        except (ValueError, TypeError):
+            continue
+    return rows
+
+
+def _append_persona_pending(row: dict) -> None:
+    path = _persona_pending_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _persona_existing_texts() -> set:
+    """persona 里已经有的喜好/讨厌/关系文本（大小写归一），用于去重。"""
+    p = load_persona()
+    ev = p.get("evolved") or {}
+    texts = set()
+    for bucket in ("learned_likes", "learned_dislikes"):
+        for x in ev.get(bucket) or []:
+            texts.add(str(x.get("text") if isinstance(x, dict) else x).strip().lower())
+    for x in p.get("likes") or []:
+        texts.add(str(x).strip().lower())
+    for x in p.get("dislikes") or []:
+        texts.add(str(x).strip().lower())
+    return texts
+
+
+def persona_suggest_scan(days: int = 3) -> list:
+    """扫描最近 N 天记忆/笔记/知识，归纳人格候选特征写入 persona_pending.jsonl。
+
+    归纳规则极简（关键词桶），每条候选带 source_ids 证据链（m_*/n_*/k_* id）；
+    已在 persona 里或已是 pending/adopted 的同文本候选跳过，不重复堆。
+    返回本轮新增的候选列表。只读记忆是 fail-open 的：单个源坏了不阻塞其它。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法归纳画像候选。")
+    import memory as _mem
+    ensure_home()
+    now = now_ts()
+    cutoff = now - max(1, int(days)) * 86400
+    rows = _read_persona_pending()
+    seen_texts = {str(r.get("text", "")).strip().lower() for r in rows
+                  if r.get("status") in ("pending", "adopted")}
+    seen_texts |= _persona_existing_texts()
+    added = []
+
+    def _collect(src_records: list):
+        for rec in src_records:
+            try:
+                text = str(rec.get("text") or rec.get("body") or rec.get("content") or "").strip()
+                if not text or len(text) < 4:
+                    continue
+                rid = str(rec.get("id") or "")
+                for field, words in _SUGGEST_BUCKETS.items():
+                    if not any(w in text for w in words):
+                        continue
+                    # 摘一句短候选，不整段照抄
+                    seg = _mem.heuristic_gist(text, 40) if hasattr(_mem, "heuristic_gist") else text[:40]
+                    key = seg.strip().lower()
+                    if key in seen_texts:
+                        break
+                    seen_texts.add(key)
+                    row = {"id": f"ps_{now}_{len(added)+1}", "ts": now,
+                           "field": field, "text": seg,
+                           "source_ids": [rid] if rid else [],
+                           "source_kind": rec.get("kind") or "note",
+                           "status": "pending"}
+                    _append_persona_pending(row)
+                    added.append(row)
+                    break   # 一条记录只归一个桶（首个命中的），避免重复计数
+            except Exception as exc:
+                log_event("persona", f"画像归纳跳过一条记录：{exc}", level="warn")
+
+    # 记忆：preference/relationship/mistake 优先（这三类最像"人格证据"）
+    try:
+        recents = [m for m in _mem.recent(80)
+                   if m.get("created", 0) >= cutoff and m.get("layer") != "dust"
+                   and m.get("kind") in ("preference", "relationship", "mistake", "fact")]
+        _collect(recents)
+    except Exception as exc:
+        log_event("persona", f"画像归纳读记忆降级：{exc}", level="warn")
+    # 笔记与知识：轻量扫描最近 30 条
+    for fname in ("notes.jsonl", "knowledge.jsonl"):
+        try:
+            fpath = HOME / fname
+            if not fpath.exists():
+                continue
+            lines = fpath.read_text(encoding="utf-8").splitlines()[-30:]
+            recs = []
+            for ln in lines:
+                try:
+                    r = json.loads(ln)
+                    if isinstance(r, dict) and float(r.get("created", 0) or 0) >= cutoff:
+                        recs.append(r)
+                except (ValueError, TypeError):
+                    continue
+            _collect(recs)
+        except Exception as exc:
+            log_event("persona", f"画像归纳读 {fname} 降级：{exc}", level="warn")
+    if added:
+        log_event("persona", f"画像归纳新增 {len(added)} 条候选特征（待确认）")
+    return added
+
+
+def persona_suggest_list() -> list:
+    """当前待确认的画像候选（status=pending，最新在前）。"""
+    rows = [r for r in _read_persona_pending() if r.get("status") == "pending"]
+    rows.sort(key=lambda r: float(r.get("ts", 0) or 0), reverse=True)
+    return rows
+
+
+def _persona_suggest_pick(index: int) -> dict:
+    rows = [r for r in _read_persona_pending() if r.get("status") == "pending"]
+    rows.sort(key=lambda r: float(r.get("ts", 0) or 0), reverse=True)
+    if index < 1 or index > len(rows):
+        raise ValueError(f"序号越界：待确认候选共 {len(rows)} 条，写 1..{len(rows)}。")
+    return rows[index - 1]
+
+
+def persona_suggest_adopt(index: int) -> dict:
+    """采纳候选：写进 persona（likes/dislikes→evolved 桶带 evidence；relationship→evolved.insights 不合适，
+    统一：relationship 也进 learned_insights 不动，直接记 evolution 日志）。
+
+    实际落地：likes/dislikes 走 update_persona({"likes": [{"text":..., "evidence":[...]}]})；
+    relationship 类候选写 evolution 日志 + memory 备忘，不硬塞进人格结构。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法采纳画像候选。")
+    row = _persona_suggest_pick(int(index))
+    field = row.get("field")
+    text = row.get("text", "")
+    evidence = row.get("source_ids") or []
+    if field in ("likes", "dislikes"):
+        update_persona({field: [{"text": text, "evidence": evidence}]},
+                       why="画像候选采纳", source="画像归纳", evidence=evidence)
+    else:
+        from growth import log_evolution
+        log_evolution("persona", "画像候选采纳（关系类）", text, refs=evidence)
+    # 标记 adopted：jsonl 是 append-only 友好的，但这里数量小，直接整文件重写
+    _persona_suggest_set_status(row.get("id"), "adopted")
+    log_event("persona", f"画像候选已采纳：[{field}] {text}")
+    return {"ok": True, "field": field, "text": text}
+
+
+def persona_suggest_discard(index: int) -> dict:
+    """忽略候选：标 discarded，不写人格、不删记录（追溯留痕）。"""
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法操作画像候选。")
+    row = _persona_suggest_pick(int(index))
+    _persona_suggest_set_status(row.get("id"), "discarded")
+    log_event("persona", f"画像候选已忽略：[{row.get('field')}] {row.get('text', '')}")
+    return {"ok": True, "field": row.get("field"), "text": row.get("text", "")}
+
+
+def _persona_suggest_set_status(pid: str, status: str) -> None:
+    """按 id 把候选状态改掉（pending→adopted/discarded）。文件小，整读整写可接受。"""
+    path = _persona_pending_path()
+    rows = _read_persona_pending()
+    out = []
+    for r in rows:
+        if r.get("id") == pid:
+            r = dict(r)
+            r["status"] = status
+            r["resolved_at"] = now_ts()
+        out.append(r)
+    tmp = path.with_suffix(".jsonl.tmp")
+    tmp.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in out) + "\n",
+                   encoding="utf-8")
+    tmp.replace(path)
+
+
+def persona_audit(days: int = 30) -> dict:
+    """人格变更审计链时间线：触发事件 → diff（旧值/新值） → 来源证据。
+
+    复用 persona.history（三元组已在：why=触发 / from,to=diff / source+evidence=证据），
+    这里只做时间线视图与统计，不另建存储——一套账本，别两处记账。
+    """
+    p = load_persona()
+    cutoff = now_ts() - max(1, int(days)) * 86400
+    timeline = [h for h in p.get("history", []) if float(h.get("ts", 0) or 0) >= cutoff]
+    timeline.sort(key=lambda h: float(h.get("ts", 0) or 0), reverse=True)
+    # traits 字段的值是 {"value","why","evidence"} 结构，时间线里只露数值（人读的，原存储不动）
+    for h in timeline:
+        for side in ("from", "to"):
+            v = h.get(side)
+            if isinstance(v, dict):
+                try:
+                    h[side] = trait_value(v)
+                except (TypeError, ValueError):
+                    h[side] = str(v)
+    by_source = {}
+    for h in timeline:
+        src = str(h.get("source") or h.get("why") or "未知")
+        by_source[src] = by_source.get(src, 0) + 1
+    return {"days": days, "total": len(timeline),
+            "by_source": by_source, "timeline": timeline[:100]}
+
+
+# ———————— 自认识（self-model）————————
+# 与 traits 的区别：traits 是"性格倾向数值"，self_model 是 AI 用文字对自己能力
+# 边界的认知——擅长什么、短板在哪、哪些还没弄清。数值漂移由做梦攒账驱动，
+# 文字自认识由三条路汇入：AI 手动登记（self_model_add）、做梦后自动沉淀
+# （self_model_autosink：纠错教训 + 成形时刻叙事 + traits 跳变）。
+
+_SELF_MODEL_BUCKET_MAP = {"strength": "strengths", "limitation": "limitations",
+                          "uncertainty": "uncertainties"}
+
+
+def self_model_get() -> dict:
+    """读自认识四桶（防御式：坏结构现场修复但不落盘）。"""
+    p = load_persona()
+    _ensure_self_model(p)
+    return p.get("self_model") or {"strengths": [], "limitations": [],
+                                   "uncertainties": [], "autobiography": []}
+
+
+def self_model_add(kind: str, text: str) -> dict:
+    """AI 手动登记一条自认识（strength/limitation/uncertainty）。
+    去重、封顶 20 条、写 history 溯源——自我认知的每一步要有账可查。"""
+    bucket = _SELF_MODEL_BUCKET_MAP.get(str(kind or "").strip().lower())
+    text = str(text or "").strip()
+    if not bucket:
+        return {"ok": False, "error": "kind 必须是 strength / limitation / uncertainty"}
+    if not text:
+        return {"ok": False, "error": "内容不能为空"}
+    if len(text) > 80:
+        text = text[:80]  # 自认识是提炼，不是日记
+    with _locked(HOME / "persona.json"):
+        p = load_persona()
+        _ensure_self_model(p)
+        sm = p["self_model"]
+        b = sm[bucket]
+        if text in b:
+            return {"ok": False, "error": "已有同一条，不重复记"}
+        b.append(text)
+        if len(b) > _SELF_MODEL_MAX:
+            b.pop(0)
+        p.setdefault("history", []).append({
+            "ts": now_ts(), "field": f"self_model.{bucket}",
+            "text": text, "why": "自我登记", "source": "ai"})
+        save_persona(p)
+    audit_log("ai", "self_model_add", f"self_model.{bucket}", text)
+    return {"ok": True, "bucket": bucket, "text": text, "count": len(b)}
+
+
+def self_model_autosink() -> dict:
+    """做梦后自动沉淀自认识：三条来源汇入，全部去重、封顶。
+
+    1. limitations ← 近期被纠正（correction=True）且 confidence<0.5 的记忆——
+       "我上次说错了/没把握" 是最诚实的短板线索；
+    2. autobiography ← 成形时刻的峰值情绪事件 + history 里的 narrative 叙事
+       + traits 跳变≥10 的条目——这些是"改变了我"的事，值得写进自传；
+    3. strengths/uncertainties 不自动写——擅长和困惑应该由 AI 自己说，
+       机器替它下结论反而失真。
+    只读模式直接跳过；任何一路失败不影响其余（防御式）。"""
+    if READONLY:
+        log_event("persona", "只读模式，跳过 self_model_autosink", level="warn")
+        return {"skipped": True, "reason": "readonly"}
+    added = {"limitations": [], "autobiography": []}
+    with _locked(HOME / "persona.json"):
+        p = load_persona()
+        _ensure_self_model(p)
+        sm = p["self_model"]
+        now = now_ts()
+
+        # —— 路 1：纠错教训 → limitations ——
+        try:
+            import memory as _mem
+            wrong = []
+            for r in _mem.load_all():
+                if not isinstance(r, dict) or not r.get("correction"):
+                    continue
+                if _num(r.get("confidence"), 1.0) >= 0.5:
+                    continue
+                t = str(r.get("text") or r.get("summary") or "").strip()
+                if t:
+                    wrong.append((_num(r.get("ts"), 0), t))
+            wrong.sort(key=lambda x: x[0], reverse=True)
+            seen = set()
+            for _, t in wrong[:10]:
+                if t in seen or t in sm["limitations"]:
+                    continue
+                seen.add(t)
+                sm["limitations"].append(t)
+                added["limitations"].append(t)
+            del sm["limitations"][:-_SELF_MODEL_MAX]
+        except Exception as e:
+            log_event("persona", f"self_model_autosink 纠错教训路失败：{e}", level="warn")
+
+        # —— 路 2：成形时刻/叙事/traits 跳变 → autobiography ——
+        autobio: list = []
+        try:
+            import emotion as _emo
+            for ev in _emo.formative_events(14)[:5]:
+                emo = ev.get("emotion") or "强烈的情绪"
+                why = (ev.get("why") or ev.get("about") or "").strip()
+                autobio.append({"ts": _num(ev.get("ts"), 0),
+                                "text": f"那次{emo}" + (f"（{why}）" if why else "") + "深深影响了我"})
+        except Exception as e:
+            log_event("persona", f"self_model_autosink 峰值情绪路失败：{e}", level="warn")
+        try:
+            for h in p.get("history", []):
+                if h.get("field") == "narrative":
+                    autobio.append({"ts": _num(h.get("ts"), 0),
+                                    "text": str(h.get("text") or "").strip()})
+        except Exception as e:
+            log_event("persona", f"self_model_autosink 叙事路失败：{e}", level="warn")
+        try:
+            for h in p.get("history", []):
+                f0, t0 = h.get("from"), h.get("to")
+                if h.get("field") != "traits" or not isinstance(t0, dict):
+                    continue
+                try:
+                    if abs(trait_value(t0) - trait_value(f0)) >= 10:
+                        autobio.append({"ts": _num(h.get("ts"), 0),
+                                        "text": str(h.get("why") or "性格明显变了").strip()})
+                except (TypeError, ValueError):
+                    continue  # 溯源结构被手改坏的单条跳过，不拖垮整批
+        except Exception as e:
+            log_event("persona", f"self_model_autosink traits 跳变路失败：{e}", level="warn")
+        # 去重 + 时间倒序 + 封顶
+        seen_t = set()
+        uniq = []
+        for e in autobio:
+            if e["text"] and e["text"] not in seen_t:
+                seen_t.add(e["text"])
+                uniq.append(e)
+        uniq.sort(key=lambda e: e["ts"], reverse=True)
+        existing = {e.get("text") for e in sm["autobiography"]}
+        for e in uniq:
+            if e["text"] in existing:
+                continue
+            sm["autobiography"].append(e)
+            added["autobiography"].append(e["text"])
+        sm["autobiography"].sort(key=lambda e: _num(e.get("ts"), 0), reverse=True)
+        del sm["autobiography"][_SELF_MODEL_MAX:]
+
+        save_persona(p)
+    audit_log("ai", "self_model_autosink", "self_model",
+              f"limitations+{len(added['limitations'])} autobiography+{len(added['autobiography'])}")
+    return {"ok": True, "added": added}

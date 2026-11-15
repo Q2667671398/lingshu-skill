@@ -422,6 +422,50 @@ def dream_priority() -> dict:
             "actions": actions or ["consolidate"], "reasons": reasons}
 
 
+def _bounded_growth(records: list, now: int) -> list:
+    """#40 记忆有界增长：非 dust 非归档条目超软上限（默认 3000）时，做梦流程里
+    把超额部分按"低保留度 → 低重要度 → 越旧越先"排序雪藏进 archive 层
+    （原文保真、永不删，可 archive restore 回热）——总量近似恒定，只压缩不删。
+
+    软上限可用 config `dream.capacity_cap` 覆盖。返回本次被归档的记录列表。
+    保护名单与 _is_archivable 一致：pinned / verbatim / identity / correction / pending。
+    """
+    try:
+        cap = int(_num(load_config().get("dream.capacity_cap"), 3000))
+    except Exception:
+        cap = 3000
+    cap = max(cap, 100)  # 防呆：设得太小也不至于清空热层
+    hot = [m for m in records if m.get("layer") in ("hippo", "cortex")]
+    over = len(hot) - cap
+    if over <= 0:
+        return []
+    # 排序依据：保留度低（快忘了）> 重要度低 > 更旧。protection 复用 _is_archivable 的名单。
+    def _rank(m):
+        return (retention(m, now),
+                -_num(m.get("importance"), 0.5),
+                -_num(m.get("created"), 0))
+    protected = {m.get("id") for m in hot
+                 if m.get("pinned") or m.get("verbatim") or m.get("kind") == "identity"
+                 or m.get("correction") or m.get("review") == "pending"}
+    cands = sorted((m for m in hot if m.get("id") not in protected), key=_rank)
+    picked = []
+    for m in cands:
+        if over <= 0:
+            break
+        if m.get("layer") == ARCHIVE_LAYER:
+            continue
+        picked.append(m)
+        over -= 1
+    if not picked:
+        return []
+    picked_ids = {m.get("id") for m in picked}
+    for m in picked:
+        m["layer"] = ARCHIVE_LAYER
+        m["archived_at"] = now
+    log_event("dream", f"#40 有界增长：热层超软上限，归档 {len(picked)} 条（cap={cap}）")
+    return [m for m in records if m.get("id") in picked_ids]
+
+
 def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
     ensure_home()
     now = now_ts()
@@ -545,6 +589,21 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
                     for x in act_forgotten]
         except Exception as e:
             log_event("dream", f"唤醒值遗忘失败（不影响巩固）：{e}", level="warn")
+
+        # #40 有界增长：热层超软上限时把超额沉眠记忆雪藏进 archive（只压缩不删）。
+        # 放在常规归档之后，用最新的层分布算超额；与 archived_recs 合并一次落盘。
+        try:
+            bounded = _bounded_growth(records, now)
+        except Exception as e:
+            bounded = []
+            log_event("dream", f"#40 有界增长失败（不影响巩固）：{e}", level="warn")
+        if bounded:
+            report["bounded_archived"] = [
+                {"id": m["id"], "gist": m.get("gist") or heuristic_gist(m.get("text", "") or "")}
+                for m in bounded]
+            if not dry_run:
+                _append_archive(bounded)
+            records = [m for m in records if m.get("layer") != ARCHIVE_LAYER]
 
         clusters = cluster_memories(records, include_ids={x["id"] for x in report["promoted"]})
         if not dry_run:

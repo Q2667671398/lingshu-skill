@@ -24,6 +24,7 @@ import math
 import os
 import re
 import shutil
+import socket
 import sys
 import threading
 import time
@@ -65,12 +66,57 @@ def _default_home() -> Path:
 
 HOME = _default_home()
 
+# #24 多宿主可见：锁文件里除了 pid 还记主机名，共享盘上能看出"另一台机器在写"。
+# 提前定义，_locked 与 lock_writers 都引用它。
+_HOSTNAME = (socket.gethostname() or "unknown").strip() or "unknown"
+
 # 只读降级：能读不能写（沙箱写盘被拒、或迁移前临时挂载已有库时用）。
 # 触发方式：环境变量 BRAIN_MEMORY_READONLY=1、命令行 --ro，或运行前自动探测到 HOME 不可写。
+# BRAIN_MEMORY_READONLY=0 反向手动覆盖：确认目录可写但自动探测被环境干扰误报时，
+# 用它跳过探测强制可写。
 READONLY = os.environ.get("BRAIN_MEMORY_READONLY") == "1"
 
 DAY = 86400
 HOUR = 3600
+
+# ---------------------------------------------------------------- 库 schema 版本（v3.02 #16）
+# 记忆库结构版本号落在 HOME/_meta.json。当前代码只认 1；读到更高版本说明
+# 数据是被更新版本写出的，盲写可能破坏未知字段——降级只读并留痕，由用户升级程序。
+SCHEMA_VERSION = 1
+
+
+def schema_version() -> int:
+    """当前支持的记忆库 schema 版本（brain.py 命名空间合并后即 brain.schema_version()）。"""
+    return SCHEMA_VERSION
+
+
+def _check_meta() -> None:
+    """初始化/校验 HOME/_meta.json：老库没有就静默创建（向后兼容）；
+    schema_version 高于当前支持版本则只读降级 + 日志警告。绝不抛异常。"""
+    global READONLY
+    if READONLY:
+        return  # 只读降级：不写 _meta.json，已有文件照样可读
+    path = HOME / "_meta.json"
+    try:
+        if path.exists():
+            meta = json.loads(path.read_text(encoding="utf-8-sig"))
+            ver = int(meta.get("schema_version", 0) or 0)
+            if ver > SCHEMA_VERSION:
+                READONLY = True
+                _sync_state()
+                log_event("schema", f"记忆库 schema 版本 {ver} 高于当前支持的 {SCHEMA_VERSION}，"
+                                    "已降级只读（请升级灵枢后再写）", level="warn")
+                return
+            meta["updated"] = now_ts()
+            meta.setdefault("schema_version", SCHEMA_VERSION)
+            meta.setdefault("created", now_ts())
+        else:
+            ts = now_ts()
+            meta = {"schema_version": SCHEMA_VERSION, "created": ts, "updated": ts}
+        atomic_json(path, meta)
+    except Exception:
+        pass  # _meta.json 是元数据不是数据本身，读写失败都不拦正常流程
+
 DEFAULT_STABILITY = 2 * DAY
 MAX_STABILITY = 240 * DAY
 RETENTION_FLOOR = 0.10
@@ -117,7 +163,12 @@ TOPIC_SPAWN_THRESHOLD = 0.30 # 权重低于此 + 用户敷衍 → 满足自发�
 TOPIC_TTL = 7 * 24 * HOUR    # 7 天没被重提的话题彻底退栈
 
 DEFAULT_CONFIG = {
-    "budget_tokens": 1400,
+    "budget_tokens": 2400,
+    # 每条记忆注入时的正文截断上限（字符）：放宽默认值让 AI 记得"再详细点"。
+    # 用户嫌注入太短时调大即可；budget_tokens 仍是总量硬约束，超了照样截行。
+    "inject_max_chars": 600,
+    # remember 写入时的正文截断上限（字符）：单条记忆原文最长保留多少。
+    "remember_max_chars": 1200,
     # 上下文水位三级防线（比例，0-1）：
     #   review  清点：先补记本轮漏掉的，不急着压缩
     #   dream   做梦：重放→压缩→巩固
@@ -125,7 +176,11 @@ DEFAULT_CONFIG = {
     "review_threshold": 0.60,
     "dream_threshold": 0.75,
     "escape_threshold": 0.90,
-    "weights": {"relevance": 0.55, "recency": 0.25, "importance": 0.20, "primacy": 0.03},
+    # 永久记忆排序权重：recency 减半（不再让"多久没被想起"压过"语义对不对"），
+    # importance 提升（用户/AI 标记的重要性是永久信号），core_bias 给 persona
+    # 核心规则命中额外加权（避免长期被临时记录挤下去）。primacy 保留首因效应小权重。
+    "weights": {"relevance": 0.55, "recency": 0.10, "importance": 0.35,
+                "core_bias": 0.20, "primacy": 0.03},
     "panel_port": 8765,
     # 模型档位：auto 不干预；small 时注入"小模型模式"提示，劝退高风险自动能力
     # （dream --apply 自动合并 / knowledge tidy 提炼 / emotion evaluate 自动判读）。
@@ -149,6 +204,29 @@ DEFAULT_CONFIG = {
     "topic_signals": {
         "work": [],   # 额外的工作/工程信号词，如 ["推理", "微调"]
         "human": [],  # 额外的情绪/寒暄信号词
+    },
+    # —— P1 永久记忆：可选 embedding（不装 Ollama 自动退回纯关键词）——
+    # LINGSHU_EMBED_URL 环境变量优先；config.json 里 embed.url 兜底。
+    # 任一为空白即禁用 Dense 召回，完全不破坏零依赖定位。
+    "embed": {
+        "url": "",                  # 例：http://localhost:11434/api/embeddings
+        "model": "nomic-embed-text",
+        "timeout_sec": 8,           # 单次调用超时
+        "max_chars": 3000,          # 超过就截断（长记忆全文 embed 慢）
+        "batch_size": 8,            # 异步批量写 embedding 时的条数
+        # —— 纯 Python 降级向量兜底（零依赖 hash trick，见 fallback_embed.py）——
+        # Ollama 不可用/未配置时自动接管，给语义召回一个纯 stdlib 的 Dense 通道
+        "fallback": {
+            "enabled": True,
+            "dims": 256,
+        },
+    },
+    # reranker（可选）：LINGSHU_RERANK_URL / config.rerank.url 配了才用
+    "rerank": {
+        "url": "",
+        "model": "qwen3-reranker-0.6b",
+        "timeout_sec": 8,
+        "top_n": 20,                # 只对粗排前 N 条做精排
     },
 }
 
@@ -176,6 +254,7 @@ def ensure_home() -> None:
         compile_persona()
     (HOME / "dreams").mkdir(parents=True, exist_ok=True)
     (HOME / "skills").mkdir(parents=True, exist_ok=True)  # 面板「技能根目录」显示此目录，提前建好免得显示"不存在"
+    _check_meta()  # v3.02 #16：_meta.json 创建与 schema 版本校验（老库首次静默创建）
 
 
 def load_config() -> dict:
@@ -187,7 +266,76 @@ def load_config() -> dict:
         except Exception:
             pass
     cfg["weights"] = dict(DEFAULT_CONFIG["weights"], **(cfg.get("weights") or {}))
+    # —— v2.95 永久记忆：旧默认权重自动升级——
+    # 旧默认（v2.94 及以前）：relevance=0.55, recency=0.25, importance=0.20, primacy=0.03
+    # 新默认（v2.95）：recency 0.10, importance 0.35, 新增 core_bias 0.20
+    # 迁移条件严格：只有 weights 完全等于旧默认时才升级，用户手改过的保留。
+    _W_OLD = {"relevance": 0.55, "recency": 0.25, "importance": 0.20, "primacy": 0.03}
+    # 注意：_cur_w 是与 DEFAULT_CONFIG 合并后的字典，新默认里已含 core_bias，
+    # 所以"有没有 core_bias"必须看用户 config.json 的原始 weights，否则迁移永远不触发。
+    _user_w = {}
+    try:
+        _user_w = json.loads(path.read_text(encoding="utf-8-sig")).get("weights") or {}
+    except Exception:
+        pass
+    _cur_w = cfg["weights"]
+    if (_cur_w.get("recency") == _W_OLD["recency"]
+            and _cur_w.get("importance") == _W_OLD["importance"]
+            and "core_bias" not in _user_w):
+        # 只在完全匹配旧默认时升级；recency/importance 被用户改过就不动
+        _upgraded = dict(_cur_w)
+        _upgraded["recency"] = DEFAULT_CONFIG["weights"]["recency"]
+        _upgraded["importance"] = DEFAULT_CONFIG["weights"]["importance"]
+        _upgraded["core_bias"] = DEFAULT_CONFIG["weights"]["core_bias"]
+        cfg["weights"] = _upgraded
+        # 回写 config.json（原子），下次启动就是新值；回写前先确认不是 READONLY
+        if not READONLY:
+            try:
+                cfg_to_write = dict(cfg)
+                atomic_json(path, cfg_to_write)
+            except Exception:
+                pass  # 写不动就跳过，内存里用新值也够
     return cfg
+
+
+# ---------------------------------------------------------------- 脱敏（v3.02 #1/#3）
+
+# 常见密钥/凭据形态：命中后替换为 [REDACTED:类型]，保留首尾 3 字符便于人工辨认。
+# 顺序敏感：具名前缀（sk-/ghp_/github_pat_/xox/AKIA）先扫，泛化兜底（kv/Bearer）后扫，
+# 否则泛化规则会把具名 token 先吃掉一半、留下前缀导致具名规则扫不到。
+_REDACT_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("api-key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
+    ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
+    ("github-token", re.compile(r"ghp_[A-Za-z0-9]{20,}")),
+    ("slack-token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("aws-key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("bearer", re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}")),
+    ("kv-secret", re.compile(r"(?i)(password|passwd|token|secret|api_key|apikey|access_key)\s*[=:]\s*\S+")),
+]
+
+_REDACT_KEEP = 3  # 保留首尾 3 字符（不足 8 字符全遮）
+
+
+def redact(text: str) -> str:
+    """把文本里的疑似密钥/凭据替换成 [REDACTED:类型]。
+
+    用于记忆写入（capture/remember）与运行日志（log_event）：
+    任何入口都不落盘明文密钥。纯函数、绝不抛异常——脱敏失败时返回原文
+    比让记忆/日志写入崩掉更合理。
+    """
+    if not text or not isinstance(text, str):
+        return text
+    try:
+        for label, pat in _REDACT_PATTERNS:
+            def _sub(m, _label=label):
+                s = m.group(0)
+                if len(s) <= 8:
+                    return f"[REDACTED:{_label}]"
+                return f"{s[:_REDACT_KEEP]}[REDACTED:{_label}]{s[-_REDACT_KEEP:]}"
+            text = pat.sub(_sub, text)
+        return text
+    except Exception:
+        return text
 
 
 def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
@@ -199,7 +347,8 @@ def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
         return
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        row = {"ts": now_ts(), "kind": kind, "level": level, "msg": str(message)[:500]}
+        row = {"ts": now_ts(), "kind": kind, "level": level,
+               "msg": redact(str(message))[:500]}  # 日志统一脱敏（v3.02 #3）
         if extra:
             for k, v in list(extra.items())[:4]:
                 if not isinstance(v, (str, int, float, bool, type(None))):
@@ -208,25 +357,59 @@ def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
                     except Exception:
                         v = str(v)[:200]
                 row[k] = v
-        with open(LOG_FILE, "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        # 超过 512KB 滚动：保留后半（最新），避免单文件无限膨胀。
-        # E-15：多进程同时滚动会 read_text/write_text 竞态丢行——用 lingshu.log
-        # 自己的写锁串行化滚动（抢不到锁就这轮不滚，下次写入再试）。
+        # v3.02 #4：超过 1MB 轮转 log → log.1 → log.2 → log.3（最旧的 .3 丢弃）。
+        # 写入前先滚（否则先写后滚会让刚写的这条跟着旧文件一起被 rename 走，
+        # 主日志文件一度消失）。多进程同时滚动：用 lingshu.log 自己的写锁串行化
+        # （抢不到锁就这轮不滚，下次写入再试）。不再"截半保留"——半截日志既丢历史又难读。
         try:
-            if LOG_FILE.stat().st_size > 512 * 1024:
+            if LOG_FILE.stat().st_size > 1024 * 1024:
                 try:
                     with _locked(LOG_FILE, timeout=1.0):
-                        if LOG_FILE.stat().st_size > 512 * 1024:
-                            data = (LOG_FILE.read_text(encoding="utf-8-sig") or "").splitlines()
-                            keep = data[-(len(data) // 2):]
-                            LOG_FILE.write_text("\n".join(keep) + "\n", encoding="utf-8")
+                        if LOG_FILE.stat().st_size > 1024 * 1024:
+                            for i in (2, 1):  # 从旧往新挪，避免覆盖
+                                src = LOG_FILE.with_suffix(LOG_FILE.suffix + f".{i}")
+                                dst = LOG_FILE.with_suffix(LOG_FILE.suffix + f".{i + 1}")
+                                if src.exists():
+                                    dst.unlink(missing_ok=True)
+                                    src.rename(dst)
+                            LOG_FILE.rename(LOG_FILE.with_suffix(LOG_FILE.suffix + ".1"))
                 except TimeoutError:
                     pass  # 别的进程正在滚：这轮跳过，下次写入再检查
         except OSError:
             pass
+        with open(LOG_FILE, "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def audit_log(actor: str, action: str, target: str, detail: str = "") -> None:
+    """审计日志（v4 #32）：敏感写/删/导出操作追加一行到 HOME/audit.jsonl。
+
+    只读模式静默跳过；写失败只 warn 不抛——审计绝不当崩溃源。
+    超过 5000 条时裁剪保留最新 4000 条（与 metrics/log 同样的防膨胀思路）。
+    detail 只记简短摘要，不落记忆全文。
+    """
+    if READONLY:
+        return
+    try:
+        f = HOME / "audit.jsonl"
+        try:
+            if f.exists() and sum(1 for _ in open(f, "r", encoding="utf-8-sig")) > 5000:
+                with _locked(f):
+                    lines = [x for x in f.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
+                    if len(lines) > 5000:
+                        keep = [json.loads(x) for x in lines[-4000:]]
+                        write_jsonl(f, keep)
+        except Exception:
+            pass  # 裁剪失败不影响本次记录
+        _append_jsonl(f, {"ts": now_ts(), "actor": actor, "action": action,
+                          "target": str(target)[:200], "detail": str(detail)[:300]})
+    except Exception as e:
+        try:
+            log_event("audit", f"审计日志写入失败: {e}", level="warn")
+        except Exception:
+            pass
 
 
 def clear_logs(ts=None, kind: str | None = None, msg: str | None = None) -> int:
@@ -277,18 +460,30 @@ def clear_logs(ts=None, kind: str | None = None, msg: str | None = None) -> int:
 
 
 def read_logs(limit: int = 200, level: str | None = None, kind: str | None = None) -> list:
-    """读最近 N 条运行日志（最新在前）。level/kind 任一匹配即保留。"""
-    if not LOG_FILE.exists():
-        return []
-    try:
-        lines = [x for x in LOG_FILE.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
-    except OSError:
-        return []
+    """读最近 N 条运行日志（最新在前）。level/kind 任一匹配即保留。
+
+    v3.02 #4：日志按 1MB 轮转出 .1/.2/.3，这里按 新→旧 合并读取，凑满 limit 即停。
+    """
     rows = []
-    # 级别语义：指定级别及以上都显示（--level info ⇒ info/warn/error 全含）
+    for suffix in ("", ".1", ".2", ".3"):
+        p = LOG_FILE.with_suffix(LOG_FILE.suffix + suffix)
+        if not p.exists():
+            continue
+        try:
+            lines = [x for x in p.read_text(encoding="utf-8-sig").splitlines() if x.strip()]
+        except OSError:
+            continue
+        # 新→旧顺序追加；当前文件里越靠后越新，轮转文件里越靠后越新（写序）
+        for ln in reversed(lines):
+            if len(rows) >= limit * 2:
+                break
+            rows.append(ln)
+        if len(rows) >= limit * 2:
+            break
     _lv_rank = {"debug": 0, "info": 1, "warn": 2, "warning": 2, "error": 3}
     want = _lv_rank.get(str(level).lower(), 1) if level else None
-    for ln in lines[-limit * 2:]:
+    out = []
+    for ln in rows:
         try:
             r = json.loads(ln)
         except Exception:
@@ -297,8 +492,8 @@ def read_logs(limit: int = 200, level: str | None = None, kind: str | None = Non
             continue
         if kind and r.get("kind") != kind:
             continue
-        rows.append(r)
-    return rows[::-1][:limit]
+        out.append(r)
+    return out[:limit]
 
 
 def _slurp_json(path, default=None):
@@ -355,7 +550,8 @@ def load_loose_json(path, label: str = "JSON") -> dict | list:
 
 
 _NUMERIC_CONFIG_KEYS = {"budget_tokens", "review_threshold", "dream_threshold",
-                        "escape_threshold", "panel_port"}
+                        "escape_threshold", "panel_port",
+                        "inject_max_chars", "remember_max_chars"}
 _BOOLEAN_CONFIG_KEYS = {"extensions_enabled"}   # 布尔开关：值能当 JSON 布尔解析，或 true/false/1/0 文本
 
 
@@ -385,10 +581,10 @@ def config_set(key: str, value: str) -> dict:
             if not (0.0 <= num <= 1.0):
                 raise ValueError(f"{key} 需要在 0~1 之间，收到：{value!r}")
             val = num
-        elif key == "budget_tokens":
+        elif key in ("budget_tokens", "inject_max_chars", "remember_max_chars"):
             num = int(num)
             if num <= 0:
-                raise ValueError(f"budget_tokens 需要是正整数，收到：{value!r}")
+                raise ValueError(f"{key} 需要是正整数，收到：{value!r}")
             val = num
         elif key == "panel_port":
             num = int(num)
@@ -884,10 +1080,25 @@ def _replace_retry(tmp: Path, path: Path) -> None:
 def write_jsonl(path: Path, rows: list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(path)
+    try:
+        # v3.02 #25：只有记忆层文件封哈希链——write_jsonl 还服务 history/knowledge 等，
+        # 无差别封链会往别的文件里塞 h/p_h。非记忆文件、桥接前（无 _seal_chain）都跳过。
+        if path.name in ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl", "archive.jsonl"):
+            _seal_chain(rows)
+    except NameError:
+        pass
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     _replace_retry(tmp, path)
+
+
+def _append_jsonl(path: Path, row: dict) -> None:
+    """追加一行 JSONL（v3.02 #5 metrics.jsonl 用）：写锁防多进程交错半行。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _locked(path):
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 @contextmanager
@@ -908,7 +1119,10 @@ def _locked(path: Path, timeout: float = 10.0):
     while True:
         try:
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
+            # #24 多宿主可见：锁里同时记 pid 与主机名（空格分隔）。
+            # _lock_owner 只取 split()[0]，旧格式/新格式都兼容；
+            # 记忆库放在网盘/共享目录时，能看出是"另一台机器"在写。
+            os.write(fd, f"{os.getpid()} {_HOSTNAME}".encode())
             os.close(fd)
             _HELD_LOCKS.add((str(lock), threading.get_ident()))  # 记住"本线程已持锁"，read_jsonl 自愈时避免重复抢锁
             break
@@ -996,6 +1210,40 @@ def _lock_owner(lock: Path) -> int | None:
         return int(raw.split()[0]) if raw else None
     except (OSError, ValueError, IndexError):
         return None
+
+
+def lock_writers() -> list[dict]:
+    """#24 列出当前持锁的写入者（文件 / pid / 主机名 / 是否活着）。
+
+    记忆库放在共享盘时，同一份数据可能被多台机器同时写；这里把锁文件里
+    记下的 host 读出来，让面板和 `status` 能直接看见"谁在写"。
+    """
+    rows = []
+    try:
+        locks = sorted(HOME.glob("*.lock"))
+    except OSError:
+        return rows
+    for lock in locks:
+        try:
+            raw = lock.read_text(encoding="utf-8", errors="ignore").strip().lstrip("\ufeff")
+        except OSError:
+            continue
+        if not raw:
+            continue
+        parts = raw.split()
+        try:
+            pid = int(parts[0])
+        except (ValueError, IndexError):
+            continue
+        host = parts[1] if len(parts) > 1 else ""
+        rows.append({
+            "file": lock.name[:-5] if lock.name.endswith(".lock") else lock.name,
+            "pid": pid,
+            "host": host,
+            "alive": _pid_alive(pid) and (not host or host == _HOSTNAME),
+        })
+    return rows
+
 
 
 def _persona_txn(fn):
@@ -1093,6 +1341,32 @@ def _strengthen_write(touched: list) -> None:
             log_event("strengthen", f"放弃强化 {mid}：三层都找不到（可能已归档/删除）", path=fname["hippo"])
 
 
+def _patch_memory_fields(rec: dict) -> bool:
+    """v3.02 #10：定向 patch 保质期字段（review_by/review_by_confirmed/ttl_days）。
+
+    与 _strengthen_write 同一套锁内按层找 id 的套路，但只写保质期相关字段，
+    不碰强化计数字段——语义不同的事各走各的补丁，互不覆盖。
+    找不到（已归档/删除）返回 False 并留日志。
+    """
+    if READONLY or not rec.get("id"):
+        return False
+    patch_fields = ("ttl_days", "review_by", "review_by_confirmed")
+    fname = {"hippo": "hippocampus.jsonl", "cortex": "cortex.jsonl", "dust": "dust.jsonl",
+             ARCHIVE_LAYER: "archive.jsonl"}
+    for layer in ("hippo", "cortex", "dust", ARCHIVE_LAYER):
+        p = HOME / fname[layer]
+        rows = read_jsonl(p)
+        for r in rows:
+            if r.get("id") == rec["id"]:
+                for f in patch_fields:
+                    if f in rec:
+                        r[f] = rec[f]
+                write_jsonl(p, rows)
+                return True
+    log_event("memory", f"放弃复核确认 {rec['id']}：各层都找不到", level="warn")
+    return False
+
+
 # ---------------------------------------------------------------- 回忆使用反馈
 # "存得好不好"不能只看条数：注入的记忆到底有没有被用上、哪些记忆从没被命中过，
 # 这两个便宜计数才能回答"分层 + 遗忘曲线"是否真的让记忆更准。
@@ -1111,36 +1385,56 @@ _USAGE_STOP = {
 }
 
 
-def _home_writable() -> bool:
+def _home_writable(max_attempts: int = 3) -> bool:
     """探测 HOME 是否可写：mkdir + 探针文件。失败即只读降级。
+
+    重试 max_attempts 次（间隔 150ms）：Windows 杀软/搜索索引常短暂占用目录
+    句柄，单次探测失败就降级会把整个进程误判成只读——AI 会话里表现为
+    "能读不能写"，而目录实际完全可写。
 
     注意：探针文件清理失败**不能**算作不可写。Windows 上杀毒/索引服务常会在
     文件刚写完的瞬间持有句柄，unlink 抛 PermissionError——旧实现把这一步失败
     也当成只读，导致面板一启动就误挂「只读模式」横幅（实际目录完全可写）。
     写入成功即证明可写，清理只是尽力而为。
     """
-    probe = None
+    last_exc = None
+    for attempt in range(max(1, int(max_attempts))):
+        probe = None
+        try:
+            HOME.mkdir(parents=True, exist_ok=True)
+            # 唯一文件名：避免并发实例（面板 + CLI）共用同一个探针互相踩
+            probe = HOME / f".write-probe-{os.getpid()}-{int(time.time() * 1000)}"
+            probe.write_text("ok", encoding="utf-8")
+            return True
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < max(1, int(max_attempts)):
+                time.sleep(0.15)
+        finally:
+            if probe is not None:
+                try:
+                    probe.unlink(missing_ok=True)
+                except OSError:
+                    pass   # 清理失败不影响可写性判定
+    # 最终失败的原因留痕：区分沙箱拒写 / 杀软占用 / 真权限问题，免得排查靠猜
     try:
-        HOME.mkdir(parents=True, exist_ok=True)
-        # 唯一文件名：避免并发实例（面板 + CLI）共用同一个探针互相踩
-        probe = HOME / f".write-probe-{os.getpid()}-{int(time.time() * 1000)}"
-        probe.write_text("ok", encoding="utf-8")
-        return True
+        log_event("core", f"HOME 不可写，只读降级（重试 {max_attempts} 次均失败）：{last_exc}",
+                  level="warn")
     except Exception:
-        return False
-    finally:
-        if probe is not None:
-            try:
-                probe.unlink(missing_ok=True)
-            except OSError:
-                pass   # 清理失败不影响可写性判定
+        pass
+    return False
 
 
 def _resolve_readonly(forced: bool = False) -> None:
-    """确定最终只读状态：--ro 或环境变量强制；否则自动探测。"""
+    """确定最终只读状态：--ro 或 BRAIN_MEMORY_READONLY=1 强制只读；
+    BRAIN_MEMORY_READONLY=0 强制可写（跳过探测——确认目录可写、但自动探测
+    被环境干扰误报时用手动覆盖）；否则自动探测。"""
     global READONLY
-    if forced or os.environ.get("BRAIN_MEMORY_READONLY") == "1":
+    env = os.environ.get("BRAIN_MEMORY_READONLY", "").strip()
+    if forced or env == "1":
         READONLY = True
+    elif env == "0":
+        READONLY = False
     else:
         READONLY = not _home_writable()
     _sync_state()
@@ -1218,6 +1512,188 @@ def _sync_state() -> None:
     snap = {k: v for k, v in dict(globals()).items() if not k.startswith("__")}
     for m in _SYNC_TARGETS:
         m.__dict__.update(snap)
+    # growth.py 不在 _SYNC_TARGETS（它在 brain 之后 import brain，会形成循环导入），
+    # 但它缓存了 HOME 与一批派生路径常量；这里 import 一次并调用它的重算入口，
+    # 让 --home 切换后 growth 的 knowledge/notes/skills 等路径也指向新目录
+    # （已在 sys.modules 里则零开销，首次 import 只是延后到现在，链路不变）。
+    try:
+        import growth  # noqa: E402
+        growth._recompute_home()
+    except Exception:
+        pass  # growth 未部署/导入失败：沿用原值，不影响记忆主链路
+
+
+# ---------------------------------------------------------------- 可选 embedding / rerank（P1）
+# 零依赖铁律：这两个能力"装了 Ollama 才启用，没装自动退回纯 IDF 关键词"。
+# 配置来源：环境变量 LINGSHU_EMBED_URL / LINGSHU_RERANK_URL 优先，config.json 的
+# embed.url / rerank.url 兜底；任一为空白即整体禁用，调用方拿到 None 走原逻辑。
+# 网络调用全部用标准库 urllib，任何超时/异常一律静默返回 None，绝不阻断主链路。
+
+def _embed_cfg() -> dict | None:
+    """读 embed 配置；url 空白（未配置）返回 None。"""
+    url = os.environ.get("LINGSHU_EMBED_URL", "").strip()
+    try:
+        cfg = load_config().get("embed") or {}
+    except Exception:
+        cfg = {}
+    if not url:
+        url = str(cfg.get("url") or "").strip()
+    if not url:
+        return None
+    return {
+        "url": url,
+        "model": str(cfg.get("model") or "nomic-embed-text"),
+        "timeout_sec": float(cfg.get("timeout_sec") or 8),
+        "max_chars": int(cfg.get("max_chars") or 3000),
+        "batch_size": int(cfg.get("batch_size") or 8),
+    }
+
+
+def _rerank_cfg() -> dict | None:
+    """读 rerank 配置；url 空白（未配置）返回 None。"""
+    url = os.environ.get("LINGSHU_RERANK_URL", "").strip()
+    try:
+        cfg = load_config().get("rerank") or {}
+    except Exception:
+        cfg = {}
+    if not url:
+        url = str(cfg.get("url") or "").strip()
+    if not url:
+        return None
+    return {
+        "url": url,
+        "model": str(cfg.get("model") or "qwen3-reranker-0.6b"),
+        "timeout_sec": float(cfg.get("timeout_sec") or 8),
+        "top_n": int(cfg.get("top_n") or 20),
+    }
+
+
+def fallback_encode_cached(text: str, dims: int) -> list | None:
+    """fallback_embed.encode 的进程内 LRU 缓存（查询/旧记忆在线编码时避免重复 hash）。
+    任何异常返回 None，不炸。"""
+    global _FB_EMBED_CACHE
+    try:
+        key = (dims, str(text or ""))
+        hit = _FB_EMBED_CACHE.get(key)
+        if hit is not None:
+            return hit
+        import fallback_embed
+        v = fallback_embed.encode(text, dims)
+        if v is not None:
+            if len(_FB_EMBED_CACHE) >= _FB_EMBED_CACHE_MAX:
+                _FB_EMBED_CACHE.clear()   # 简单粗暴防膨胀；缓存命中是纯优化，丢了不伤正确性
+            _FB_EMBED_CACHE[key] = v
+        return v
+    except Exception:
+        return None
+
+
+_FB_EMBED_CACHE: dict = {}
+_FB_EMBED_CACHE_MAX = 2000
+
+
+def embed_texts(texts: list) -> list | None:
+    """批量生成 embedding（Ollama /api/embeddings）。
+
+    返回与 texts 等长的 list[list[float]]；未配置/超时/异常/返回结构不符
+    一律静默返回 None——调用方按"无 Dense 能力"降级，不做半吊子混合。
+    """
+    cfg = _embed_cfg()
+    if not texts:
+        return None
+    # 未配置真嵌入服务时，先看降级向量兜底能不能接管（embed.fallback 默认开）；
+    # 兜底也关了才真正返回 None（调用方按"无 Dense 能力"降级）。
+    if not cfg:
+        try:
+            import fallback_embed
+            fb = fallback_embed.cfg()
+        except Exception:
+            fb = None
+        if not fb:
+            return None
+        out = []
+        for t in texts:
+            v = fallback_encode_cached(str(t or "")[:3000], fb["dims"])
+            if v is None:
+                return None    # 批量里有空文本等坏输入：整体按"无向量"处理
+            out.append(v)
+        return out
+    import urllib.request  # 标准库，延迟 import：不用 Dense 时不付加载成本
+    out = []
+    try:
+        for t in texts:
+            body = json.dumps({
+                "model": cfg["model"],
+                "prompt": str(t or "")[: cfg["max_chars"]],
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                cfg["url"], data=body,
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=cfg["timeout_sec"]) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            vec = data.get("embedding")
+            if not isinstance(vec, list) or not vec:
+                return None
+            out.append([float(x) for x in vec])
+        return out
+    except Exception as exc:
+        log_event("embed", f"embedding 调用失败，尝试降级向量兜底：{exc}", level="warn")
+    # 降级兜底：真嵌入不可用（未配置/不可达）时用纯 stdlib hash 嵌入接管
+    # （config embed.fallback.enabled 默认开）。批量语义：返回等长列表。
+    try:
+        import fallback_embed  # 同目录模块，零依赖
+        fb = fallback_embed.cfg()
+        if fb:
+            out = []
+            for t in texts:
+                v = fallback_encode_cached(str(t or "")[:3000], fb["dims"])
+                if v is None:
+                    return None    # 批量里有空文本等坏输入：整体按"无向量"处理
+                out.append(v)
+            return out
+    except Exception:
+        pass
+    return None
+
+
+def rerank_docs(query: str, docs: list, top_n: int | None = None) -> list | None:
+    """调外部 reranker 给 docs 精排，返回 [(doc_index, score), ...] 按分数降序。
+
+    未配置/失败返回 None（调用方走简单加权合并）。兼容两种常见响应形态：
+      1) {"scores": [float, ...]}                                —— 与 docs 等长
+      2) {"results": [{"index": i, "relevance_score": s}, ...]}  —— cohere 风格
+    """
+    cfg = _rerank_cfg()
+    if not cfg or not docs:
+        return None
+    import urllib.request
+    n = min(int(top_n or cfg["top_n"]), len(docs))
+    try:
+        body = json.dumps({
+            "model": cfg["model"],
+            "query": str(query or ""),
+            "documents": [str(d or "") for d in docs[:n]],
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            cfg["url"], data=body,
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=cfg["timeout_sec"]) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        pairs = []
+        if isinstance(data.get("scores"), list):
+            for i, s in enumerate(data["scores"][:n]):
+                pairs.append((i, float(s)))
+        elif isinstance(data.get("results"), list):
+            for r in data["results"]:
+                pairs.append((int(r.get("index", 0)),
+                              float(r.get("relevance_score", r.get("score", 0.0)))))
+        if not pairs:
+            return None
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        return pairs
+    except Exception as exc:
+        log_event("rerank", f"reranker 调用失败，退回加权合并：{exc}", level="warn")
+        return None
 
 
 __all__ = [k for k in dict(globals()) if not k.startswith("__")]

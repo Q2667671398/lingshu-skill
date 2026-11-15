@@ -178,7 +178,9 @@ def cluster_memories(records: list, max_clusters: int = 6, include_ids: set | No
     include_ids = include_ids or set()
     # 无 id 的畸形记录没法做并查集/parent 映射，直接跳过。
     # 这些记录会原样保留在库，不会被 save_all 丢掉。
+    # #41：correction 改口记录也不进聚类——合并成摘要=改口语境丢失，教训提炼读不到证据。
     pool = [m for m in records if m.get("id") and m.get("layer") != "dust"
+            and not m.get("correction")
             and (not m.get("consolidated") or m["id"] in include_ids)]
     if not pool:
         return []
@@ -269,11 +271,221 @@ def _dream_snapshot() -> str:
         return ""
 
 
+def _mine_lessons(records: list, max_lessons: int = 3) -> list:
+    """教训提炼（#36）：扫描失败闭环证据源 → 生成待审教训候选。
+
+    证据源（按优先级）：
+      1. correction=true 改口记录——用户亲手纠正，证据最强；
+      2. 被 superseded_by 的旧记忆——结论错过一次被新事实取代；
+      3. detect_conflicts 冲突对——两条记忆互相打架，其中带改口信号的当教训素材。
+    每条教训 status="pending"（与 knowledge/persona 同一审核闸），
+    evidence 存证据记忆 id，confidence 起步 0.4（梦提炼的先验：像，但没验证过）。
+    返回本轮新建的教训（已入库，供梦报告引用）。
+    """
+    import memory as mem_mod
+    created = []
+    # 已有教训按词面近似去重：同一坑不反复提炼（confidence/文本近似即认为已记下）
+    existing = mem_mod.load_lessons()
+
+    def _dup(text: str) -> bool:
+        t = terms(text)
+        for l in existing + created:
+            if jaccard(t, terms(l.get("text", ""))) >= 0.55:
+                return True
+        return False
+
+    # 1) correction 改口记录：教训文本直接从改口原文提炼
+    corrections = [m for m in records
+                   if m.get("correction") and m.get("id") and m.get("text", "").strip()]
+    for m in corrections[:max_lessons]:
+        text = f"{m['text'].strip()}"
+        if _dup(text):
+            continue
+        created.append(mem_mod.add_lesson(
+            text, evidence=[m["id"]], confidence=0.4, status="pending"))
+        if len(created) >= max_lessons:
+            return created
+
+    # 2) 被 supersede 的旧记忆：旧结论被新事实取代 → 教训=新结论可信、旧的不可信
+    by_id = {m.get("id"): m for m in records if m.get("id")}
+    for m in records:
+        if len(created) >= max_lessons:
+            break
+        new_id = m.get("superseded_by")
+        if not new_id or m.get("layer") == "dust":
+            continue
+        newer = by_id.get(new_id)
+        if not newer or not str(newer.get("text", "")).strip():
+            continue
+        text = f"「{str(newer.get('text', '')).strip()[:120]}」已取代旧结论——别再按旧的说。"
+        if _dup(text):
+            continue
+        created.append(mem_mod.add_lesson(
+            text, evidence=[m["id"], new_id], confidence=0.4, status="pending"))
+
+    # 3) 冲突对：带改口信号的那一侧是更新的事实，提炼成教训
+    try:
+        conflicts = mem_mod.detect_conflicts(limit=10)
+    except Exception as e:
+        log_event("dream", f"冲突扫描失败（跳过冲突类教训）：{e}", level="warn")
+        conflicts = []
+    for c in conflicts:
+        if len(created) >= max_lessons:
+            break
+        # 时间新的那侧通常代表最新状态
+        pair = sorted((c.get("a") or {}, c.get("b") or {}),
+                      key=lambda x: _num(x.get("ts"), 0), reverse=True)
+        newest = pair[0]
+        newest_rec = by_id.get(newest.get("id"))
+        text_src = (newest_rec or newest).get("text", "")
+        if not str(text_src).strip():
+            continue
+        text = f"关于矛盾信息：以最新的说法为准——{str(text_src).strip()[:120]}"
+        if _dup(text):
+            continue
+        ev = [x.get("id") for x in (c.get("a"), c.get("b")) if x.get("id")]
+        created.append(mem_mod.add_lesson(
+            text, evidence=ev, confidence=0.35, status="pending"))
+    return created
+
+
+def dream_priority() -> dict:
+    """#47 按需做梦（SSGM 3.5）：不用固定闹钟，而是每次做梦前先量一遍"记忆库健康度"，
+    决定今晚要重点做什么（巩固/淡忘/蒸馏/都不用做）。
+
+    指标（全部只读，缺啥降啥）：
+      - 未巩固新记忆数：hippo 里 consolidated 为假的 → 该巩固；
+      - 待整理梦任务是否已悬着 → 该先消费旧任务而不是生成新的；
+      - 工作记忆未完成件 → 该重放交接；
+      - 召回使用率（#17 指标）：rate 明显偏低（<0.15 且 recalled≥20）说明召回
+        塞了一堆没用的 → 该蒸馏/清理而不是继续囤；
+      - 距上次做梦时长 → 太久强制至少走一遍淡忘/归档。
+    返回 {"score": 0-1 健康分, "actions": [按优先级排序的行动], "reasons": {...}}
+    """
+    actions: list[str] = []
+    reasons: dict = {}
+    score = 1.0
+
+    # 1) 未巩固的新记忆
+    recs = _mem.load_all()
+    now = now_ts()
+    uncons = [m for m in recs if m.get("layer") == "hippo" and not m.get("consolidated")
+              and not m.get("correction")]
+    reasons["unconsolidated"] = len(uncons)
+    if len(uncons) >= 5:
+        actions.append("consolidate")
+        score -= min(0.4, 0.05 * len(uncons))
+
+    # 2) 旧梦任务悬置
+    pending = load_dream_pending()
+    if pending and pending.get("task_id"):
+        age_h = (now - _num(pending.get("created"), now)) / 3600
+        reasons["pending_task_hours"] = round(age_h, 1)
+        if age_h >= 6:
+            actions.append("consume_pending")
+            score -= 0.2
+
+    # 3) 工作记忆堆积
+    try:
+        ws = _mem.work_status()
+        reasons["working_open"] = ws["open_count"]
+        if ws["open_count"] >= 3:
+            actions.append("replay_handoff")
+            score -= 0.15
+    except Exception:
+        pass
+
+    # 4) 召回使用率偏低 → 该蒸馏而非继续囤
+    try:
+        um = _mem.usage_metrics()
+        reasons["recall_rate"] = um.get("rate", 0.0)
+        if um.get("recalled", 0) >= 20 and um.get("rate", 1.0) < 0.15:
+            actions.append("distill")
+            score -= 0.25
+    except Exception:
+        pass
+
+    # 5) 距上次做梦太久——淡忘/归档例行公事不能停
+    last = _num(load_dream_state().get("last_dream"), 0)
+    gap_h = (now - last) / 3600 if last else 9999
+    reasons["hours_since_dream"] = round(gap_h, 1) if last else None
+    if last and gap_h >= 24 * 3:
+        actions.append("routine_forget")
+        score -= 0.15
+
+    # 6) 健康分还很高、也没攒够活 → 今晚可以不做
+    if not actions and score >= 0.9:
+        actions.append("skip")
+        reasons["verdict"] = "记忆库健康，无需做梦"
+
+    return {"score": round(max(0.0, min(1.0, score)), 2),
+            "actions": actions or ["consolidate"], "reasons": reasons}
+
+
+def _bounded_growth(records: list, now: int) -> list:
+    """#40 记忆有界增长：非 dust 非归档条目超软上限（默认 3000）时，做梦流程里
+    把超额部分按"低保留度 → 低重要度 → 越旧越先"排序雪藏进 archive 层
+    （原文保真、永不删，可 archive restore 回热）——总量近似恒定，只压缩不删。
+
+    软上限可用 config `dream.capacity_cap` 覆盖。返回本次被归档的记录列表。
+    保护名单与 _is_archivable 一致：pinned / verbatim / identity / correction / pending。
+    """
+    try:
+        cap = int(_num(load_config().get("dream.capacity_cap"), 3000))
+    except Exception:
+        cap = 3000
+    cap = max(cap, 100)  # 防呆：设得太小也不至于清空热层
+    hot = [m for m in records if m.get("layer") in ("hippo", "cortex")]
+    over = len(hot) - cap
+    if over <= 0:
+        return []
+    # 排序依据：保留度低（快忘了）> 重要度低 > 更旧。protection 复用 _is_archivable 的名单。
+    def _rank(m):
+        return (retention(m, now),
+                -_num(m.get("importance"), 0.5),
+                -_num(m.get("created"), 0))
+    protected = {m.get("id") for m in hot
+                 if m.get("pinned") or m.get("verbatim") or m.get("kind") == "identity"
+                 or m.get("correction") or m.get("review") == "pending"}
+    cands = sorted((m for m in hot if m.get("id") not in protected), key=_rank)
+    picked = []
+    for m in cands:
+        if over <= 0:
+            break
+        if m.get("layer") == ARCHIVE_LAYER:
+            continue
+        picked.append(m)
+        over -= 1
+    if not picked:
+        return []
+    picked_ids = {m.get("id") for m in picked}
+    for m in picked:
+        m["layer"] = ARCHIVE_LAYER
+        m["archived_at"] = now
+    log_event("dream", f"#40 有界增长：热层超软上限，归档 {len(picked)} 条（cap={cap}）")
+    return [m for m in records if m.get("id") in picked_ids]
+
+
 def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
     ensure_home()
     now = now_ts()
     report = {"trigger": trigger, "at": now, "forgotten": [], "promoted": [], "faded": 0,
               "archived": [], "clusters": []}
+
+    # #47 按需做梦：先量健康度。分数高且没活可干时自动做梦触发直接跳过
+    # （省 nightly 空转），手动触发照跑（人点了就要给个交代）。
+    try:
+        prio = dream_priority()
+    except Exception as e:
+        prio = None
+        log_event("dream", f"健康度评估失败（照常做梦）：{e}", level="warn")
+    if prio:
+        report["priority"] = prio
+        if trigger == "auto" and prio["actions"] == ["skip"]:
+            report["skipped"] = True
+            report["skip_reason"] = prio["reasons"].get("verdict", "无需做梦")
+            log_event("dream", f"按需做梦跳过：{report['skip_reason']}")
+            return report
 
     # 读-改-写整体加锁：dream 用 save_all 整库快照覆写，
     # 不加锁会把锁外并发写入的新记忆用旧快照整库覆盖丢。
@@ -314,6 +526,9 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
             if not m.get("id"):          # 缺 id 的畸形记录不参与巩固/遗忘（但仍原样保留在库）
                 continue
             if m.get("layer") == "dust" or m.get("pinned"):
+                continue
+            # #41 correction 语义：改口记录永不自动淡忘/归档——它是教训提炼的第一手证据
+            if m.get("correction"):
                 continue
             text = m.get("text", "") or ""
             # 封存的原文不做细节淡化、不进淡忘区：它的价值就是"一个字都没丢"
@@ -362,6 +577,34 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
             if not dry_run:
                 _append_archive(archived_recs)
 
+        # #43 唤醒值遗忘：对 hippo/cortex 里 activation 低于阈值的记忆做软处理
+        # （降层 dust + 切关联 + 清 embedding；pinned/correction/identity 等保护名单
+        # 在 activation_forget 内部把关）。失败不挡巩固——软遗忘是加分工序。
+        try:
+            act_forgotten = _mem.activation_forget(records, now)
+            if act_forgotten:
+                report["activation_forgotten"] = [
+                    {"id": x["id"], "activation": round(_num(x.get("activation"), 0.0), 3),
+                     "gist": x.get("gist") or heuristic_gist(x.get("text", "") or "")}
+                    for x in act_forgotten]
+        except Exception as e:
+            log_event("dream", f"唤醒值遗忘失败（不影响巩固）：{e}", level="warn")
+
+        # #40 有界增长：热层超软上限时把超额沉眠记忆雪藏进 archive（只压缩不删）。
+        # 放在常规归档之后，用最新的层分布算超额；与 archived_recs 合并一次落盘。
+        try:
+            bounded = _bounded_growth(records, now)
+        except Exception as e:
+            bounded = []
+            log_event("dream", f"#40 有界增长失败（不影响巩固）：{e}", level="warn")
+        if bounded:
+            report["bounded_archived"] = [
+                {"id": m["id"], "gist": m.get("gist") or heuristic_gist(m.get("text", "") or "")}
+                for m in bounded]
+            if not dry_run:
+                _append_archive(bounded)
+            records = [m for m in records if m.get("layer") != ARCHIVE_LAYER]
+
         clusters = cluster_memories(records, include_ids={x["id"] for x in report["promoted"]})
         if not dry_run:
             save_all(records)
@@ -369,6 +612,32 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
     report["clusters"] = clusters
     task_id = f"dream_{now}"
     report["task_id"] = task_id
+
+    # —— 教训提炼（#36）：从失败闭环的证据源里挖教训候选 ——
+    # 证据源三类：被 supersede 的旧记忆（说法变了=旧结论错过一次）、conflict 冲突记录
+    # （detect_conflicts 启发式发现的矛盾对）、correction 改口记录（用户亲手纠正）。
+    # 生成的教训全部 status="pending" 待审（与 knowledge/persona 同一审核闸），
+    # review confirm 后转 active 才注入；绝不直接生效——梦是建议，不是判决。
+    if not dry_run:
+        try:
+            mined = _mine_lessons(records)
+            report["lessons_mined"] = len(mined)
+        except Exception as e:
+            log_event("dream", f"教训提炼失败（不影响巩固）：{e}", level="warn")
+            mined = []
+
+    # —— #44 月度漂移自检：做梦时顺手自省——人格基准冻结满 30 天就对比一次。
+    # 失败不挡做梦（自检是加分工序）。
+    if not dry_run:
+        try:
+            import persona as _persona
+            ps = _persona.load_persona()
+            last_check = _num(ps.get("drift_selfcheck", [{}])[-1].get("at"), 0) \
+                if ps.get("drift_selfcheck") else 0
+            if now - last_check >= 30 * 86400:
+                report["drift_selfcheck"] = _persona.monthly_drift_selfcheck()
+        except Exception as e:
+            log_event("dream", f"月度漂移自检失败（不影响做梦）：{e}", level="warn")
 
     if not dry_run:
         if clusters:
@@ -442,6 +711,9 @@ def write_dream_report(report: dict) -> Path:
     lines.append(f"- 淡忘归档：{len(report['forgotten'])} 条")
     lines.append(f"- 雪藏冷档：{len(report.get('archived', []))} 条（原文保留，可 archive search / restore）")
     lines.append(f"- 模糊化细节：{report['faded']} 条")
+    mined = report.get("lessons_mined", 0)
+    if mined:
+        lines.append(f"- 教训提炼：{mined} 条新教训候选（pending 待审，review 里确认后生效）")
     if report.get("snapshot"):
         lines.append(f"- 回滚点：{report['snapshot']}（梦错了可用 restore 还原）")
     if report["clusters"]:
@@ -498,6 +770,59 @@ def load_dream_state() -> dict:
     return {"last_dream": 0, "last_task": None}
 
 
+VERIFY_SAMPLE_FILE = "verify-sample.json"
+
+
+def write_verify_sample(pairs: list, task_id: str = "") -> dict | None:
+    """#19 梦抽检：把本次合并的「合并前 → 合并后」抽 3 组落盘。
+
+    AI 整理最容易在"把两条记忆揉成一条"时悄悄改掉原意，而合并结果默认是
+    待审核状态——抽检就是给人一个**看差别**的短清单，不必翻整场梦的报告。
+    写 dreams/verify-sample.json，`dream verify` 查看，`dream verify --done` 标记已看过。
+    """
+    if not pairs:
+        return None
+    # 均匀抽 3 组（首/中/尾），不引入随机数：同一场梦重复写入结果稳定
+    n = len(pairs)
+    picks = sorted({0, n // 2, n - 1})[:3]
+    items = [pairs[i] for i in picks if i < n]
+    data = {
+        "task_id": task_id,
+        "at": now_ts(),
+        "reviewed": False,
+        "reviewed_at": None,
+        "total_merges": n,
+        "items": items,
+    }
+    path = HOME / "dreams" / VERIFY_SAMPLE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(path, data)
+    return data
+
+
+def load_verify_sample() -> dict | None:
+    """读取最近一次梦抽检样本；没有/坏文件返回 None。"""
+    path = HOME / "dreams" / VERIFY_SAMPLE_FILE
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def mark_verify_reviewed() -> dict | None:
+    """标记抽检样本已看过（不删文件，保留对照供以后回看）。"""
+    data = load_verify_sample()
+    if not data:
+        return None
+    data["reviewed"] = True
+    data["reviewed_at"] = now_ts()
+    atomic_json(HOME / "dreams" / VERIFY_SAMPLE_FILE, data)
+    return data
+
+
 def apply_dream(result: dict) -> dict:
     ensure_home()
     pending_path = HOME / "dreams" / "pending.json"
@@ -532,6 +857,7 @@ def apply_dream(result: dict) -> dict:
         records = load_all()
         by_id = {m["id"]: m for m in records if m.get("id")}
         _old_terms_cache = {}  # id → terms：锁内缓存旧记忆分词，多条新记忆不重复算
+        _verify_pairs = []    # #19 合并前后对照：写入 dreams/verify-sample.json 供抽检
 
         # 写入时校验引用（借鉴图数据库 dangling edge 防线）：
         # AI 填的 source_ids 可能编造/抄错 id，老版本直接写进 links 就成了死链。
@@ -569,6 +895,22 @@ def apply_dream(result: dict) -> dict:
             # AI 整理出来的记忆先标"待审核"：防止做梦合并/编造的内容直接当事实沉淀。
             rec["review"] = "pending"
             rec["review_source"] = "dream"
+            # #46 Memex 索引解引用：合并/蒸馏产物带 evidence_ids 指针（指向原始证据记忆），
+            # 召回命中摘要时按需解引用取原文，"概括"与"细节"两级可导航。
+            # 证据 = AI 声明的 source_ids + 确实被本条取代的旧记忆，宁可多指针不丢证据。
+            _ev = [s for s in rec.get("links", []) if isinstance(s, str)]
+            _ev += [old["id"] for old in records
+                    if old.get("superseded_by") == rec["id"] and old.get("id")]
+            if _ev:
+                rec["evidence_ids"] = _dedupe(_ev)
+            # #45 影响评估（SSGM）：合并/蒸馏决议附轻量 impact——这条记忆一旦确认，
+            # 会改变多少召回注入文本、波及哪些实体，让用户优先审"影响大"的改动。
+            rec["impact"] = {
+                "chars": len(text),                      # 确认后进入注入文本的字数
+                "entities": list(rec.get("entities", []) or []),
+                "superseded": sum(1 for old in records
+                                  if old.get("superseded_by") == rec["id"]),
+            }
             # —— 矛盾记忆不覆盖，留链路 ——
             # 新记忆与旧记忆高度相似但内容不同（说法变了/事实更新）时，旧的不删，
             # 打上 superseded_by 指向新的：回忆默认跳过被取代者，需要时仍可回溯
@@ -580,6 +922,13 @@ def apply_dream(result: dict) -> dict:
             for old in records:
                 # rec 是本函数刚新建的记录，不在 records 里，无需 is 判断
                 if old.get("layer") == "dust" or old.get("superseded_by"):
+                    continue
+                # #28 冻结的记忆不许被做梦改写：用户明确要求"这条别动"
+                if old.get("frozen"):
+                    continue
+                # #41：correction 改口记录不许被做梦产出 supersede——它是最新的用户更正，
+                # 被取代等于把刚纠正过的事实又改回去
+                if old.get("correction"):
                     continue
                 old_terms = _old_terms_cache.get(old["id"])
                 if old_terms is None:
@@ -596,6 +945,12 @@ def apply_dream(result: dict) -> dict:
                     if old["id"] not in rec["links"]:
                         rec["links"].append(old["id"])
                     applied.setdefault("superseded", []).append(old["id"])
+                    # #19 留一组"合并前 → 合并后"对照，供事后抽检 AI 有没有改坏原意
+                    _verify_pairs.append({
+                        "new_id": rec["id"],
+                        "after": text,
+                        "before": [{"id": old["id"], "text": str(old.get("text", ""))}],
+                    })
             records.append(rec)
             applied["memories"] += 1
             for sid in rec["links"]:
@@ -615,6 +970,14 @@ def apply_dream(result: dict) -> dict:
                 if m.get("pinned"):
                     applied["rejected"].append(f"拒绝淡忘 {sid}：用户置顶的记忆不参与做梦淡忘")
                     continue
+                # #28 冻结的记忆同样不参与淡忘
+                if m.get("frozen"):
+                    applied["rejected"].append(f"拒绝淡忘 {sid}：已冻结的记忆不参与做梦淡忘")
+                    continue
+                # #41：correction 改口记录不许梦淡忘——教训提炼的证据链不能断
+                if m.get("correction"):
+                    applied["rejected"].append(f"拒绝淡忘 {sid}：改口（correction）记录永不自动淡忘")
+                    continue
                 m["layer"] = "dust"
                 m["forgotten_at"] = now_ts()
                 applied["forgotten"] += 1
@@ -624,6 +987,11 @@ def apply_dream(result: dict) -> dict:
             log_event("dream", f"本次做梦淡忘 {_forget_n} 条记忆（已移入 dust 淡忘区，可 revive 找回）")
 
         save_all(records)
+        # #19 抽检样本：落盘 3 组合并前后对照（失败不影响做梦主流程）
+        try:
+            write_verify_sample(_verify_pairs, task_id)
+        except Exception as exc:
+            log_event("dream", f"写抽检样本失败（不影响巩固）：{exc}", level="warn")
         # 人格更新也放在锁内、且必须在"删 pending"之前：AI 产的 persona_updates 可能带 NaN
         # 等坏值，若先删 pending 再更新人格，人格段一崩这批整理就永远无法重试（pending 已丢）。
         upd = result.get("persona_updates")
@@ -632,13 +1000,48 @@ def apply_dream(result: dict) -> dict:
             evid = [sid for it in (result.get("memories") or [])
                     if isinstance(it, dict) for sid in (it.get("source_ids") or [])
                     if isinstance(sid, str)][:10]
+            # 成形时刻检测：近 14 天内若有峰值情绪（formative=True）事件，本场梦的
+            # traits 漂移走旁路（×2.5 封顶 ±25，绕过双门限）——一次真正的峰值情绪
+            # 本来就足以重塑人，不该被"攒账"机制压制。事件按 ts 倒序，取第一条。
+            formative_ev = None
             try:
-                applied["rejected"] = update_persona(upd, why="做梦整理", source="dream", evidence=evid)
+                import emotion as _emo
+                fe = _emo.formative_events(days=14)
+                formative_ev = fe[0] if fe else None
             except Exception as exc:
-                # 人格更新失败：保留 pending apply 文件让整场可重试（persona 层有锁与校验，
-                # 正常情况下不该崩，这里兜底防 NaN 之外的意外把数据搞丢）
-                log_event("dream", f"做梦应用时人格更新失败，pending 已保留可重试：{exc}", level="error")
-                raise
+                log_event("dream", f"读取成形时刻事件失败，按普通漂移处理：{exc}", level="warn")
+            if formative_ev and upd.get("traits"):
+                boosted = {}
+                for k, v in upd["traits"].items():
+                    try:
+                        boosted[k] = max(-10, min(10, float(v) * 2.5))
+                    except (TypeError, ValueError):
+                        log_event("dream", f"成形旁路时 traits.{k} 值非法 {v!r}，跳过", level="warn")
+                if boosted:
+                    upd = {**upd, "traits": boosted}
+                    fwhy = (formative_ev.get("why") or formative_ev.get("about") or "").strip()
+                    fdesc = f"{formative_ev.get('emotion') or '强烈的情绪'}" + (f"（{fwhy}）" if fwhy else "")
+                    try:
+                        applied["rejected"] = update_persona(
+                            upd, why="做梦整理", source="dream_formative", evidence=evid,
+                            bypass_gate=True, formative_event=fdesc)
+                    except Exception as exc:
+                        log_event("dream", f"做梦应用时人格更新失败，pending 已保留可重试：{exc}", level="error")
+                        raise
+                else:
+                    try:
+                        applied["rejected"] = update_persona(upd, why="做梦整理", source="dream", evidence=evid)
+                    except Exception as exc:
+                        log_event("dream", f"做梦应用时人格更新失败，pending 已保留可重试：{exc}", level="error")
+                        raise
+            else:
+                try:
+                    applied["rejected"] = update_persona(upd, why="做梦整理", source="dream", evidence=evid)
+                except Exception as exc:
+                    # 人格更新失败：保留 pending apply 文件让整场可重试（persona 层有锁与校验，
+                    # 正常情况下不该崩，这里兜底防 NaN 之外的意外把数据搞丢）
+                    log_event("dream", f"做梦应用时人格更新失败，pending 已保留可重试：{exc}", level="error")
+                    raise
         # 在锁内消费 pending：写入与"这场梦已应用"必须同时成立，
         # 否则并发 apply / 崩溃重试会把这批记忆再套一遍（重复沉淀）。
         try:
@@ -664,5 +1067,12 @@ def apply_dream(result: dict) -> dict:
             write_text_atomic(path, "\n".join(body) + "\n")
         except OSError:
             pass   # 梦境笔记写不进去不影响记忆已落盘，别把成功报成失败
+    # 自认识沉淀：放在 _locked 块之外（autosink 自己加 persona.json 锁，
+    # 嵌套调用同一文件锁会死锁）；失败只记日志，不影响梦已落盘。
+    try:
+        applied["self_model"] = self_model_autosink()
+    except Exception as exc:
+        log_event("dream", f"做梦后自认识沉淀失败（不影响梦）：{exc}", level="warn")
+        applied["self_model"] = {"ok": False, "error": str(exc)}
     clear_dream_draft()  # 应用成功后，网页里编辑过的那份草稿也一并清掉
     return applied

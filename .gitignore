@@ -48,6 +48,3 @@ scripts/test_niah.py
 
 # 测试脚本本地化——永远不推送
 tests/
-
-# 测试脚本本地化——永远不推送
-tests/

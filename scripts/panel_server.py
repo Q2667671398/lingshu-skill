@@ -47,6 +47,7 @@ _WRITE_ENDPOINTS = {
     "/api/mind/weigh", "/api/diagnostics/fix-links", "/api/seed",
     "/api/forget", "/api/daily", "/api/dream/instruction", "/api/logs",
     "/api/memory/dust",
+    "/api/memory/purge",
     "/api/memory/boost",
     "/api/memory/rebuild-embeds",
     # 自定义面板管理：activate/delete/install 等都写数据目录
@@ -1339,6 +1340,20 @@ def _api_memory_dust(self, path, data):
 
 
 
+def _api_memory_purge(self, path, data):
+    # #34 物理删除：双重确认在 memory.purge 内强制校验（dust 冷静期 7 天 + confirm=id 前 8 位）
+    try:
+        result = brain.purge(str(data.get("id", "")), str(data.get("confirm", "")))
+    except PermissionError as exc:
+        self._json({"error": str(exc)}, 403)
+        return
+    except ValueError as exc:
+        self._json({"error": str(exc)}, 400)
+        return
+    self._json({"ok": True, **result})
+
+
+
 def _api_knowledge(self, path, data):
     act = data.get("action", "add")
     if act in ("add", "update"):
@@ -2208,17 +2223,37 @@ def _ollama_download(dest: Path, on_progress=None) -> None:
         raise
 
 
-def _ollama_download_sync() -> None:
-    """同步下载 zip（只在 setup 后台线程里调）。
-    与 _ollama_download_async 共用 _OLLAMA_DOWNLOAD_LOCK，避免两个线程同时写同一个 zip。"""
+def _ollama_download_run(quiet_busy: bool = False) -> None:
+    """下载主流程（#5 重构：sync/async 共用，不再两份重复代码）。
+    持 _OLLAMA_DOWNLOAD_LOCK 防两个线程同时写同一个 zip；
+    锁被占用时 quiet_busy=True（setup 线程里静默退出），
+    False（面板触发）写状态提示等待复用现有 zip。
+    在调用者所在线程内阻塞执行——调用方决定是否丢进后台线程。"""
     dest = _ollama_zip_path()
     if not _OLLAMA_DOWNLOAD_LOCK.acquire(blocking=False):
-        return  # 另一个线程在下，不重复下载
+        if quiet_busy:
+            return  # 另一个线程在下，不重复下载
+        _ollama_state_write("downloading", detail="已有下载在进行中，等待复用现有 zip")
+        return
     try:
         _ollama_download(dest, on_progress=lambda pct, mb: _ollama_state_write(
             "downloading", percent=pct, detail=f"{mb}MB"))
+        _ollama_state_write("downloaded", percent=100, detail=str(dest))
+    except Exception as exc:
+        _ollama_state_write("error", detail=f"下载失败：{exc}")
     finally:
         _OLLAMA_DOWNLOAD_LOCK.release()
+
+
+def _ollama_download_sync() -> None:
+    """同步下载 zip（只在 setup 后台线程里调）。"""
+    _ollama_download_run(quiet_busy=True)
+
+
+def _ollama_download_async() -> None:
+    """后台线程流式下载 zip，进度写状态文件（约 1GB，绝不阻塞 HTTP 线程）。"""
+    threading.Thread(target=_ollama_download_run, name="ollama-download",
+                     daemon=True).start()
 
 
 # --------------------------------------------------------------- ① 自动探测接管
@@ -2269,23 +2304,6 @@ def _ollama_auto_probe_async() -> None:
                          name="ollama-auto-probe", daemon=True).start()
     except Exception:
         pass
-
-
-def _ollama_download_async() -> None:
-    """后台线程流式下载 zip，进度写状态文件（约 1GB，绝不阻塞 HTTP 线程）。
-    与 _ollama_download_sync 共用 _OLLAMA_DOWNLOAD_LOCK，避免两个线程同时写同一个 zip。"""
-    dest = _ollama_zip_path()
-    if not _OLLAMA_DOWNLOAD_LOCK.acquire(blocking=False):
-        _ollama_state_write("downloading", detail="已有下载在进行中，等待复用现有 zip")
-        return
-    try:
-        _ollama_download(dest, on_progress=lambda pct, mb: _ollama_state_write(
-            "downloading", percent=pct, detail=f"{mb}MB"))
-        _ollama_state_write("downloaded", percent=100, detail=str(dest))
-    except Exception as exc:
-        _ollama_state_write("error", detail=f"下载失败：{exc}")
-    finally:
-        _OLLAMA_DOWNLOAD_LOCK.release()
 
 
 def _ollama_start_serve() -> bool:
@@ -2429,6 +2447,7 @@ _POST_ROUTES = {
         "/api/forget": _api_forget,
         "/api/diagnostics/fix-links": _api_diag_fix_links,
         "/api/memory/dust": _api_memory_dust,
+        "/api/memory/purge": _api_memory_purge,
         "/api/memory/review": _api_memory_review,
         "/api/memory/bulk": _api_memory_bulk,
         "/api/memory/boost": _api_memory_boost,

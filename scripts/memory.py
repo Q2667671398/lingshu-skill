@@ -1323,6 +1323,9 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
                     m["emotion"] = emo_name
                 m["tags"] = _dedupe(m.get("tags", []) + [t.strip().lstrip("#") for t in (tags or [])])
                 m["entities"] = _dedupe(m.get("entities", []) + (entities or []))
+                # 第四轮#3：合并路径补项目标记——旧条目还挂着 "default" 时趁机挂上真实项目
+                if project and str(project).strip() and str(m.get("project") or "default") == "default":
+                    m["project"] = str(project).strip()[:64]
                 save_all(records)
                 # P1：异步补/更新 embedding（文本变了或还没有向量才调度；
                 # 未配置 embed 服务时 _embed_wanted 直接 False，零开销跳过）
@@ -1868,6 +1871,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
            channel: str | None = None, group_id: str | None = None,
            user: str | None = None,
            target_user: str | None = None, asker: str | None = None,
+           project: str | None = None,
            mode: str = "auto", with_evidence: bool = False, _archive_pass: int = 0) -> list:
     """模糊回忆：相关度 + 近期性 + 重要性 + 联想扩散。返回 [(record, score, parts), ...]
 
@@ -1927,6 +1931,14 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         records += [m for m in archive if m["id"] not in seen_ids]
     if target_user:
         records = [m for m in records if str(m.get("user") or "") == str(target_user)]
+    # 第四轮#3：项目上下文——同项目记忆加成，不是硬过滤（跨项目的相关结论仍可浮上来，
+    # 只是排到同项目之后）。加成幅度对齐 tag/entity 精确命中档（0.12/次，上限 0.25）。
+    if project:
+        _pj = str(project).strip().lower()
+        for m in records:
+            mp = str(m.get("project") or "").strip().lower()
+            if mp and mp == _pj:
+                m["_project_boost"] = 0.25
     if not records:
         return []
     now = now_ts()
@@ -2040,6 +2052,9 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             hits += sum(1 for t in m.get("tags", []) if str(t).lower() in q_low)
             hits += sum(1 for e in m.get("entities", []) if str(e).lower() in q_low)
         score += min(0.30, 0.12 * hits)
+        # 第四轮#3：同项目记忆加成（recall(project=...) 时生效）
+        if project and m.pop("_project_boost", None):
+            score += 0.25
         # —— persona core 加权——
         # 记忆 kind=identity 或 tags/entities/kind 命中 persona 核心关键词时，
         # 追加 core_bias 比例加权；identity 是核心身份类，权重更高一点。
@@ -2274,6 +2289,91 @@ def forget(memory_id: str) -> bool:
                 audit_log("user", "forget", memory_id, "记忆移入淡忘区")
                 return True
     return False
+
+
+# ---------------------------------------------------------------- #34 物理删除（多重确认）
+# 设计：物理销毁与逻辑删除（forget→dust）分离。物理删除必须同时满足两道闸：
+#   1. 目标已在 dust 层且 forgotten_at 距今 ≥ 7 天（先逻辑删除冷静期，避免冲动）；
+#   2. 调用方显式传入 confirm_token == id 前 8 位（手输确认，防 AI 误调/脚本误跑）。
+# 删除时同步切断 assoc.jsonl 里指向该 id 的关联边，archive 层若有副本也一并清掉。
+# 任何一道闸不满足都抛 ValueError，不动数据。
+
+_PURGE_COOLDOWN_DAYS = 7
+
+
+def purge(memory_id: str, confirm_token: str) -> dict:
+    """物理删除一条记忆（#34，双重确认）。
+
+    前置条件（两道闸，缺一不可）：
+      * 目标在 dust 层，且 forgotten_at 距今 ≥ 7 天（冷静期）；
+      * confirm_token == memory_id 前 8 位（手输确认，防误调）。
+    返回 {"removed": True, "layer": ...}；不满足抛 ValueError。
+    READONLY 抛 PermissionError。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法物理删除。")
+    if not confirm_token or confirm_token != memory_id[:8]:
+        raise ValueError(
+            f"物理删除需显式确认：--confirm {memory_id[:8]}（传入的确认码不匹配）")
+    cutoff = now_ts() - _PURGE_COOLDOWN_DAYS * DAY
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        target = next((m for m in records if m.get("id") == memory_id), None)
+        if not target:
+            # 热层没有，去 archive 找——archive 副本也算可删（但同样要求冷静期）
+            with _locked(HOME / "archive.jsonl"):
+                archive = load_archive()
+                target = next((m for m in archive if m.get("id") == memory_id), None)
+                if not target:
+                    raise ValueError(f"没有这条记忆：{memory_id}")
+                archived_at = _num(target.get("archived_at") or target.get("forgotten_at"), 0)
+                if archived_at > cutoff:
+                    raise ValueError(
+                        f"归档记忆需冷静满 {_PURGE_COOLDOWN_DAYS} 天后才能物理删除"
+                        f"（当前归档于 {fmt_date(archived_at)}）")
+                archive = [m for m in archive if m.get("id") != memory_id]
+                write_jsonl(HOME / "archive.jsonl", archive)
+            _cut_assoc_links(memory_id)
+            audit_log("user", "purge", memory_id, "物理删除（archive 副本）")
+            return {"removed": True, "layer": "archive"}
+        if target.get("layer") != "dust":
+            raise ValueError(
+                f"只有淡忘区（dust）的记忆才能物理删除，当前层：{target.get('layer')}。"
+                f"先 `memory forget {memory_id}` 转 dust，满 {_PURGE_COOLDOWN_DAYS} 天后再 purge。")
+        forgotten_at = _num(target.get("forgotten_at"), 0)
+        if forgotten_at > cutoff:
+            raise ValueError(
+                f"淡忘记忆需冷静满 {_PURGE_COOLDOWN_DAYS} 天后才能物理删除"
+                f"（当前淡忘于 {fmt_date(forgotten_at)}）")
+        records = [m for m in records if m.get("id") != memory_id]
+        save_all(records)
+        # archive 里可能也有同名副本（归档过的），一并清掉
+        with _locked(HOME / "archive.jsonl"):
+            archive = load_archive()
+            if any(m.get("id") == memory_id for m in archive):
+                archive = [m for m in archive if m.get("id") != memory_id]
+                write_jsonl(HOME / "archive.jsonl", archive)
+        _cut_assoc_links(memory_id)
+        audit_log("user", "purge", memory_id, "物理删除")
+        return {"removed": True, "layer": "dust"}
+
+
+def _cut_assoc_links(memory_id: str) -> None:
+    """切断 assoc.jsonl 里 src 或 dst 指向 memory_id 的关联边（purge 时调用）。"""
+    try:
+        af = HOME / "assoc.jsonl"
+        if not af.exists():
+            return
+        with _locked(af):
+            edges = read_jsonl(af)
+            kept = [e for e in edges
+                    if isinstance(e, dict)
+                    and e.get("src") != memory_id
+                    and e.get("dst") != memory_id]
+            if len(kept) != len(edges):
+                write_jsonl(af, kept)
+    except Exception as exc:
+        log_event("purge", f"切断关联边失败（不影响删除本身）：{exc}", level="warn")
 
 
 # ---------------------------------------------------------------- 淡忘可逆（fold / unfold）
@@ -3641,13 +3741,38 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     # 记忆段可用预算 = 总预算 − 前面软块已用，但至少保留 0.4×char_budget
     # （软块再多也不许把记忆段吃光；反之记忆段用不完也不返还给别处）。
     mem_cap = max(char_budget - used, char_budget * 0.4)
+    # 第四轮#4：importance 分位归一——注入时把"★"换算成全体记忆里的相对位置
+    # （P25=☆ P50=★★★ P75=★★★★ P90+=★★★★★），个人打分通胀不再放大星星数。
+    _inj_all = None
+    try:
+        _inj_all = sorted(_num(m.get("importance"), 0.5) for m in load_all() if m.get("id"))
+    except Exception:
+        _inj_all = None
+
+    def _stars_inj(imp: float) -> str:
+        if _inj_all and len(_inj_all) >= 20:
+            n = len(_inj_all)
+            # 全体中比这条重要的占比 → 分位（0~1）
+            lo, hi = 0, n
+            v = imp
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if _inj_all[mid] < v:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            pct = lo / max(1, n - 1)
+        else:
+            pct = imp   # 记忆太少时退回原始值
+        k = 1 if pct < 0.25 else 3 if pct < 0.50 else 4 if pct < 0.90 else 5
+        return "★" * k if k >= 3 else ("★" if k == 1 else "★★")
     for m, score, _ in mems:
         _body = display_text(m)
         # 单条正文按 inject_max_chars 截断：只放宽上限，一条整记忆不切半的规则不变
         if inject_max > 0 and len(_body) > inject_max:
             _body = _body[:inject_max].rstrip() + "…"
         line = (f"- [{fmt_date(m.get('created', 0))} "
-                f"{'★' * max(1, round(_num(m.get('importance'), 0.5) * 5))}] {_body}")
+                f"{_stars_inj(_num(m.get('importance'), 0.5))}] {_body}")
         # append 之后累计再判：append 前判会把"当前这行自身"的长度漏算，实际可超预算一行
         lines.append(line)
         if used + lines_join_len(lines) > mem_cap:

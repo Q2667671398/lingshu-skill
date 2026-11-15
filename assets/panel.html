@@ -1174,7 +1174,9 @@ function memCard(m){
       ${m.layer === "dust" ? (m.folded
           ? `<button class="iconbtn" title="展开还原（把折叠收起的原文放回来）" data-dustact="unfold" data-dustid="${esc(m.id)}">⇱</button>`
           : `<button class="iconbtn" title="折叠（原文收起，只留摘要；可随时展开还原）" data-dustact="fold" data-dustid="${esc(m.id)}">⇲</button>`)
-          + `<button class="iconbtn" title="复活（还原原文并回到活跃层）" data-dustact="revive" data-dustid="${esc(m.id)}">⤴</button>` : ""}
+          + `<button class="iconbtn" title="复活（还原原文并回到活跃层）" data-dustact="revive" data-dustid="${esc(m.id)}">⤴</button>`
+          + (dustCooldownOver(m)
+            ? `<button class="iconbtn danger" title="物理删除（不可恢复；需冷静满 7 天，点击后输入 id 前 8 位确认）" data-purge="${esc(m.id)}">🗑</button>` : "") : ""}
       <button class="iconbtn ${m.pinned ? "pin" : ""}" title="置顶/取消" data-pin="${esc(m.id)}">◈</button>
       <button class="iconbtn ${m.frozen ? "pin" : ""}" title="${m.frozen ? "解冻（恢复参与召回/注入）" : "冻结（保留但不参与召回/注入/做梦）"}" data-freeze="${esc(m.id)}" data-frozen="${m.frozen ? 1 : 0}">${m.frozen ? "☀" : "❄"}</button>
       <button class="iconbtn" title="遗忘纠正：稳定度×1.5，恢复被淡忘的记忆" data-boost="${esc(m.id)}">⚡</button>
@@ -3632,8 +3634,28 @@ if ($("view-diag")) new MutationObserver(() => {
   if ($("view-diag").classList.contains("on")) loadHomeInfo();
 }).observe($("view-diag"), { attributes: true, attributeFilter: ["class"] });
 
-// ---- 淡忘可逆（fold / unfold / revive）：事件委托到记忆卡片按钮
+// ---- 淡忘可逆（fold / unfold / revive）+ #34 物理删除：事件委托到记忆卡片按钮
+// 冷却期口径与 memory._PURGE_COOLDOWN_DAYS 保持一致：dust 满 7 天才显示 🗑 按钮
+const PURGE_COOLDOWN_MS = 7 * 86400 * 1000;
+function dustCooldownOver(m) {
+  const at = Number(m.forgotten_at || 0);
+  return at > 0 && (Date.now() - at * 1000) >= PURGE_COOLDOWN_MS;
+}
 document.addEventListener("click", async e => {
+  const pbtn = e.target.closest("[data-purge]");
+  if (pbtn) {
+    const mid = pbtn.dataset.purge || "";
+    const ans = prompt("物理删除不可恢复！请输入该记忆 id 的前 8 位确认：", "");
+    if (ans === null) return;
+    if (ans.trim() !== mid.slice(0, 8)) { toast("确认码不匹配，未删除。", true); return; }
+    pbtn.disabled = true;
+    try {
+      await post("/api/memory/purge", {id: mid, confirm: ans.trim()});
+      toast("已物理删除（关联边与归档副本一并清理）");
+      renderMemoryList();
+    } catch (err) { console.error("物理删除失败:", err); toast(err.message, true); pbtn.disabled = false; }
+    return;
+  }
   const btn = e.target.closest("[data-dustact]");
   if (!btn) return;
   const act = btn.dataset.dustact;
