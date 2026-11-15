@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.10（2026-11-15）
+
+> 本轮主题：**文档同步**（无功能变更，仓库与已发能力对齐）。
+
+- README：当前版本号更新；「最新特性速览」覆盖 v3.03–v3.09 的冻结/哈希链/召回三模式/教训库/自模型/可观测性；命令速查补齐 `memory freeze|unfreeze`、`memory integrity`、`dream --verify`、`lessons`、`export --md`、`auditlog`、`recall --mode`、`rebuild-embeds`。
+- SKILL.md：高频命令索引同步上述命令，并升版本号（pre-commit 要求改交付文件必须升版）。
+- manifest 重算（v3.10，43 文件）。
+
 ## v3.09（2026-11-15）
 
 > 本轮主题：**记忆管控与可观测性**（第四批修复 #28/#19/#21/#24）+ app-im 聊天适配。

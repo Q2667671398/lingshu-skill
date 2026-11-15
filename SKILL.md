@@ -1,7 +1,7 @@
-﻿---
+---
 name: lingshu
 title: 灵枢
-version: 3.09
+version: 3.10
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -310,6 +310,12 @@ python scripts/brain.py persona suggest [list|scan|adopt N|discard N]  # 从记�
 python scripts/brain.py persona viewed              # 确认已浏览人格近期改动
 python scripts/brain.py persona audit [--days 30]   # 人格变更审计链（事件→变更→证据）
 python scripts/brain.py memory boost <id>           # 遗忘纠正：把被淡忘但重要的记忆拉回并重置衰减
+python scripts/brain.py memory freeze|unfreeze <id>  # 冻结/解冻：冻结的不参与召回、注入与做梦
+python scripts/brain.py memory integrity             # 记忆哈希链校验（篡改/损坏定位）
+python scripts/brain.py dream --verify [--done]      # 梦合并抽检：复核后 --done 标记
+python scripts/brain.py lessons [list]               # 教训库（被验证+0.10 / 被推翻−0.15 / <0.2 退役）
+python scripts/brain.py export --md [--out 文件]      # 人类可读 Markdown 导出
+python scripts/brain.py auditlog [limit]             # 审计日志（谁/何时/做了什么）
 python scripts/brain.py serve                        # 可视化面板 :8765
 ```
 

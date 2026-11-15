@@ -1,8 +1,8 @@
-﻿# 灵枢 · 类脑记忆、人格与成长
+# 灵枢 · 类脑记忆、人格与成长
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v3.04**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.10**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -47,14 +47,14 @@
 - [命令速查](#命令速查)
 - [项目结构](#项目结构)
 
-## v3.01 新特性速览
+## 最新特性速览（v3.10）
 
-- **上下文水位自动守卫**：`brain.py status --json` 做唯一水位数据源（退出码按 60/75/90 分级）；`startup` 尾部固定水位提醒块；lingshu-cron pre-step 估算真实 token 水位，首次跨过阈值才注入提醒；面板概览水位卡。
-- **实时沉淀**：`remember`（importance≥7 或 insight/mistake/fact）自动落笔记；`lesson "教训"` 一条命令三写 memory+knowledge(待审)+note；recall 命中知识提示「该问题曾有记录」——先查再答，遇错即沉淀。
-- **人格↔记忆同步**：`persona suggest` 从记忆/笔记归纳画像候选（带证据链，采纳才生效）；`persona drift` 稳定度分；`memory boost` 遗忘纠正；注入包尾部人格自检行。
-- **面板人格页**：编辑先生效后告知（diff 高亮 + 概览「人格有变动」提示卡 + 未读改动 amber 常驻高亮，切走/刷新/手动「标记已读」才消）；变更审计链 `persona audit`；画像建议卡一键采纳。
-- **失败可见化与体检**：注入包顶部「上次会话写入失败 N 次」；`doctor` 六合一体检；Windows 文件占用时面板给 rename→WMI 进程检测与退出引导，不再给猜出来的 taskkill。
-- **注入预算动态分配**：硬块（工作记忆/待审/上次交接）先扣配额，不够先砍低重要度+高衰减条目。
+- **记忆管控**：`memory freeze/unfreeze <id>` 冻结的记忆不参与召回、注入与做梦；`remember --correction` 标记被用户纠正的记录（永不自动合并/淡忘/归档）；`remember --ttl-days N` 给事实设保质期，到期转「待复核」。
+- **数据结构与完整性**：`HOME/_meta.json` 记录 schema 版本（老版本遇到新 schema 自动降级只读，不写坏库）；每条记忆带 SHA-256 内容哈希并串成 prev-hash 链，`memory integrity` 一条命令定位篡改/损坏。
+- **召回与向量**：`recall --mode fast|deep|auto` 三档（纯词面 / 全量向量+冲突提示 / 自动择优）；`rebuild-embeds [--force]` 全量重算（含归档层），换 embedding 模型时缓存自动失效。
+- **自我进化**：`lesson "教训"` 一条命令三写（memory+knowledge 待审+note）；`lessons` 教训库带置信度——被后续对话验证 +0.10、被推翻 −0.15，低于 0.2 自动退役；`persona self-model` 输出机器可读的自模型（擅长/短板/还没弄清）。
+- **可观测性**：`doctor` 九项体检（含版本矩阵与当前写入者）；`auditlog` 统一审计流；`dream --verify` 复核做梦合并抽检；`status --json` 是唯一水位数据源（退出码按 60/75/90 分级）。
+- **可靠性**：注入包顶部「上次会话写入失败 N 次」；`backup --drill` 恢复演练；日志超 1MB 自动轮转；Windows 文件占用给 rename→WMI 进程定位与退出引导，不再猜 taskkill。
 
 ## 核心机制
 
@@ -511,10 +511,11 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 
 | 领域 | 命令 |
 |---|---|
-| 记忆 | `remember` / `recall` / `inject` / `startup` / `list` / `forget` |
+| 记忆 | `remember` / `recall [--mode fast\|deep\|auto]` / `inject` / `startup` / `list` / `forget` / `export --md [--out 文件]` |
+| 记忆管控 | `memory freeze <id>` / `memory unfreeze <id>` / `memory boost <id>` / `memory integrity` / `remember --correction` / `remember --ttl-days N` |
 | 上下文水位 | `check-context --used 68`（60 清点 / 75 做梦 / 90 封存） |
 | 原样封存 | `capture "<原文>" [--tag 逃生]` |
-| 做梦 | `dream` / `dream --apply apply.json` / `dream --auto` |
+| 做梦 | `dream` / `dream --apply apply.json` / `dream --auto` / `dream --verify [--done]`（合并抽检复核） |
 | 冷热归档 | `archive show\|search <词>\|restore <id>\|run [--dry-run]\|count`（沉眠记忆自动雪藏，原文保留可回捞） |
 | 人格 | `persona show\|set traits.幽默=70\|sync\|path\|interview\|self\|lock\|unlock\|history [--limit]\|rollback <序号>\|snapshot [--label]\|snapshots\|restore <名字>\|drift [--days 7] [--json]` |
 | 情绪 | `emotion now\|arc\|list\|feel\|evaluate\|mirror\|desire\|config\|events\|adjust <序号>\|del <序号>\|cool\|check "回复文本"` |
@@ -535,6 +536,9 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | DSH 插件（只读） | `skill plugins [--json]` |
 | 成长 | `growth status` / `growth review --days 7` |
 | 进化日志 | `evolve log "标题" --kind persona\|skill\|knowledge\|thinking\|self` |
+| 教训库 | `lesson "教训"`（三写：memory+knowledge 待审+note） / `lessons [list]` / `lessons add "..."` |
+| 审计日志 | `auditlog [limit] [--json]`（谁/何时/做了什么，>5000 条自动裁剪） |
+| 向量重建 | `rebuild-embeds [--force]`（含归档层，换模型自动失效重建） |
 | 备份恢复 | `backup [--out 目录] [--keep 20]` / `restore <zip> [--yes]` |
 | 数据目录 | `home show\|move\|verify` |
 | 与 DSH 同步 | `sync dsh [--dir 目录] [--days 1] [--force]` |
