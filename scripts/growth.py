@@ -2808,8 +2808,15 @@ def install_skill(name: str, force: bool = False, from_dir: str | None = None,
     agents = dst_dir / agents_rel
 
     reg = load_registry()
-    reg.setdefault(name, {})["installed_at"] = brain.now_ts()
+    reg.setdefault(name, {}).update({"installed_at": brain.now_ts()})
     save_registry(reg)
+    # 更新成功后必须让「检查更新」缓存失效：否则面板继续用旧缓存结果，表现为
+    # "更新完还显示有更新、版本号停在旧版"（缓存里 outdated=True / 旧 source_version
+    # 会一直供到 TTL 6 小时过期为止）。直接删缓存文件，下次检查重新联网判定。
+    try:
+        UPDATE_CACHE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
     if _is_lingshu(name, meta, from_dir):
         _accept_risk(name)  # 记下：用户已明确接受灵枢的风险
     return {"name": name, "state": "installed", "path": str(dst), "agents": str(agents),
