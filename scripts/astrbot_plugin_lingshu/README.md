@@ -1,8 +1,16 @@
-# 灵枢跨环境记忆桥 · 本地修订 v0.2.3
+# 灵枢跨环境记忆桥 · 本地修订 v0.2.6
 
 适配目标：AstrBot `>=4.13.0,<5.0.0` 的 Windows、Linux、macOS、Docker/远程部署。使用宿主现有 Python，不需要 DSH、Node、Ollama 或新增第三方 Python 依赖。实际运行测试仅完成 Windows Python 3.12；其他平台和真实 AstrBot 仍须验收。
 
 ## 安装
+
+### 推荐方式：灵枢面板一键导出（零手动找文件）
+
+1. 打开灵枢面板（`engine/scripts/panel_server.py`）→ 侧边栏「拓展商店」→ 找到「灵枢记忆桥（AstrBot 插件）」→ 点「安装」。插件会被导出到 `~/.brain-memory/extensions/installed/astrbot_plugin_lingshu/`。
+2. 把 `extensions/installed/astrbot_plugin_lingshu/` 整个目录复制到 AstrBot 的 `data/plugins/` 下，然后在 AstrBot 插件管理页重载（或重启 AstrBot）。
+3. 之后按下方「手动方式」的 2–4 步完成配置与验收（`lingshu 状态` 等）。
+
+### 手动方式
 
 1. 安装方式二选一：**整目录复制**（推荐）——把本目录完整复制到 `data/plugins/astrbot_plugin_lingshu/` 后加载；或用 `python scripts/make_plugin_zip.py` 在仓库根生成 `astrbot.zip` 后在 AstrBot 插件管理中上传。不要把最外层的原始技能 ZIP 当成 AstrBot 插件上传。
 2. 核心目录自动联动：`lingshu_path` 留空时按「环境变量 `LINGSHU_PATH` → 插件内置 engine → 插件上层目录自动探测 `scripts/brain.py`」顺序查找，装好即用；也可手动填写包含 `scripts/brain.py` 的目录覆盖。自定义核心必须是本修订版，否则隔离修复不会生效。
@@ -18,6 +26,8 @@
 **记忆隔离开关** `memory_isolation` 默认开启：开启时自动召回的查询只基于用户本轮消息，宿主会话与人格设定不会进入灵枢侧，AstrBot 宿主回消息时使用宿主自己的人格画像；关闭后召回查询可附带 `astrbot_context_lines` 条 AstrBot 会话最近上下文（「AstrBotAI 联想」，0–10 条，默认 0 不附带），使联想更懂当前话题，代价是宿主会话内容会进入灵枢召回查询。无论开关状态，灵枢记忆都只以「不可信参考资料」块追加到 system_prompt，不改写宿主人格。`lingshu 状态` 会显示当前核心来源与隔离开关状态。
 
 用户身份包含平台实例，例如 `aiocqhttp@qq_bot:10001`；以“身份”命令返回的值为准。旧版 `qq:10001` / `aiocqhttp:10001` 白名单不会自动生效。
+
+上面所有开关都在 AstrBot 的插件配置页（与 AstrBot 自身设置同一个入口）里可改，改完重载插件即生效，不需要编辑 JSON。另外三个只读注入开关默认关闭、失败静默：`topic_enabled` 附带当前话题链、`mood_enabled` 附带灵枢当前心情摘要、`persona_brief` 附带既有 persona 简报；三者都只往 system_prompt 追加**不可信参考资料**块，绝不创建、写入或覆盖 `persona.json`。
 
 管理员可以在本机执行以下命令添加主人，将占位值换成实际解释器、核心路径、数据目录与完整用户身份。所有路径必须属于运行 AstrBot 的同一个系统/容器。
 

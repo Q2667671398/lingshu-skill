@@ -49,6 +49,21 @@
     "type": "int",
     "default": 1400
   },
+  "topic_enabled": {
+    "description": "话题栈注入：回溯时附带当前话题链（只读），让召唤更贴当前聊的事；默认关闭，失败静默降级",
+    "type": "bool",
+    "default": false
+  },
+  "mood_enabled": {
+    "description": "情绪注入：回溯时附带灵枢当前心情/状态摘要（只读），不改写宿主人格；默认关闭，失败静默降级",
+    "type": "bool",
+    "default": false
+  },
+  "persona_brief": {
+    "description": "人格简报注入：附带灵枢既有 persona 的只读简报；桥接从不创建、不写入、不覆盖 persona.json；默认关闭",
+    "type": "bool",
+    "default": false
+  },
   "auto_capture": {
     "description": "对话后自动写回用户消息到记忆库；默认关闭。开启后仅记录已显式 opt-in 的用户（用户发送「lingshu 允许记录」授权，「拒绝记录」撤回）；未授权用户的消息不落盘",
     "type": "bool",

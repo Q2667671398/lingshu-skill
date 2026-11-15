@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.09（2026-11-15）
+
+> 本轮主题：**记忆管控与可观测性**（第四批修复 #28/#19/#21/#24）+ app-im 聊天适配。
+
+- **冻结状态（#28）**：记忆新增 `frozen`/`frozen_at` 字段。`memory freeze/unfreeze <id>`、批量冻结（面板批量条 ❄/⇪ 按钮）；冻结的记忆不参与召回、注入与做梦（supersede/淡忘全部跳过）。CLI：`memory freeze <id>` / `memory unfreeze <id>`。
+- **梦抽检（#19）**：做梦后自动落盘 `dreams/verify-sample.json`（supersede 前后首/中/末 3 组对照，冻结记忆跳过）；CLI `dream --verify` 查看抽检、`dream --verify --done` 标记已复核；面板概览下发 `dream_verify`。
+- **staging 孤儿自动清理（#21）**：`growth.cleanup_stale_staging(older_than=3600)` 扫缓存 `staging-*` 与安装根 `*.apply-staging-*` 残留按 mtime 清理；doctor 与 serve 启动自动触发。
+- **锁记主机 + 写入者可见（#24）**：锁文件内容改为 `"<pid> <hostname>"`，`core.lock_writers()` 返回活着的写入者列表（含旧格式兼容）；面板概览显示当前写入者；doctor 第 9 项检查写入者。
+- **app-im 聊天适配**：新增 `cordis-plugin/lingshu-im/`（云湖 app-im 宿主插件），根 `index.js` 挂载第三子插件；README/SKILL/manifest 同步更新。
+
 ## v3.04（2026-11-14）
 
 > 本轮主题：**自我进化闭环**（第五轮借鉴 #36/#38/#39/#41）——从错误中提炼教训、峰值情绪塑造人格、建立机器可读的自模型。

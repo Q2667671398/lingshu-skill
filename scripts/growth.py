@@ -50,6 +50,23 @@ SKILL_REG = HOME / "skills.json"
 EXT_DIR = HOME / "extensions"
 
 
+def _recompute_home() -> None:
+    """HOME 切换后重算本模块的派生路径常量（core._sync_state 会调用）。
+    growth 因 import brain 形成循环导入，无法进 core._SYNC_TARGETS，单独提供重算入口。"""
+    global HOME, KNOWLEDGE_FILE, KNOWLEDGE_DIR, INDEX_FILE, NOTES_FILE, \
+        EVOLUTION_FILE, SKILLS_DIR, SKILL_REG, EXT_DIR, UPDATE_CACHE_FILE
+    HOME = brain.HOME
+    KNOWLEDGE_FILE = HOME / "knowledge.jsonl"
+    KNOWLEDGE_DIR = HOME / "knowledge"
+    INDEX_FILE = KNOWLEDGE_DIR / "index.json"
+    NOTES_FILE = HOME / "notes.jsonl"
+    EVOLUTION_FILE = HOME / "evolution.jsonl"
+    SKILLS_DIR = HOME / "skills"
+    SKILL_REG = HOME / "skills.json"
+    EXT_DIR = HOME / "extensions"
+    UPDATE_CACHE_FILE = HOME / "update_check.json"
+
+
 def _panel_root() -> Path:
     """面板/当前进程实际运行所在的技能根目录（growth.py 所在目录的上一级）。
 
@@ -1439,6 +1456,49 @@ def _remote_api(url: str, host: str = "") -> object:
             last_exc = e
             time.sleep(0.5 * (attempt + 1))
     raise last_exc
+
+
+def cleanup_stale_staging(older_than: float = 3600.0) -> dict:
+    """#21 清理被中断的更新留下的 staging 临时目录。
+
+    更新流程会先建 `staging-*`（下载解压）或 `<技能>.apply-staging-*`
+    （整目录替换的中转站），成功后 rename 走、失败时 finally 删。进程被强杀
+    （关面板/关机/任务管理器结束）时两者会残留，越积越多且看不出用途。
+    这里只清「超过 1 小时没动过」的——正在跑的更新不可能持有一个小时。
+    """
+    import shutil as _sh
+    removed = []
+    now = time.time()
+    targets = []
+    try:
+        cache = _remote_cache_dir()
+        if cache.is_dir():
+            targets += [p for p in cache.glob("staging-*") if p.is_dir()]
+    except OSError:
+        pass
+    try:
+        for root in _global_roots() or []:
+            parent = Path(root).parent
+            if parent.is_dir():
+                targets += [p for p in parent.glob("*.apply-staging-*") if p.is_dir()]
+    except OSError:
+        pass
+    seen = set()
+    for p in targets:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if now - p.stat().st_mtime < older_than:
+                continue
+            _sh.rmtree(p, ignore_errors=True)
+            removed.append(p.name)
+        except OSError:
+            continue
+    if removed:
+        log_event("maintenance", f"清理遗留 staging 临时目录 {len(removed)} 个：{', '.join(removed[:5])}")
+    return {"count": len(removed), "removed": removed}
 
 
 def _fetch_gitee_zip_source() -> Path:

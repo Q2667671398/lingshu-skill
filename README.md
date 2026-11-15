@@ -220,6 +220,13 @@ python scripts/brain.py assoc unlink m_3f2a... m_9c1d...
   自动探测全局技能目录里的 `scripts/brain.py`，跑 `startup` 并把人格、记忆、待办、
   行为指引以 UserMessage 形态 `agent.inject()` 进会话上下文——**会话一开始记忆就在
   上下文里**。`clear` / `compact` 不重复注入，进程内按 agent 去重。
+- **`lingshu-im`（dsh-im 桥接）**：装了 [`dsh-im`](https://github.com/xmanrui/dsh-im) 后，
+  QQ / 微信 / 飞书 / Telegram 等 IM 聊天也具备与 AstrBot 桥接一致的设置——`autoRecall`
+  对话前按用户本轮消息召回、`autoCapture` 对话后写回用户原话（须本人 `capture-on` 授权）、
+  `memoryIsolation` 隔离噪声、`recallBudget` / `captureMinChars` / `captureInterval` 控量控频。
+  身份来自 `dsh-im/session-pre-bind` 事件 + 宿主只读服务 `dshIm.describeConversationSync()`，
+  按「平台@机器人 / 发送者 / 群」三元组隔离；注入时顺带告诉模型本会话的
+  `--channel / --group / --user`，模型自己调灵枢 CLI 也不会写错身份。
 - 失败宽容：灵枢没装、Python 不在、超时——全部静默跳过，绝不阻塞会话；
   `brain.py startup` 只读记忆库，HOME 不可写时自动只读降级照样注入。
   **装完插件必须完全重启 DSH**——Host 的插件树（cordis bundles）是主进程启动时

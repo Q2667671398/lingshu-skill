@@ -24,6 +24,7 @@ import math
 import os
 import re
 import shutil
+import socket
 import sys
 import threading
 import time
@@ -64,6 +65,10 @@ def _default_home() -> Path:
 
 
 HOME = _default_home()
+
+# #24 多宿主可见：锁文件里除了 pid 还记主机名，共享盘上能看出"另一台机器在写"。
+# 提前定义，_locked 与 lock_writers 都引用它。
+_HOSTNAME = (socket.gethostname() or "unknown").strip() or "unknown"
 
 # 只读降级：能读不能写（沙箱写盘被拒、或迁移前临时挂载已有库时用）。
 # 触发方式：环境变量 BRAIN_MEMORY_READONLY=1、命令行 --ro，或运行前自动探测到 HOME 不可写。
@@ -1114,7 +1119,10 @@ def _locked(path: Path, timeout: float = 10.0):
     while True:
         try:
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
+            # #24 多宿主可见：锁里同时记 pid 与主机名（空格分隔）。
+            # _lock_owner 只取 split()[0]，旧格式/新格式都兼容；
+            # 记忆库放在网盘/共享目录时，能看出是"另一台机器"在写。
+            os.write(fd, f"{os.getpid()} {_HOSTNAME}".encode())
             os.close(fd)
             _HELD_LOCKS.add((str(lock), threading.get_ident()))  # 记住"本线程已持锁"，read_jsonl 自愈时避免重复抢锁
             break
@@ -1202,6 +1210,40 @@ def _lock_owner(lock: Path) -> int | None:
         return int(raw.split()[0]) if raw else None
     except (OSError, ValueError, IndexError):
         return None
+
+
+def lock_writers() -> list[dict]:
+    """#24 列出当前持锁的写入者（文件 / pid / 主机名 / 是否活着）。
+
+    记忆库放在共享盘时，同一份数据可能被多台机器同时写；这里把锁文件里
+    记下的 host 读出来，让面板和 `status` 能直接看见"谁在写"。
+    """
+    rows = []
+    try:
+        locks = sorted(HOME.glob("*.lock"))
+    except OSError:
+        return rows
+    for lock in locks:
+        try:
+            raw = lock.read_text(encoding="utf-8", errors="ignore").strip().lstrip("\ufeff")
+        except OSError:
+            continue
+        if not raw:
+            continue
+        parts = raw.split()
+        try:
+            pid = int(parts[0])
+        except (ValueError, IndexError):
+            continue
+        host = parts[1] if len(parts) > 1 else ""
+        rows.append({
+            "file": lock.name[:-5] if lock.name.endswith(".lock") else lock.name,
+            "pid": pid,
+            "host": host,
+            "alive": _pid_alive(pid) and (not host or host == _HOSTNAME),
+        })
+    return rows
+
 
 
 def _persona_txn(fn):
@@ -1470,6 +1512,15 @@ def _sync_state() -> None:
     snap = {k: v for k, v in dict(globals()).items() if not k.startswith("__")}
     for m in _SYNC_TARGETS:
         m.__dict__.update(snap)
+    # growth.py 不在 _SYNC_TARGETS（它在 brain 之后 import brain，会形成循环导入），
+    # 但它缓存了 HOME 与一批派生路径常量；这里 import 一次并调用它的重算入口，
+    # 让 --home 切换后 growth 的 knowledge/notes/skills 等路径也指向新目录
+    # （已在 sys.modules 里则零开销，首次 import 只是延后到现在，链路不变）。
+    try:
+        import growth  # noqa: E402
+        growth._recompute_home()
+    except Exception:
+        pass  # growth 未部署/导入失败：沿用原值，不影响记忆主链路
 
 
 # ---------------------------------------------------------------- 可选 embedding / rerank（P1）

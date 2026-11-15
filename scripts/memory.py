@@ -202,14 +202,36 @@ def set_memory_review(mid: str, status: str) -> dict:
 
 
 def review_report() -> dict:
-    """待审核清单：AI 记忆 / AI 知识 / AI 人格变更。"""
+    """待审核清单：AI 记忆 / AI 知识 / AI 人格变更。
+
+    记忆按影响分（#45：注入字数 + 取代条数加权）降序——影响大的改动排前面，
+    用户优先审"合并两条记忆、改写注入文本"这种大动作，而不是一条小补记。
+    """
     mems = []
+    # 旧 pending 记录没有 impact.superseded 字段：先扫一遍库建 superseded_by 反查表，
+    # 避免 N 条待审记忆 × 整库扫描的 O(n²)
+    _sup_count: dict = {}
+    for _x in load_all():
+        sb = _x.get("superseded_by")
+        if sb:
+            _sup_count[sb] = _sup_count.get(sb, 0) + 1
     for m in pending_memory_reviews():
         mid = m.get("id")
         if not mid:
             continue   # 畸形记录（缺 id）没法在报告里给定位，直接跳过
-        mems.append({"id": mid, "text": m.get("text", ""), "created": m.get("created"),
-                     "source": m.get("review_source", "dream")})
+        imp = m.get("impact") if isinstance(m.get("impact"), dict) else {}
+        n_sup = int(imp.get("superseded") or _sup_count.get(mid, 0))
+        item = {"id": mid, "text": m.get("text", ""), "created": m.get("created"),
+                "source": m.get("review_source", "dream"),
+                "impact": {"chars": int(imp.get("chars") or len(m.get("text") or "")),
+                           "entities": imp.get("entities") or m.get("entities") or [],
+                           "superseded": n_sup}}
+        # 影响分：注入字数为主，每取代一条旧记忆 +50 字当量（改写旧结论影响更大）
+        item["_impact_score"] = item["impact"]["chars"] + 50 * item["impact"]["superseded"]
+        mems.append(item)
+    mems.sort(key=lambda x: x["_impact_score"], reverse=True)
+    for x in mems:
+        x.pop("_impact_score", None)
     try:
         import growth
         kn = [{"id": k.get("id"), "title": k.get("title", ""), "topic": k.get("topic", "")}
@@ -250,7 +272,7 @@ def bulk_memory_action(ids: list, action: str, value=None) -> dict:
     if not ids:
         raise ValueError("没有选中任何记忆")
     if action not in ("confirm", "discard", "importance", "add_tags", "remove_tags",
-                      "pin", "unpin", "delete"):
+                      "pin", "unpin", "freeze", "unfreeze", "delete"):
         raise ValueError("不支持的批量操作")
     # 预校验参数：坏值在动库之前就报清楚，别让 float(None) 之类变成 500
     imp_val = None
@@ -293,6 +315,13 @@ def bulk_memory_action(ids: list, action: str, value=None) -> dict:
                 m["pinned"] = True
             elif action == "unpin":
                 m["pinned"] = False
+            elif action == "freeze":
+                # #28 冻结 = 保留但不主动出现：召回/注入/做梦都不碰，show 仍可查
+                m["frozen"] = True
+                m["frozen_at"] = now_ts()
+            elif action == "unfreeze":
+                m["frozen"] = False
+                m.pop("frozen_at", None)
             elif action == "delete":
                 if m.get("layer") != "dust":
                     m["layer"] = "dust"
@@ -844,6 +873,59 @@ def retention(m: dict, now: int | None = None) -> float:
 _KIND_STABILITY_FACTOR = {"mistake": 1.5, "relationship": 1.5, "identity": 2.0, "preference": 1.2}
 
 
+def activation(m: dict, now: int | None = None) -> float:
+    """#43 唤醒值（ACT-R activation + Memory Bear 遗忘引擎）：一条记忆"此刻有多容易被想起"。
+
+    activation = importance × R(艾宾浩斯保留度) × recency_bonus
+      - importance：写入时打分的多维重要性（#42）
+      - R：retention() 的指数衰减（stability 越大衰减越慢）
+      - recency_bonus：最近 3 天内被召回过给小额加成（用进废退）
+    取值 0~1，做梦/归档按它排序决定"谁先被压缩淡忘"，recall 命中则自然回升
+    （last_access 更新 → R 回升）。纯计算不改库，只读调用零风险。
+    """
+    now = now or now_ts()
+    imp = max(0.0, min(1.0, _num(m.get("importance"), 0.5)))
+    R = retention(m, now)
+    # 用进废退：3 天内想起过一次给 +0.08，封顶一次（连续想起靠 R 本身维持）
+    idle = now - _num(m.get("last_access"), _num(m.get("created"), now))
+    recency = 0.08 if idle <= 3 * DAY else 0.0
+    return round(max(0.0, min(1.0, imp * R + recency)), 4)
+
+
+# 唤醒值软处理阈值：做梦时 activation 低于此值的记忆降层/切断关联。
+# 不是删除——dust 层可 revive 复活，被意外召回（recall 触碰）后 R 回升即自然"复活"。
+ACTIVATION_FORGET_THRESHOLD = 0.06
+
+
+def activation_forget(records: list, now: int | None = None,
+                      threshold: float = ACTIVATION_FORGET_THRESHOLD) -> list:
+    """#43 唤醒值遗忘引擎（软处理）：对 activation < 阈值的活跃层记忆做三步弱化——
+    1) 降层到 dust；2) 切断 outgoing 关联边（别的记忆指向它的边不动，留复活线索）；
+    3) 清 embedding（向量召回不再命中，等 revive 后重新生成）。
+    不碰：pinned / correction / identity / 待审核 / 已经在 dust 的。
+    返回被处理的记录列表（调用方决定是否落盘）。"""
+    now = now or now_ts()
+    hit = []
+    by_id = {m.get("id"): m for m in records if m.get("id")}
+    for m in records:
+        if m.get("layer") not in ("hippo", "cortex") or m.get("pinned"):
+            continue
+        if m.get("correction") or m.get("kind") == "identity" or m.get("review") == "pending":
+            continue
+        if activation(m, now) < threshold:
+            m["layer"] = "dust"
+            m["forgotten_at"] = now
+            m["detail"] = round(max(0.12, _num(m.get("detail"), 1) * 0.4), 2)
+            m.pop("embedding", None)          # 向量降级：复活后 _embed_wanted 会重新调度
+            for sid in (m.get("links") or []):
+                src = by_id.get(sid)
+                if src and src.get("links"):
+                    src["links"] = [x for x in src["links"] if x != m["id"]]
+            m["links"] = []
+            hit.append(m)
+    return hit
+
+
 def boost(memory_id: str) -> dict:
     """遗忘纠正：recall 命中后判定某条淡忘记忆仍重要时，一键拉回——
     last_access 重置为现在（R 回 1、衰减计时归零），稳定度提升一档（×1.5，上限 90 天）。
@@ -874,7 +956,41 @@ def boost(memory_id: str) -> dict:
             "stability": found["stability"], "old_stability": old_s}
 
 
-def heuristic_importance(text: str, kind: str) -> float:
+def set_frozen(memory_id: str, frozen: bool = True) -> dict:
+    """#28 冻结 / 解冻单条记忆。
+
+    冻结 = 保留但不主动出现：召回、启动注入、做梦合并/淡忘都跳过它，
+    但 show / 面板仍可查看，解冻后立即恢复参与。用于"这条别再用，但也别删"。
+    """
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法冻结/解冻。")
+    ensure_home()
+    mid = str(memory_id or "").strip()
+    records = load_all()
+    found = next((m for m in records if str(m.get("id") or "") == mid), None)
+    if not found:
+        raise LookupError(f"没找到记忆 {mid}（活跃层与淡忘区都搜过了）。")
+    if bool(found.get("frozen")) == bool(frozen):
+        return {"ok": True, "id": mid, "frozen": bool(frozen), "changed": False}
+    found["frozen"] = bool(frozen)
+    if frozen:
+        found["frozen_at"] = now_ts()
+    else:
+        found.pop("frozen_at", None)
+    save_all(records)
+    audit_log("user", "freeze" if frozen else "unfreeze", mid, "冻结，不参与召回/注入" if frozen else "解冻")
+    log_event("memory", f"{'冻结' if frozen else '解冻'}了 {mid}")
+    return {"ok": True, "id": mid, "frozen": bool(frozen), "changed": True}
+
+
+def heuristic_importance(text: str, kind: str, entities=None,
+                         correction: bool = False, emotional: float = 0.0) -> float:
+    """#42 多维重要性打分：写入时就回答"这条记忆有多重要"。
+
+    维度（SCM multi-dimensional importance / Memory Bear activation 的轻量版）：
+      kind 基线 → 命中关键词 → 文本长度 → 实体数量 → 情绪强度 → 是否 correction。
+    打分只影响起步权重，后续回忆次数/做梦巩固仍会拉开差距。
+    """
     base = {
         "identity": 0.95, "insight": 0.75, "preference": 0.70,
         "habit": 0.65, "emotion": 0.60, "fact": 0.58, "episode": 0.40,
@@ -886,6 +1002,16 @@ def heuristic_importance(text: str, kind: str) -> float:
         base += 0.15
     if len(text) >= 60:
         base += 0.05
+    # 实体维度：涉及的人/物越多，关系网络价值越高（上限 +0.10）
+    n_ent = len(entities or [])
+    if n_ent:
+        base += min(0.10, 0.04 * n_ent)
+    # 情绪维度：写入时情绪越激动记得越牢（调用方已算好的 arousal，0~1）
+    if emotional > 0:
+        base += min(0.12, 0.12 * _num(emotional, 0.0))
+    # correction 维度：被纠正过的说法是失败闭环第一手证据，起步就该高
+    if correction:
+        base = max(base, 0.75)
     return max(0.05, min(1.0, round(base, 2)))
 
 
@@ -1116,14 +1242,19 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
                          "`brain.py emotion list` 查看全部）")
     records = None  # 锁内读取：见下方 _locked 作用域
     new_terms = terms(text)
-    # 入口统一强转：importance 可能是模型给的字符串/NaN，后续比较会抛 TypeError
-    imp = _num(importance if importance is not None else heuristic_importance(text, kind),
-               heuristic_importance(text, kind))
 
     # 情绪增强编码（杏仁核标记）：情绪激动时经历的事记得更牢。
     # 显式给了 emotion 就用它；没给时，若此刻正好情绪激动（唤醒≥0.65），
     # 自动把当时最重的情绪标在这条记忆上——"发生在情绪上头那一刻的事"。
     emo_name, emo_arousal, boost = "", 0.0, 0.0
+    _correction_flag = bool(correction)
+    # #42 多维重要性：没显式给 importance 时，用多维启发式打分（含实体/情绪/correction 维度）
+    if importance is None:
+        imp = heuristic_importance(text, kind, entities=entities,
+                                   correction=_correction_flag, emotional=0.0)
+    else:
+        imp = _num(importance, heuristic_importance(text, kind, entities=entities,
+                                                    correction=_correction_flag))
     if emotion:
         if emotion in EMOTIONS:
             emo_name, emo_arousal = emotion, _emotion_coord(emotion)[1]
@@ -1134,6 +1265,9 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
             emo_arousal = float(m["active"][0].get("arousal", 0))
     if emo_name and emo_arousal >= 0.45:
         boost = 0.08 * emo_arousal
+        # #42 情绪维度：唤醒度也参与写入时打分（不只是 stability 加成）
+        if importance is None:
+            imp = min(1.0, imp + 0.12 * emo_arousal)
         imp = min(1.0, (imp if imp <= 1 else imp / 10) + boost)
         stability_boost = 1.0 + 0.9 * emo_arousal
     else:
@@ -1209,6 +1343,8 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
         # 且合并/淡忘/归档路径都会跳过（永不自动合并消失），只有人工才能处理。
         if correction:
             rec["correction"] = True
+            # #42 correction 维度：改口记录起步重要性至少 0.75
+            rec["importance"] = max(rec.get("importance", 0.5), 0.75)
         rec["importance"] = round(float(rec.get("importance", 0.5)) + (boost if emo_name else 0), 3)
         rec["importance"] = max(0.0, min(1.0, rec["importance"]))
         # 高重要性待审闸：重要性 ≥0.8（10 分制 ≥8）的记忆多半是约定/承诺/重要决定，
@@ -1476,7 +1612,7 @@ def rebuild_embeddings(force: bool = False) -> dict:
         if fb_dims is None:
             raise RuntimeError(
                 "embedding 服务未配置（config.json 的 embed.url 为空），且降级向量兜底未启用，"
-                "无法重建。先配置 embed 服务，或在面板「拓展」页启用 Ollama。")
+                "无法重建。先配置 embed 服务，或在面板「本地能力」页启用 Ollama。")
         model_name = f"fallback-hash-{fb_dims}d"
 
     records = load_all() + load_archive()
@@ -1689,14 +1825,56 @@ def _channel_visible(m: dict, channel, group_id, user) -> bool:
     return own or not m_user or _consented(m_user, group_id)
 
 
+def dereference(memory_id: str) -> list:
+    """#46 Memex 解引用：按 id 取一份摘要/蒸馏产物的证据原文。
+
+    返回 evidence_ids 指向的记忆（含被 supersede 的旧说法——那是"当时的原文"，
+    正是解引用最想拿回的证据；recall 默认跳过被取代者，这里显式放行）。
+    没有指针或证据已被物理清理时返回空列表，调用方按"无证据"降级。
+    """
+    rec = None
+    for m in load_all():
+        if m.get("id") == memory_id:
+            rec = m
+            break
+    if rec is None:
+        # 主层没有，翻归档（老证据可能已归档）
+        for m in load_archive():
+            if m.get("id") == memory_id:
+                rec = m
+                break
+    if rec is None:
+        return []
+    ev_ids = [str(x) for x in (rec.get("evidence_ids") or rec.get("source_ids") or [])
+              if str(x).strip()]
+    if not ev_ids:
+        return []
+    want = set(ev_ids)
+    out = []
+    for m in load_all() + load_archive():
+        if m.get("id") in want:
+            out.append({"id": m["id"], "kind": m.get("kind", ""), "layer": m.get("layer", ""),
+                        "text": m.get("text", ""), "created": m.get("created"),
+                        "superseded_by": m.get("superseded_by")})
+            want.discard(m["id"])
+            if not want:
+                break
+    return out
+
+
 def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
            strengthen: bool = True, include_dust: bool = False,
            include_archive: bool = False,
            channel: str | None = None, group_id: str | None = None,
            user: str | None = None,
            target_user: str | None = None, asker: str | None = None,
-           mode: str = "auto", _archive_pass: int = 0) -> list:
+           mode: str = "auto", with_evidence: bool = False, _archive_pass: int = 0) -> list:
     """模糊回忆：相关度 + 近期性 + 重要性 + 联想扩散。返回 [(record, score, parts), ...]
+
+    with_evidence=True（#46 Memex 解引用）：命中带 evidence_ids 指针的记忆（做梦合并/
+    蒸馏产物）时，自动取回最多 2 条证据原文，作为 parts["evidence"] 列表附上
+    （每条含 id/text，text 截 300 字）。默认 False——注入 prompt 的常规召回保持轻量；
+    需要"追原文"的深度整理场景显式开启，或用 dereference(memory_id) 单条按需取。
 
     mode 三种显式召回模式（#27）：
       * "fast"：只用词面/实体索引匹配——不调 embedding（dense）、不做 rerank 精排、
@@ -1735,6 +1913,8 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     # 被取代的记忆默认跳过：观念已更新，回忆里只出现新说法；
     # 需要"翻旧账"时走 show 单条查，沿 superseded_by 链还能回溯到旧观念。
     records = [m for m in records if not m.get("superseded_by")]
+    # #28 冻结的记忆不参与召回（面板/CLI 解冻后立即恢复），show 仍可单条查
+    records = [m for m in records if not m.get("frozen")]
     # 通道上下文的群间隔离：先物理过滤，其他群的记忆根本不进打分
     if channel is not None or group_id is not None or user is not None:
         records = [m for m in records if _channel_visible(m, channel, group_id, user)]
@@ -2057,6 +2237,20 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     # 实际生效模式写进每条 parts：调用方/前端可透传展示，不用猜到底走了哪条路
     for m, s, parts in result:
         parts["mode"] = eff_mode
+    # #46 Memex 解引用（可选）：带证据指针的命中自动附最多 2 条证据原文，
+    # 让"概括 → 细节"两级可导航；失败/无指针静默降级，不影响召回主链路。
+    if with_evidence and result:
+        for m, s, parts in result:
+            ev_ids = [str(x) for x in (m.get("evidence_ids") or []) if str(x).strip()]
+            if not ev_ids:
+                continue
+            try:
+                ev = dereference(m["id"])[:2]
+                if ev:
+                    parts["evidence"] = [{"id": e["id"], "text": (e.get("text") or "")[:300]}
+                                         for e in ev]
+            except Exception as e:
+                log_event("recall", f"证据解引用失败（{m.get('id')}）：{e}", level="warn")
     return [(m, round(s, 4), parts) for m, s, parts in result]
 
 
@@ -3293,7 +3487,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
 
     # mistake / relationship 各取最近 3 条非 dust——一次 recent(40) 全量读盘后分拣
     try:
-        _recent40 = recent(40)
+        _recent40 = [m for m in recent(40) if not m.get("frozen")]
         _mistakes = [m for m in _recent40 if m.get("kind") == "mistake"
                      and m.get("layer") != "dust"][:3]
         _rels = [m for m in _recent40 if m.get("kind") == "relationship"
@@ -3431,9 +3625,11 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         # 并从「最近的记忆」里剔除，两段互斥不重复。
         # >= 而非 >：同秒写入（startup 落盘和 remember 同一秒很常见）也要算进来。
         _last = (load_config().get("last_startup") or {}).get("ts") or 0
-        new_mem = [m for m in recent(20) if _num(m.get("created"), 0) >= _last][:4]
+        new_mem = [m for m in recent(20) if not m.get("frozen")
+                   and _num(m.get("created"), 0) >= _last][:4]
         _new_ids = {m.get("id") for m in new_mem}
-        mems = [(m, 0, {}) for m in recent(6 + len(new_mem)) if m.get("id") not in _new_ids][:6]
+        mems = [(m, 0, {}) for m in recent(6 + len(new_mem))
+                if not m.get("frozen") and m.get("id") not in _new_ids][:6]
         header = "\n## 最近的记忆"
     lines, kept_mems = [], []
     # c1c 预算不够时先砍谁：低重要度 × 高衰减（retention 低）的先丢。

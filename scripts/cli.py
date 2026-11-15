@@ -1193,6 +1193,12 @@ def _main(argv=None) -> int:
     p_rec.add_argument("--mode", default="auto", choices=["fast", "deep", "auto"],
                        help="召回模式：fast=只词面（低延迟）/ deep=全量（向量+关联+冲突提示）"
                             "/ auto=自适应（默认）")
+    p_rec.add_argument("--evidence", action="store_true",
+                       help="带证据解引用：做梦合并/蒸馏产物命中时自动附最多 2 条证据原文（#46）")
+
+    p_deref = sub.add_parser("deref", help="按需解引用：取一条记忆的证据原文（#46 Memex）")
+    p_deref.add_argument("memory_id", help="记忆 id（通常是合并/蒸馏产物的 id）")
+    p_deref.add_argument("--json", action="store_true")
 
     p_inj = sub.add_parser("inject", help="生成记忆注入包")
     p_inj.add_argument("query", nargs="*", default=[])
@@ -1205,6 +1211,9 @@ def _main(argv=None) -> int:
     p_dream.add_argument("--apply", default=None, help="应用整理结果 JSON")
     p_dream.add_argument("--dry-run", action="store_true")
     p_dream.add_argument("--auto", action="store_true", help="自动做梦：重放→启发式压缩→沉淀，不依赖外部脚本")
+    # #19 梦抽检：看最近一次合并的前后对照，--done 标记已复核
+    p_dream.add_argument("--verify", action="store_true", help="查看最近一次做梦的合并前后对照（抽检 3 组）")
+    p_dream.add_argument("--done", action="store_true", help="配合 --verify：标记这次抽检已复核")
 
     p_per = sub.add_parser("persona", help="人格查看与编辑")
     p_per.add_argument("action", nargs="?", default="show",
@@ -1473,6 +1482,11 @@ def _main(argv=None) -> int:
     mem_sub.add_parser("fix-links", help="一键清理死链：摘除指向不存在 id 的 links/conflicts/superseded_by（不删记忆）")
     p_mem_boost = mem_sub.add_parser("boost", help="遗忘纠正（v3.01）：判定某条淡忘记忆仍重要时拉回——R 回 1、稳定度 ×1.5")
     p_mem_boost.add_argument("id", help="记忆 id（如 m_xxx）")
+    # #28 记忆冻结：保留但不主动出现（召回/注入/做梦都跳过），可随时解冻
+    p_mem_freeze = mem_sub.add_parser("freeze", help="冻结记忆（#28）：保留但不参与召回/注入/做梦，可解冻")
+    p_mem_freeze.add_argument("id", help="记忆 id（如 m_xxx）")
+    p_mem_unfreeze = mem_sub.add_parser("unfreeze", help="解冻记忆（#28）：恢复参与召回/注入")
+    p_mem_unfreeze.add_argument("id", help="记忆 id（如 m_xxx）")
     # v3.02 #10：事实保质期复核
     mem_sub.add_parser("review-list", help="列出已到期、该找用户复核的事实记忆（--ttl/--review-at）")
     p_mem_rc = mem_sub.add_parser("review-confirm", help="复核确认：这条事实用户确认过还作数，不再注入「待复核」提醒")
@@ -1760,7 +1774,7 @@ def _main(argv=None) -> int:
                 _print_mem(m)
             return 0
         results = recall(query, args.k, include_archive=args.include_archive,
-                         mode=args.mode)
+                         mode=args.mode, with_evidence=args.evidence)
         record_retrieval(query, results, channel="recall")
         # 知识条目命中提示：recall 原本只查记忆层，顺带在 knowledge.jsonl 里做
         # 简单词面匹配——这个问题曾被沉淀成知识时先亮出来（含待审核条目），
@@ -1798,6 +1812,27 @@ def _main(argv=None) -> int:
             print(f"回忆「{query}」→ {len(results)} 条\n")
             for m, s, parts in results:
                 _print_mem(m, s, parts)
+        return 0
+
+    if args.cmd == "deref":
+        # #46 Memex 按需解引用：摘要/蒸馏产物 → 证据原文
+        try:
+            ev = dereference(args.memory_id)
+        except (PermissionError, ValueError) as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps({"memory_id": args.memory_id, "evidence": ev},
+                             ensure_ascii=False, indent=2))
+            return 0
+        if not ev:
+            print(f"「{args.memory_id}」没有可解引用的证据（无指针或证据已清理）。")
+            return 0
+        print(f"「{args.memory_id}」的证据原文 {len(ev)} 条：\n")
+        for e in ev:
+            tag = "（已过时·被取代）" if e.get("superseded_by") else ""
+            print(f"  {e['id']}  {e.get('kind', '')} {tag}  {fmt_time(e.get('created'))}")
+            print(f"    {(e.get('text') or '')[:300]}")
         return 0
 
     if args.cmd == "usage":
@@ -1854,6 +1889,25 @@ def _main(argv=None) -> int:
         return 0
 
     if args.cmd == "dream":
+        if getattr(args, "verify", False):
+            sample = load_verify_sample()
+            if not sample:
+                print("还没有抽检样本：等下一次 dream --apply 合并过记忆后再看。")
+                return 0
+            if getattr(args, "done", False):
+                mark_verify_reviewed()
+                print("已标记本次抽检为已复核。")
+                return 0
+            print(f"梦抽检（任务 {sample.get('task_id') or '—'}）：本次共合并 {sample.get('total_merges', 0)} 组，"
+                  f"抽 {len(sample.get('items') or [])} 组对照"
+                  + ("（已复核）" if sample.get("reviewed") else "") + "\n")
+            for i, it in enumerate(sample.get("items") or [], 1):
+                print(f"--- 第 {i} 组 ---")
+                for b in it.get("before") or []:
+                    print(f"合并前 [{b.get('id')}]：{b.get('text')}")
+                print(f"合并后 [{it.get('new_id')}]：{it.get('after')}\n")
+            print("看完用 `brain.py dream --verify --done` 标记已复核。")
+            return 0
         if args.auto:
             try:
                 res = auto_dream(args.trigger, args.dry_run)
@@ -2879,6 +2933,26 @@ def _main(argv=None) -> int:
         except Exception as e:
             checks.append(("version-matrix", "FAIL", str(e)))
 
+        # 8. #21 自动清理被中断的更新留下的 staging 临时目录（>1 小时没动才清）
+        try:
+            import growth as _growth
+            cl = _growth.cleanup_stale_staging()
+            checks.append(("staging", "PASS",
+                           f"清理遗留临时目录 {cl['count']} 个" if cl["count"] else "无遗留临时目录"))
+        except Exception as e:
+            checks.append(("staging", "WARN", str(e)))
+        # 9. #24 当前写入者：锁文件里记的 pid/主机（多机共享记忆库时能看见另一台）
+        try:
+            writers = lock_writers()
+            if writers:
+                checks.append(("writers", "PASS", " · ".join(
+                    f"{w['file']}@{w['host'] or '?'}:{w['pid']}{'' if w['alive'] else '(已退出)'}"
+                    for w in writers[:4])))
+            else:
+                checks.append(("writers", "PASS", "当前没有进行中的写入"))
+        except Exception as e:
+            checks.append(("writers", "WARN", str(e)))
+
         fails = sum(1 for _, s, _ in checks if s == "FAIL")
         warns = sum(1 for _, s, _ in checks if s == "WARN")
         if args.json:
@@ -3503,6 +3577,12 @@ def _main(argv=None) -> int:
     if args.cmd == "serve":
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import panel_server
+        # #21 面板启动顺手清一次遗留 staging（被强杀的更新留下的临时目录）
+        try:
+            import growth as _growth
+            _growth.cleanup_stale_staging()
+        except Exception:
+            pass
         port = args.port or int(load_config().get("panel_port", 8765))
         try:
             panel_server.serve(port, open_browser=not args.no_browser)
@@ -3617,6 +3697,20 @@ def _main(argv=None) -> int:
             print(f"  last_access→现在（R 回 1），稳定度 {r['old_stability']:.0f}s→{r['stability']:.0f}s")
             if (r.get("layer") or "") == "dust":
                 print("  提示：这条在淡忘区，想整条复活回活跃层用 `memory dust revive <id>`。")
+            return 0
+        # #28 记忆冻结：保留但不主动出现（召回/注入/做梦都跳过），可随时解冻
+        if mem_cmd in ("freeze", "unfreeze"):
+            try:
+                r = set_frozen(args.id, frozen=(mem_cmd == "freeze"))
+            except (LookupError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            if not r.get("changed"):
+                print(f"{r['id']} 已经是{'冻结' if r['frozen'] else '解冻'}状态，没有改动。")
+            else:
+                print(f"{'已冻结' if r['frozen'] else '已解冻'}：{r['id']}")
+                if r["frozen"]:
+                    print("  冻结后不参与召回/启动注入/做梦合并，用 show 仍可查看；解冻立即恢复。")
             return 0
         # v3.02 #10：事实保质期复核——到期列出 / 用户确认后静音
         if mem_cmd == "review-list":

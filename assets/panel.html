@@ -280,8 +280,8 @@
       <button data-tab="dream" aria-label="梦"><span class="ic">✦</span><span>梦</span></button>
       <button data-tab="logs" aria-label="日志"><span class="ic">☰</span><span>日志</span></button>
       <button data-tab="diag" aria-label="自诊断"><span class="ic">✚</span><span>诊断</span></button>
-      <button data-tab="store" aria-label="拓展商店"><span class="ic">⇘</span><span>拓展</span></button>
-      <button data-tab="ext" aria-label="扩展"><span class="ic">⬢</span><span>扩展</span></button>
+      <button data-tab="store" aria-label="插件商店"><span class="ic">⇘</span><span>插件商店</span></button>
+      <button data-tab="ext" aria-label="本地能力"><span class="ic">⬢</span><span>本地能力</span></button>
       <button id="btn-panels" aria-label="面板管理"><span class="ic">▧</span><span>面板</span></button>
     </nav>
     <div class="sidefoot" id="sidefoot"></div>
@@ -423,6 +423,8 @@
         <button class="ghost" id="bulk-tag-rm">批量删标签</button>
         <button class="ghost" id="bulk-pin">批量置顶</button>
         <button class="ghost" id="bulk-unpin">批量取消置顶</button>
+        <button class="ghost" id="bulk-freeze" title="冻结后不参与召回/注入/做梦，仍可查看">❄ 批量冻结</button>
+        <button class="ghost" id="bulk-unfreeze">批量解冻</button>
         <button class="ghost" id="bulk-delete" style="color:var(--red)">批量删除</button>
       </div>
       <div id="layer-bar" class="card" style="margin-bottom:14px;padding:10px 16px" title="记忆库各层分布"></div>
@@ -904,7 +906,7 @@
       <div class="card" style="margin-bottom:14px">
         <div class="row" style="flex-wrap:wrap">
           <div>
-            <h2 style="margin-bottom:4px">拓展商店</h2>
+            <h2 style="margin-bottom:4px">插件商店</h2>
             <div class="sub">灵枢的宿主适配插件（AstrBot / cordis 等）都在这里。点「安装」导出到
               <code>~/.brain-memory/extensions/installed/</code>，再按各插件说明复制到宿主的插件目录即可启用。</div>
           </div>
@@ -921,7 +923,7 @@
       <div class="card" style="margin-bottom:14px">
         <div class="row" style="flex-wrap:wrap">
           <div>
-            <h2 style="margin-bottom:4px">扩展</h2>
+            <h2 style="margin-bottom:4px">本地能力</h2>
             <div class="sub">给灵枢加装本地能力：装好的扩展自动接入，卸载只需删目录。</div>
           </div>
           <div class="row" style="margin-left:auto">
@@ -1153,6 +1155,7 @@ function memCard(m){
         ${pending ? `<span class="badge" style="background:rgba(230,100,80,.18);color:#e66450" title="AI 整理出来的，还没人工确认，确认前不算事实">待审核</span>` : ""}
         ${m.conflict_flag ? `<span class="badge" style="background:rgba(217,164,65,.18);color:var(--amber)" title="与旧记忆有矛盾，待人工裁决：确认后取代旧说法，废弃则旧说法继续有效">⚔️ 冲突待裁决</span>` : ""}
         ${m.folded ? `<span class="badge" title="原文已收起，点右侧 ⇱ 展开还原或 ⤴ 复活">折叠</span>` : ""}
+        ${m.frozen ? `<span class="badge" style="background:rgba(110,150,220,.18);color:#6e96dc" title="已冻结：不参与召回/注入/做梦，仍可查看与解冻">❄ 冻结</span>` : ""}
         ${m.project && m.project !== "default" ? `<span class="badge" title="来源归属：project/session">⌗ ${esc(m.project)}${m.session && m.session !== "default" ? " / " + esc(m.session) : ""}</span>` : ""}
         <span class="badge">${esc(KIND[m.kind] || m.kind)}</span>
         ${m.emotion ? `<span class="badge" style="background:rgba(233,196,106,.16);color:var(--amber)" title="情绪增强编码：情绪强烈时记住的事更牢">♡ ${esc(m.emotion)}</span>` : ""}
@@ -1173,6 +1176,7 @@ function memCard(m){
           : `<button class="iconbtn" title="折叠（原文收起，只留摘要；可随时展开还原）" data-dustact="fold" data-dustid="${esc(m.id)}">⇲</button>`)
           + `<button class="iconbtn" title="复活（还原原文并回到活跃层）" data-dustact="revive" data-dustid="${esc(m.id)}">⤴</button>` : ""}
       <button class="iconbtn ${m.pinned ? "pin" : ""}" title="置顶/取消" data-pin="${esc(m.id)}">◈</button>
+      <button class="iconbtn ${m.frozen ? "pin" : ""}" title="${m.frozen ? "解冻（恢复参与召回/注入）" : "冻结（保留但不参与召回/注入/做梦）"}" data-freeze="${esc(m.id)}" data-frozen="${m.frozen ? 1 : 0}">${m.frozen ? "☀" : "❄"}</button>
       <button class="iconbtn" title="遗忘纠正：稳定度×1.5，恢复被淡忘的记忆" data-boost="${esc(m.id)}">⚡</button>
       <button class="iconbtn" title="编辑" data-edit="${esc(m.id)}">✎</button>
       <button class="iconbtn" title="忘记" data-forget="${esc(m.id)}">✕</button>
@@ -1241,7 +1245,12 @@ function renderOverview(){
     + `<br><br><b>会话模式</b><br>${esc(modeLabel(ov.mode))} <a href="javascript:void 0" data-mode-cycle style="color:var(--amber)">切换</a>`
     + (rcTotal ? `<br><br><b style="color:#e66450">待审核 ${rcTotal} 项</b><br>记忆 ${rc.memories || 0} · 知识 ${rc.knowledge || 0} · 人格 ${rc.persona || 0}` : "")
     + ((ov.persona_drift && ov.persona_drift.alert) ? `<br><br><b style="color:#e66450">人格漂移偏大</b><br><a href="#" data-goto="persona" style="color:var(--amber)">去人格页查看/回滚 →</a>` : "")
-    + (ov.readonly ? `<br><b style="color:var(--red)">只读模式</b>` : "");
+    + (ov.readonly ? `<br><b style="color:var(--red)">只读模式</b>` : "")
+    // #24 当前写入者：多机共享记忆库时，锁文件里的 host 让"另一台在写"变得可见
+    + ((ov.writers && ov.writers.length)
+        ? `<br><br><b>当前写入者</b><br>` + ov.writers.map(w =>
+            `${esc(w.file)} · ${esc(w.host || "?")}:${w.pid}${w.alive ? "" : "（已退出）"}`).join("<br>")
+        : "");
 
   const roBanner = $("ro-banner");
   if (roBanner) roBanner.classList.toggle("hidden", !ov.readonly);
@@ -2735,8 +2744,8 @@ function switchTab(tab){
     dream: ["梦", "把经历压缩成长期记忆"],
     logs: ["日志", "运行记录：锁冲突 / 内部异常 / 解析报错"],
     diag: ["自诊断", "归因异常：死链 / 冲突未裁决 / 数据膨胀 / 来源归属"],
-    store: ["拓展商店", "AstrBot / cordis 等宿主适配插件，点安装导出后接入宿主"],
-    ext: ["扩展", "本地能力一键安装：Ollama 语义召回等"]
+    store: ["插件商店", "AstrBot / cordis 等宿主适配插件，点安装导出后接入宿主"],
+    ext: ["本地能力", "本地能力一键安装：Ollama 语义召回等"]
   };
   const t = titles[tab] || titles.overview;   // 未知 tab（旧缓存/坏链接）兜底，别在标题上抛 TypeError
   $("pageTitle").textContent = t[0];
@@ -2908,7 +2917,8 @@ document.addEventListener("click", async (e) => {
   const pin = e.target.closest("[data-pin]"), ed = e.target.closest("[data-edit]"), fg = e.target.closest("[data-forget]");
   const rv = e.target.closest("[data-review]");
   const bo = e.target.closest("[data-boost]");
-  if (!pin && !ed && !fg && !rv && !bo) return;
+  const fz = e.target.closest("[data-freeze]");
+  if (!pin && !ed && !fg && !rv && !bo && !fz) return;
   const findMem = id => (S.memIndex && S.memIndex[id]) || (S.ov && S.ov.memories.find(x => x.id === id));
   // 写操作按钮 loading + disabled：防止网络慢时连点造成重复提交
   const busy = btn => { btn.disabled = true; btn.classList.add("loading"); };
@@ -2940,6 +2950,15 @@ document.addEventListener("click", async (e) => {
       const r = await api("/api/memory/boost", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: bo.dataset.boost})});
       if (r.ok) { toast("已纠正遗忘：这条记忆稳定度提升、访问时间刷新"); load(); }
       else toast(r.error || "纠正失败", true);
+    }
+    if (fz) {
+      const m = findMem(fz.dataset.freeze);
+      if (!m) { toast("数据已变化，请刷新", true); return; }
+      const toFreeze = !m.frozen;
+      busy(fz);
+      await post("/api/memory/bulk", {ids: [m.id], action: toFreeze ? "freeze" : "unfreeze"});
+      toast(toFreeze ? "已冻结：不参与召回/注入/做梦，仍可查看" : "已解冻：恢复参与召回/注入");
+      load();
     }
     if (ed) {
       const m = findMem(ed.dataset.edit);
@@ -3440,6 +3459,8 @@ $("bulk-tag-add").addEventListener("click", () => bulkTags(false));
 $("bulk-tag-rm").addEventListener("click", () => bulkTags(true));
 $("bulk-pin").addEventListener("click", () => bulkRun("pin", null, null));
 $("bulk-unpin").addEventListener("click", () => bulkRun("unpin", null, null));
+$("bulk-freeze").addEventListener("click", () => bulkRun("freeze", null, "冻结选中的记忆？冻结后不参与召回/注入/做梦，但仍可查看与解冻。"));
+$("bulk-unfreeze").addEventListener("click", () => bulkRun("unfreeze", null, null));
 $("bulk-delete").addEventListener("click", () => bulkRun("delete", null, "把选中的记忆全部移入淡忘区？可从淡忘区回捞。"));
 
 // ---- "/" 快捷键：非输入框聚焦时，聚焦记忆页搜索框
@@ -3627,7 +3648,7 @@ document.addEventListener("click", async e => {
   } catch (err) { console.error(verb + "失败:", err); toast(err.message, true); btn.disabled = false; }
 });
 
-// ---- 拓展商店
+// ---- 插件商店
 async function renderStore(){
   const box = $("store-list"); if (!box) return;
   box.innerHTML = `<div class="sub">加载中…</div>`;

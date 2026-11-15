@@ -821,7 +821,14 @@ def _prune_snapshots(keep: int = PERSONA_SNAP_KEEP) -> None:
 
 
 def persona_snapshot(label: str = "") -> dict:
-    """给当前人格拍一张快照（完整副本）。恢复基准 + 漂移对比都靠它。"""
+    """给当前人格拍一张快照（完整副本）。恢复基准 + 漂移对比都靠它。
+
+    注意：本函数走**目录版快照**（PERSONA_SNAP_DIR/persona_snapshots/），与
+    save_persona_snapshot 的 JSONL 版（persona_snapshots.jsonl 自动快照链）是
+    两套互相独立的机制——目录版不进 JSONL 自动链；回滚目录版快照请用对应的
+    目录版 diff/restore 入口（persona_diff / persona_restore），不要用
+    rollback_persona_snapshot（那个只认 JSONL 版）。
+    """
     if READONLY:
         raise PermissionError("记忆库当前只读，无法拍快照。")
     p = load_persona()
@@ -833,7 +840,9 @@ def persona_snapshot(label: str = "") -> dict:
         _prune_snapshots()
     except Exception:
         pass
-    return {"path": str(path), "ts": now_ts(), "label": label.strip() or "快照"}
+    return {"path": str(path), "ts": now_ts(), "label": label.strip() or "快照",
+            "note": "此快照走目录版（persona_snapshots/ 目录），不进 persona_snapshots.jsonl "
+                    "自动快照链；回滚请用对应的目录版 diff/restore 入口"}
 
 
 def persona_snapshots(limit: int = 30) -> list:
@@ -845,7 +854,8 @@ def persona_snapshots(limit: int = 30) -> list:
         if not isinstance(d, dict):
             continue
         rows.append({"name": f.stem, "ts": int(d.get("ts", 0)),
-                     "label": d.get("label", f.stem)})
+                     "label": d.get("label", f.stem),
+                     "action": str(d.get("action") or "")})
     rows.sort(key=lambda x: -x["ts"])
     return rows[:limit]
 
@@ -947,6 +957,74 @@ def _persona_stability_score(diff: list, ai_count: int) -> int:
     stable_diff = len([d for d in diff if d.get("section") != "drives"])
     score = 100 - stable_diff * 10 - ai_count * 5
     return max(0, min(100, score))
+
+
+# ---------------------------------------------------------------- 月度漂移自检（#44）
+# 借鉴 muu driftReport：AI 定期对照一份"冻结基准"自省——我是不是变得不像当初
+# 的我了？基准是显式冻结的 persona snapshot（月检触发时自动拍一张），不依赖
+# "碰巧最近有没有快照"；对比结果落盘 persona.json 的 drift_selfcheck 记录，
+# 大漂移写 history 让 ai_persona_changes 能提醒用户。梦是建议不是判决：只报告、
+# 不回滚——要不要恢复基准由用户决定（走已有 restore 流程）。
+
+def freeze_persona_baseline(label: str = "drift-baseline") -> int | None:
+    """冻结当前人格为漂移自检基准（完整快照，独立 label 便于识别）。"""
+    return save_persona_snapshot(load_persona(), action="baseline-freeze",
+                                 source="漂移自检", why="冻结漂移自检基准")
+
+
+def monthly_drift_selfcheck(days: int = 30) -> dict:
+    """月度人格漂移自检：与冻结基准（或最近有效快照）对比稳定特征。
+
+    流程：没有 baseline 快照就先冻结一张当基准（首次=零漂移）；有则对比
+    traits/identity（drives 自然波动不计），算稳定度分；结果记入 persona
+    的 drift_selfcheck，稳定度 < 60 写 history（source="漂移自检"）提醒用户。
+    只读模式只出报告不落盘。
+    """
+    p = load_persona()
+    snaps = [s for s in persona_snapshots(40)
+             if s.get("action") == "baseline-freeze" and s.get("label") != "restore前自动备份"]
+    froze_baseline = False
+    if not snaps:
+        # 首次自检：把当前人格冻结为基准，本次 diff 恒为空
+        if not READONLY:
+            freeze_persona_baseline()
+            froze_baseline = True
+        return {"at": now_ts(), "days": days, "first_run": True,
+                "froze_baseline": froze_baseline, "baseline": None,
+                "stability": 100, "diff": [], "alert": False}
+    base = json.loads((PERSONA_SNAP_DIR / f"{snaps[0]['name']}.json").read_text(encoding="utf-8"))
+    bp = base.get("persona") or {}
+    diff = []
+    for section in ("traits", "identity"):   # 稳定特征；drives 自然波动不比
+        b, c = bp.get(section) or {}, p.get(section) or {}
+        for k in set(b) | set(c):
+            if b.get(k) != c.get(k):
+                diff.append({"section": section, "key": k,
+                             "from": b.get(k), "to": c.get(k)})
+    stability = _persona_stability_score(diff, 0)   # 只看 diff，AI 改动数不计入月检
+    report = {"at": now_ts(), "days": days, "first_run": False,
+              "baseline": snaps[0]["name"], "baseline_ts": snaps[0]["ts"],
+              "baseline_age_days": round((now_ts() - snaps[0]["ts"]) / 86400, 1),
+              "stability": stability, "diff": diff,
+              "alert": stability < 60}
+    if READONLY:
+        return report
+    # 记账进 persona.json：roll 最多留 12 条（一年），大漂移另写 history 提醒
+    log = p.setdefault("drift_selfcheck", [])
+    log.append({k: v for k, v in report.items() if k != "diff"} | {"diff_count": len(diff)})
+    del log[:-12]
+    if report["alert"]:
+        p.setdefault("history", []).append({
+            "ts": now_ts(), "field": "drift_selfcheck",
+            "from": f"基准 {snaps[0]['name']}", "to": f"稳定度 {stability}",
+            "why": f"月度漂移自检：与基准相比 {len(diff)} 处稳定特征变动，"
+                   "建议在面板查看 diff 并决定是否恢复基准",
+            "source": "漂移自检"})
+        p["_ai_changes_viewed_at"] = 0.0   # 让 ai_persona_changes 能看到这条
+    save_persona(p)
+    audit_log("ai", "monthly_drift_selfcheck", "drift_selfcheck",
+              f"stability={stability} diff={len(diff)}")
+    return report
 
 
 # ---------------------------------------------------------------- 每日静默漂移

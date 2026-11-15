@@ -495,6 +495,7 @@ class LingshuPlugin(Star):
         lines.append('被问日程时按这份清单回答，不要说自己没有定时任务，也不要编造清单外的任务。')
         return '\n'.join(lines)
 
+    @filter.on_llm_request()
     async def inject_memory(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self.auto_recall or self._closed:
             return

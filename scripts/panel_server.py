@@ -155,6 +155,10 @@ def overview() -> dict:
         "dream_draft": _safe("dream_draft", brain.load_dream_draft, None),
         "mode_detail": _safe("mode_detail", lambda: brain.resolve_mode_detail(""), {}),
         "log_summary": _safe("log_summary", _log_summary, {"warn": 0, "error": 0}),
+        # #24 当前写入者：锁文件里记的 pid/主机，多机共享记忆库时能看见另一台
+        "writers": _safe("writers", brain.lock_writers, []),
+        # #19 梦抽检样本（最近一次合并前后对照，未复核时面板亮提示）
+        "dream_verify": _safe("dream_verify", brain.load_verify_sample, None),
         # 水位卡数据：唯一数据源 memory._water_level（与 status --json / cron 同口径）
         "water": _safe("water", brain._water_level, None),
         # 来源自检（v3.01 C-②）：报告本服务跑的是哪份代码。
@@ -1918,9 +1922,29 @@ _OLLAMA_STATE_LOCK = threading.Lock()   # state 文件多线程读写互斥（se
 _OLLAMA_DOWNLOAD_LOCK = threading.Lock()  # 下载 zip 互斥：sync + async 不能同时写同一个文件
 
 
+# Ollama zip SHA256 清单（键 = 文件名，值 = 官方 hex）。ollama.com 版本更新后哈希会变，
+# 键匹配不上时不阻断（只 warn + 沿用启发式校验）；键匹配上则必须严格比对。
+# 占位空 dict：官方发布页（github.com/ollama/ollama/releases）未公开稳定 sha256 清单，
+# 待维护者从 release 页核实后填入，如 "ollama-windows-amd64.zip": "<64位hex>"。
+_OLLAMA_ZIP_SHA256: dict = {}
+
+_OLLAMA_ZIP_NAME = Path(_OLLAMA_URL).name
+
+
 def _ollama_validate_zip(path: Path) -> None:
-    """下载后启发式校验：拒绝半截 / 非 zip / 不含 ollama.exe 的归档。
-    （完整 SHA256 签名兜底作为二期，ollama.com 发布页有官方清单）"""
+    """下载后校验：先比对 SHA256（清单里有该文件名时），再做启发式校验
+    （拒绝半截 / 非 zip / 不含 ollama.exe 的归档）。"""
+    expected = _OLLAMA_ZIP_SHA256.get(_OLLAMA_ZIP_NAME)
+    if expected:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        actual = h.hexdigest()
+        if actual.lower() != str(expected).lower():
+            raise RuntimeError(f"zip SHA256 校验失败：期望 {expected}，实际 {actual}")
+    else:
+        brain.log_event("ollama", f"{_OLLAMA_ZIP_NAME} 不在 SHA256 清单中，仅做启发式校验", level="warn")
     try:
         with zipfile.ZipFile(path) as zf:
             bad = zf.testzip()
@@ -2155,16 +2179,14 @@ def _ollama_setup_async() -> None:
         _ollama_state_write("error", detail=f"一键流程失败：{exc}")
 
 
-def _ollama_download_sync() -> None:
-    """同步下载 zip（只在 setup 后台线程里调）：流式写盘 + 校验 + 异常 raise 给 setup_async。
-    与 _ollama_download_async 共用 _OLLAMA_DOWNLOAD_LOCK，避免两个线程同时写同一个 zip。"""
-    dest = _ollama_zip_path()
-    if not _OLLAMA_DOWNLOAD_LOCK.acquire(blocking=False):
-        return  # 另一个线程在下，不重复下载
+def _ollama_download(dest: Path, on_progress=None) -> None:
+    """共享下载实现：流式分块写盘 + 进度回调 + 下载完立即校验（坏的就删掉防误装）。
+    on_progress(percent, got_mb) 由调用方决定进度去向（sync 写 state、async 也写 state）。
+    异常时删掉半截文件并 raise，调用方负责状态落盘与锁。"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(_OLLAMA_URL,
+                                 headers={"User-Agent": "lingshu-panel"})
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        req = urllib.request.Request(_OLLAMA_URL,
-                                     headers={"User-Agent": "lingshu-panel"})
         with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as f:
             total = int(resp.headers.get("Content-Length") or 0)
             got = 0
@@ -2175,8 +2197,8 @@ def _ollama_download_sync() -> None:
                 f.write(chunk)
                 got += len(chunk)
                 pct = int(got * 100 / total) if total > 0 else 0
-                _ollama_state_write("downloading", percent=pct,
-                                    detail=f"{got // (1024 * 1024)}MB")
+                if on_progress:
+                    on_progress(pct, got // (1024 * 1024))
         _ollama_validate_zip(dest)   # 下载完立即校验（坏的就删掉防误装）
     except Exception:
         try:
@@ -2184,6 +2206,17 @@ def _ollama_download_sync() -> None:
         except OSError:
             pass
         raise
+
+
+def _ollama_download_sync() -> None:
+    """同步下载 zip（只在 setup 后台线程里调）。
+    与 _ollama_download_async 共用 _OLLAMA_DOWNLOAD_LOCK，避免两个线程同时写同一个 zip。"""
+    dest = _ollama_zip_path()
+    if not _OLLAMA_DOWNLOAD_LOCK.acquire(blocking=False):
+        return  # 另一个线程在下，不重复下载
+    try:
+        _ollama_download(dest, on_progress=lambda pct, mb: _ollama_state_write(
+            "downloading", percent=pct, detail=f"{mb}MB"))
     finally:
         _OLLAMA_DOWNLOAD_LOCK.release()
 
@@ -2246,28 +2279,10 @@ def _ollama_download_async() -> None:
         _ollama_state_write("downloading", detail="已有下载在进行中，等待复用现有 zip")
         return
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        req = urllib.request.Request(_OLLAMA_URL,
-                                     headers={"User-Agent": "lingshu-panel"})
-        with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as f:
-            total = int(resp.headers.get("Content-Length") or 0)
-            got = 0
-            while True:
-                chunk = resp.read(1024 * 256)
-                if not chunk:
-                    break
-                f.write(chunk)
-                got += len(chunk)
-                pct = int(got * 100 / total) if total > 0 else 0
-                _ollama_state_write("downloading", percent=pct,
-                                    detail=f"{got // (1024 * 1024)}MB")
-        _ollama_validate_zip(dest)   # 下载完立即校验（坏的就删掉防误装）
+        _ollama_download(dest, on_progress=lambda pct, mb: _ollama_state_write(
+            "downloading", percent=pct, detail=f"{mb}MB"))
         _ollama_state_write("downloaded", percent=100, detail=str(dest))
     except Exception as exc:
-        try:
-            dest.unlink(missing_ok=True)   # 半截 zip / 校验失败 → 删掉防误装
-        except OSError:
-            pass
         _ollama_state_write("error", detail=f"下载失败：{exc}")
     finally:
         _OLLAMA_DOWNLOAD_LOCK.release()
