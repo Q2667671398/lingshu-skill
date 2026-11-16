@@ -457,13 +457,26 @@ SYSTEM """你运行在本地，有记忆系统「灵枢」。每轮先按需执�
 ### 发布新版本的标准流程（维护者）
 
 ```bash
+# 0. 一次性：安装 git 钩子（pre-commit 版本守卫 + pre-push tag 守卫）
+python scripts/check_version.py --install
+
 # 1. 改完代码后：生成/刷新发布清单（内置 version 与 SKILL.md 一致性校验）
 python scripts/make_manifest.py
-# 2. 升 SKILL.md 的 version，并在 CHANGELOG.md 写好对应小节（如 "## v2.33 — 标题"）
+# 2. 升 SKILL.md 的 version，并在 CHANGELOG.md 写好对应小节（如 "## v3.15 — 标题"）
 #    ——这两步由 pre-commit 钩子强制：代码变更不升版本、升版本没写 CHANGELOG 都会被拒绝
-# 3. 提交并打 tag
-git add -A && git commit -m "v2.33 …" && git tag v2.33 && git push --tags
+# 3. 提交
+git add -A && git commit -m "v3.15 …"
+# 4. 推送 main（--follow-tags 确保 tag 跟着一起推）
+git push --follow-tags gitee main && git push --follow-tags origin main
+
+# 5. 核对 tag 与版本是否对齐（也可以手动跑）
+python scripts/check_tag.py --check
 ```
+
+> **tag 守卫（pre-push）**：推 `main` 时若当前版本还没有 `vX.Y` tag，钩子会自动在 HEAD
+> 打一个带注释的 tag，并**拒绝本次推送**，提示改用 `git push --follow-tags`。
+> 这样「仓库很久没打 tag、市场版本说明一直停在旧版本」不会再发生。
+> 应急跳过：`LINGSHU_SKIP_TAG_CHECK=1 git push ...`（不建议）。
 
 ### 用户侧更新
 

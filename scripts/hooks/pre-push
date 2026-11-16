@@ -1,0 +1,20 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""灵枢 pre-push 钩子（Windows 兼容：直接用 git 能找到的 python 解释器执行逻辑）。
+
+逻辑在 scripts/check_tag.py：
+  1. 推 main/master 时，当前版本没有对应 tag → 自动打 tag 并拒绝本次推送；
+  2. tag 指向 HEAD 之外的提交 → 拒绝；
+  3. 只推 tag / 其它分支 → 放行。
+
+应急跳过：设置环境变量 LINGSHU_SKIP_TAG_CHECK=1（不建议）。
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent.parent
+logic = root / "scripts" / "check_tag.py"
+if not logic.is_file():
+    sys.exit(0)  # 不完整的工作区：放行，别把人拦死
+sys.exit(subprocess.call([sys.executable, str(logic)]))

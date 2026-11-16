@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.15（2026-11-16）
+
+> 本轮主题：**把"打 tag"变成推送前的硬动作**，避免市场版本说明再次停在旧版本。
+
+- **新增 `scripts/check_tag.py`**：读 SKILL.md 的 version，检查 `vX.Y` tag 是否存在且指向 HEAD。三种模式——`--check` 只核对（CI/手动）、`--install` 装钩子、无参数走 pre-push 流程。
+- **新增 `scripts/hooks/pre-push`**：推送 `main`/`master` 时若缺对应 tag，**自动在 HEAD 打带注释 tag 并拒绝本次推送**，提示改用 `git push --follow-tags <remote> main`；只推 tag 或其它分支则放行。应急开关 `LINGSHU_SKIP_TAG_CHECK=1`。
+- **`check_version.py --install` 升级**：现在一次性安装 `scripts/hooks/` 下全部钩子（pre-commit + pre-push），不再只装 pre-commit。
+- **README 发布流程**：改为「提交 → `git push --follow-tags` → `check_tag.py --check` 核对」，并说明 tag 守卫行为。
+- **修：tag 指向错误也会被拦**（tag 存在但不指向 HEAD 时报错并给修正命令），避免"打了 tag 但打在旧提交上"。
+
 ## v3.14（2026-11-16）
 
 > 本轮主题：**问题清单第五轮修复**（没有任何新功能，只修已复现的缺陷）。

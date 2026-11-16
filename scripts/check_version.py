@@ -199,9 +199,9 @@ def check(staged: bool = False, base: str = "HEAD") -> int:
 
 
 def install_hook() -> int:
-    hook_src = ROOT / "scripts" / "hooks" / "pre-commit"
-    if not hook_src.exists():
-        print(f"[version] 找不到钩子模板：{hook_src}", file=sys.stderr)
+    hook_dir = ROOT / "scripts" / "hooks"
+    if not hook_dir.is_dir():
+        print(f"[version] 找不到钩子目录：{hook_dir}", file=sys.stderr)
         return 2
     git_dir = _git(["rev-parse", "--git-dir"])
     if git_dir is None:
@@ -209,18 +209,24 @@ def install_hook() -> int:
         return 2
     target_dir = (ROOT / git_dir.strip()).resolve() / "hooks"
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / "pre-commit"
-    if target.exists():
-        backup = target.with_name(f"pre-commit.bak-{time.strftime('%Y%m%d%H%M%S')}")
-        shutil.copy2(target, backup)
-        print(f"[version] 已备份原钩子：{backup}")
-    shutil.copy2(hook_src, target)
-    try:
-        target.chmod(target.stat().st_mode | 0o111)
-    except OSError:
-        pass
-    print(f"[version] 已安装 pre-commit 钩子：{target}")
-    print("  之后代码有变更而 SKILL.md 版本没升，提交会被拒绝。")
+    installed = []
+    for hook_src in sorted(hook_dir.glob("*")):
+        if not hook_src.is_file():
+            continue
+        target = target_dir / hook_src.name
+        if target.exists():
+            backup = target.with_name(f"{hook_src.name}.bak-{time.strftime('%Y%m%d%H%M%S')}")
+            shutil.copy2(target, backup)
+            print(f"[version] 已备份原钩子：{backup}")
+        shutil.copy2(hook_src, target)
+        try:
+            target.chmod(target.stat().st_mode | 0o111)
+        except OSError:
+            pass
+        installed.append(hook_src.name)
+    print(f"[version] 已安装钩子：{', '.join(installed)} → {target_dir}")
+    print("  · pre-commit：代码有变更而 SKILL.md 版本没升，提交会被拒绝。")
+    print("  · pre-push  ：推 main 前必须有与版本对应的 tag（缺则自动创建并拒绝本次推送）。")
     return 0
 
 

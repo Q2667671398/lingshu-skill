@@ -1,13 +1,13 @@
 {
-  "version": "3.14",
+  "version": "3.15",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "01773e54bfc40743d4bda5a604aa559658be9055df2e157aaa5cee2c3824c8f6",
-      "size": 161357
+      "sha256": "76a92491f68216d6391d6d7434e53c31fc9ea3599278131b9caac21da030b17b",
+      "size": 162445
     },
     "README.md": {
-      "sha256": "44a19825db1b51c78e7ac9420c4664e2d2478a89eb8bfbbe0410d51984fe9ee2",
-      "size": 57456
+      "sha256": "6b328a90aa93cfc4dcb54d37bb93d5d03a4e40933fab231850b05821ff3374d9",
+      "size": 58154
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "e080effcd3ee6720d91301ca98ff973fadd34b19420d189a3b013e808abb6d3d",
+      "sha256": "9491443c324064092052e4d0c6167ed8868dc873dbc4b57828bdc1c01ce350a3",
       "size": 30540
     },
     "assets/panel.html": {
@@ -98,7 +98,7 @@
       "size": 4096
     },
     "package.json": {
-      "sha256": "0d8fc1054cdc2e3ca75100238ecee4ed3584fab21eeef97e1b4f1cba6bc603ab",
+      "sha256": "08cb9c24eb974075d78e68078e26d501b3dae04f20d635b091ddb193628eba20",
       "size": 840
     },
     "scripts/bench.py": {
@@ -109,9 +109,13 @@
       "sha256": "659be7e951fa6d1505ea5a7c1a7aff7fb3cb182633573a68ae135ccaa4b7f05f",
       "size": 1649
     },
+    "scripts/check_tag.py": {
+      "sha256": "a5110c81328919c55ace738a4bc7e38487db7d8b59f1aa12f086caa1a6825eaa",
+      "size": 6880
+    },
     "scripts/check_version.py": {
-      "sha256": "3eff036fa73368c4348f9ec646147ed997775cd5a237bcb8cd64bb5ea3c28839",
-      "size": 10049
+      "sha256": "667162ea0c445a1025c93027cbec7434abe2ff21207e38dec7aeac7dba411687",
+      "size": 10395
     },
     "scripts/cli.py": {
       "sha256": "b3d1d728e716f7a0f874476ad9d7be69ebc1898ffad23e01a8c4b601ef4898e2",
@@ -140,6 +144,10 @@
     "scripts/hooks/pre-commit": {
       "sha256": "14dafabbfd698f7e510411b144ec624affe41023113b1ffd0f1aa8f3e623a275",
       "size": 743
+    },
+    "scripts/hooks/pre-push": {
+      "sha256": "5bcc60ddf4a851a9a92a8142c840315592e62b9129abb0c5dcc228bff357bdcc",
+      "size": 763
     },
     "scripts/make_manifest.py": {
       "sha256": "f7ee18964b5ad22f64985a9a59bccf0b8b4c63a475950c378f7747d3a1a27dc0",
