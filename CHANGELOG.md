@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.14（2026-11-16）
+
+> 本轮主题：**问题清单第五轮修复**（没有任何新功能，只修已复现的缺陷）。
+
+- **修：切 HOME 后做梦读错 working.jsonl**。`core._sync_state()` 现在先按当前 HOME 重算派生路径再同步（`_rebind_paths()` 拆出来），调用方只改 `core.HOME` 后调它也能生效；`dream.py` 读工作记忆改为 `core.WORKING_FILE`，不再依赖 `from core import *` 的 import 时快照。`tests/test_dream_replay.py` 由 2 FAILED → ALL PASS。
+- **修：子进程输出按 GBK 解码**。10 处 `subprocess.run(..., text=True)` 补 `encoding="utf-8", errors="replace"`（bench / cli / growth×3 / panel_server×5）；中文 Windows 上不再出现 `UnicodeDecodeError` 吞掉 stdout 的静默错误。
+- **修：doctor 版本矩阵恒 WARN**。比较前规范化（`3.13` ≡ `3.13.0`），`metadata.yaml` 作为 AstrBot 独立版本线只做存在性检查、不参与相等比较，文案同步改准。
+- **修：超长正文静默截断**。`remember` 超过 `remember_max_chars` 时现在会打印「已截断：N → M 字（config 可调）」，不再让用户以为原样存下。
+- **修：备份默认目录写盘符根**。Windows 默认改为 `文档\brain-memory-backups`，其次桌面、`HOME/backups`；不再往 `D:\` 根目录凭空建目录。
+- **修：文档三处错误参数**。`--ttl-days` → `--ttl`、`export --md` → `export --format md`、`backup --drill`（不存在，演练是自动跑的）——README/SKILL 已对齐 `--help`。
+- **包元数据**：`package.json` 补 `repository` / `homepage`，`github:` 安装后能反查来源；版本 3.14.0。
+- **说明**：v3.05–v3.08 为内部迭代，未单独发版，故 CHANGELOG 从 v3.04 跳到 v3.09。
+
 ## v3.13（2026-11-16）
 
 - **文档：knowledge add 格式规范**：SKILL.md 命令速查补充 `knowledge add` 完整字段说明（title 位置参数 / --body/--topic/--points/--tags/--confidence/--source 等 8 个参数的语义、分隔规则与审核闸行为），并标注避坑：无 `--title`/`--file` 参数，长中文正文建议用脚本直调 `growth.add_knowledge()` 读文件录入（tags 须传列表，字符串会被逐字符拆分）。无代码变更。

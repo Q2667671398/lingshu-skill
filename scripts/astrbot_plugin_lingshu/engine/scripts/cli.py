@@ -26,15 +26,16 @@ from core import *
 # ---------------------------------------------------------------- backup / restore
 
 def _default_backup_dir() -> Path:
-    """备份默认位置：D 盘 > 桌面 > HOME/backups。
-    BRAIN_MEMORY_BACKUP_DIR 可显式指定；指定后测试/自定义 HOME 不会意外写到 D 盘。"""
+    """备份默认位置：文档 > 桌面 > HOME/backups。
+    BRAIN_MEMORY_BACKUP_DIR 可显式指定；指定后测试/自定义 HOME 不会意外写到别处。
+    不再默认写盘符根（D:\\brain-memory-backups）——那会在用户盘根目录凭空建目录。"""
     env_dir = os.environ.get("BRAIN_MEMORY_BACKUP_DIR", "").strip()
     if env_dir:
         candidates = [Path(env_dir).expanduser()]
     else:
         candidates = []
         if sys.platform == "win32":
-            candidates.append(Path("D:/brain-memory-backups"))
+            candidates.append(Path.home() / "Documents" / "brain-memory-backups")
         candidates.append(Path.home() / "Desktop" / "brain-memory-backups")
         candidates.append(HOME / "backups")
     for c in candidates:
@@ -43,7 +44,6 @@ def _default_backup_dir() -> Path:
             return c
         except Exception:
             continue
-    return HOME
 
 
 def _is_sensitive_file(f: Path) -> bool:
@@ -1454,7 +1454,7 @@ def _main(argv=None) -> int:
     p_home.add_argument("dest", nargs="?", default="", help="move：目标目录")
 
     p_bak = sub.add_parser("backup", help="打包备份整个记忆库")
-    p_bak.add_argument("--out", default=None, help="目标目录或 zip 路径（默认 D:/brain-memory-backups 或桌面）")
+    p_bak.add_argument("--out", default=None, help="目标目录或 zip 路径（默认 文档/桌面下的 brain-memory-backups）")
     p_bak.add_argument("--keep", type=int, default=20, help="保留最近 N 份，删除更旧的（0=不修剪）")
     p_bak.add_argument("--password", default=None, help="备份口令：给出则生成加密备份（.zip.enc），恢复时需同一口令")
     p_bak.add_argument("--yes", action="store_true", help="跳过明文备份的确认提示（脚本/宿主调用用）")
@@ -1735,6 +1735,12 @@ def _main(argv=None) -> int:
                             ttl_days=_ttl_days, review_at=_review_ts,
                             correction=args.correction,
                             project=(getattr(args, "project", "") or "").strip() or None)
+        # 超长正文会被 remember_max_chars 截断：显式告知，别让用户以为原样存下了
+        _src_text = " ".join(args.text).strip()
+        _stored_text = rec.get("text") or ""
+        if _stored_text.endswith("…") and len(_src_text) > len(_stored_text):
+            print(f"  ⚠ 正文超单条上限，已截断：{len(_src_text)} → {len(_stored_text)} 字"
+                  "（config remember_max_chars 可调，默认 1200）")
         if getattr(args, "correction", False) and how != "merged":
             print("  #41 改口记录：已打 correction 标，永不自动合并/淡忘/归档（教训提炼优先读它）")
         print(f"{'已合并' if how == 'merged' else '已写入'}：{rec['id']} ({rec['layer']}, 重要性 {rec['importance']})")
@@ -2960,12 +2966,25 @@ def _main(argv=None) -> int:
             v_pkg = _ver_of(root / "package.json", r'"version"\s*:\s*"([^"]+)"')
             v_meta = _ver_of(root / "scripts/astrbot_plugin_lingshu/metadata.yaml", r'version:\s*([0-9][0-9a-zA-Z.\-]*)')
             vers = {"SKILL.md": v_skill, "package.json": v_pkg, "metadata.yaml": v_meta}
-            known = [v for v in vers.values() if v not in ("?", "缺失")]
-            drift = len(set(known)) > 1
+
+            def _norm_v(v: str) -> str:
+                # 3.13 与 3.13.0 是同一版本；metadata.yaml 属 AstrBot 独立版本线，不参与相等比较
+                parts = [p for p in v.split(".") if p != ""]
+                while len(parts) > 2 and parts[-1] == "0":
+                    parts.pop()
+                return ".".join(parts)
+
+            body = [v for v in (v_skill, v_pkg) if v not in ("?", "缺失")]
+            drift = len({_norm_v(v) for v in body}) > 1
+            missing = [k for k, v in vers.items() if v in ("?", "缺失")]
             detail = " · ".join(f"{k}={v}" for k, v in vers.items())
-            status = ("WARN" if drift or len(known) < len(vers) else "PASS")
             if drift:
-                detail += "（版本漂移：升版时三处要一起改，check_version.py 会拦）"
+                detail += "（本体版本漂移：SKILL.md 与 package.json 主.次版本不一致）"
+            elif missing:
+                detail += f"（缺版本文件：{', '.join(missing)}）"
+            else:
+                detail += "（metadata.yaml 独立版本线，不参与比较）"
+            status = "WARN" if (drift or missing) else "PASS"
             checks.append(("version-matrix", status, detail))
         except Exception as e:
             checks.append(("version-matrix", "FAIL", str(e)))
@@ -2996,7 +3015,7 @@ def _main(argv=None) -> int:
             import subprocess as _sp
             root = Path(__file__).resolve().parent.parent
             r = _sp.run([sys.executable, str(root / "scripts" / "sync_engine.py"), "--check"],
-                        capture_output=True, text=True, timeout=60)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             if r.returncode == 0:
                 detail = (r.stdout or "").strip().splitlines()[-1:] or ["一致"]
                 checks.append(("engine-sync", "PASS", detail[0].replace("[sync] ", "")))

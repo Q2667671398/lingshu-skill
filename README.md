@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v3.12**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.14**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -47,7 +47,9 @@
 - [命令速查](#命令速查)
 - [项目结构](#项目结构)
 
-## 最新特性速览（v3.11）
+## 最新特性速览（v3.14）
+
+- **v3.14 修复批**：切 HOME（`--home`/面板迁移）后做梦不再读错 working.jsonl；子进程统一 UTF-8 解码（中文 Windows 不再 GBK 崩线程）；doctor 版本矩阵不再恒 WARN；超长正文截断会明确提示；备份默认目录改到文档/桌面，不再写盘符根；包元数据补 `repository`/`homepage`。
 
 - **CI 修复（第四轮#1）**：tests/ 本地化后 CI 里四个 tests step 一直空跑假绿——已删除，`py_compile` 只查 `scripts/`，CI 只留真检查（check_version / manifest / sync / checksums）。
 - **engine 副本一致性（第四轮#2）**：`doctor` 新增第 10 项 `engine-sync`——scripts/ 与 AstrBot engine/ 副本漂移直接在体检里暴露，附带修平命令提示。
@@ -57,12 +59,12 @@
 
 <details><summary>v3.10 及更早</summary>
 
-- **记忆管控**：`memory freeze/unfreeze <id>` 冻结的记忆不参与召回、注入与做梦；`remember --correction` 标记被用户纠正的记录（永不自动合并/淡忘/归档）；`remember --ttl-days N` 给事实设保质期，到期转「待复核」。
+- **记忆管控**：`memory freeze/unfreeze <id>` 冻结的记忆不参与召回、注入与做梦；`remember --correction` 标记被用户纠正的记录（永不自动合并/淡忘/归档）；`remember --ttl N` 给事实设保质期，到期转「待复核」。
 - **数据结构与完整性**：`HOME/_meta.json` 记录 schema 版本（老版本遇到新 schema 自动降级只读，不写坏库）；每条记忆带 SHA-256 内容哈希并串成 prev-hash 链，`memory integrity` 一条命令定位篡改/损坏。
 - **召回与向量**：`recall --mode fast|deep|auto` 三档（纯词面 / 全量向量+冲突提示 / 自动择优）；`rebuild-embeds [--force]` 全量重算（含归档层），换 embedding 模型时缓存自动失效。
 - **自我进化**：`lesson "教训"` 一条命令三写（memory+knowledge 待审+note）；`lessons` 教训库带置信度——被后续对话验证 +0.10、被推翻 −0.15，低于 0.2 自动退役；`persona self-model` 输出机器可读的自模型（擅长/短板/还没弄清）。
 - **可观测性**：`doctor` 十项体检（含版本矩阵、当前写入者与 engine 副本一致性）；`auditlog` 统一审计流；`dream --verify` 复核做梦合并抽检；`status --json` 是唯一水位数据源（退出码按 60/75/90 分级）。
-- **可靠性**：注入包顶部「上次会话写入失败 N 次」；`backup --drill` 恢复演练；日志超 1MB 自动轮转；Windows 文件占用给 rename→WMI 进程定位与退出引导，不再猜 taskkill。
+- **可靠性**：注入包顶部「上次会话写入失败 N 次」；`backup` 自动做恢复演练；日志超 1MB 自动轮转；Windows 文件占用给 rename→WMI 进程定位与退出引导，不再猜 taskkill。
 
 </details>
 
@@ -522,7 +524,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | 领域 | 命令 |
 |---|---|
 | 记忆 | `remember [--project 名]` / `recall [--mode fast\|deep\|auto] [--project 名]`（同项目 +0.25 加分，不硬过滤） / `inject` / `startup` / `list` / `forget` / `export --md [--out 文件]` |
-| 记忆管控 | `memory freeze <id>` / `memory unfreeze <id>` / `memory boost <id>` / `memory integrity` / `remember --correction` / `remember --ttl-days N` |
+| 记忆管控 | `memory freeze <id>` / `memory unfreeze <id>` / `memory boost <id>` / `memory integrity` / `remember --correction` / `remember --ttl N` |
 | 上下文水位 | `check-context --used 68`（60 清点 / 75 做梦 / 90 封存） |
 | 原样封存 | `capture "<原文>" [--tag 逃生]` |
 | 做梦 | `dream` / `dream --apply apply.json` / `dream --auto` / `dream --verify [--done]`（合并抽检复核） |

@@ -1451,14 +1451,8 @@ def _extract_ro(argv: list) -> tuple:
     return out, forced
 
 
-def _recompute_paths() -> None:
-    """集中重算所有由 HOME 派生的路径常量。
-
-    这些常量分散定义在模块各处（LOG_FILE/WORKING_FILE 在开头，
-    VERBATIM_DIR/ASSOC_FILE/PERSONA_SNAP_DIR/DAILY_FILE 在各自子系统旁），
-    --home 切换目录时必须全部同步更新，否则残留旧目录的路径。
-    模块加载完成时也调用一次，保证与文件内字面定义一致。
-    """
+def _rebind_paths() -> None:
+    """按当前 HOME 重算所有派生路径常量（纯赋值，不触发跨模块同步）。"""
     global LOG_FILE, WORKING_FILE, VERBATIM_DIR, ASSOC_FILE, PERSONA_SNAP_DIR, DAILY_FILE
     global RETRIEVAL_FILE, USAGE_FILE, CONSENT_FILE, TOPIC_FILE
     LOG_FILE = HOME / "lingshu.log"
@@ -1471,6 +1465,11 @@ def _recompute_paths() -> None:
     RETRIEVAL_FILE = HOME / "last_retrieval.json"
     USAGE_FILE = HOME / "recall_usage.jsonl"
     CONSENT_FILE = HOME / "consent.json"
+
+
+def _recompute_paths() -> None:
+    """集中重算由 HOME 派生的路径，再同步给各子模块（--home 切换后必须调用）。"""
+    _rebind_paths()
     _sync_state()
 
 
@@ -1506,7 +1505,12 @@ _SYNC_TARGETS: list = []
 
 
 def _sync_state() -> None:
-    """把 core 的当前全局状态同步到各子模块（brain.py 启动时登记同步目标）。"""
+    """把 core 的当前全局状态同步到各子模块（brain.py 启动时登记同步目标）。
+
+    先按当前 HOME 重算派生路径：这样调用方只改了 core.HOME 再调本函数时
+    （测试/宿主/面板迁移都会这么用）也不会把旧目录的路径同步出去。
+    """
+    _rebind_paths()
     if not _SYNC_TARGETS:
         return
     snap = {k: v for k, v in dict(globals()).items() if not k.startswith("__")}

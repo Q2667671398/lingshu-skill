@@ -1524,7 +1524,7 @@ def _kill_lingshu_children() -> list:
             ["wmic", "process", "where",
              "name='python.exe' and commandline like '%brain.py%'",
              "get", "processid,commandline", "/format:list"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         cur = {}
         for line in (p.stdout or "").splitlines():
             line = line.strip()
@@ -1546,7 +1546,7 @@ def _kill_lingshu_children() -> list:
                   "Where-Object {$_.CommandLine -like '*brain.py*'} | "
                   "Select-Object ProcessId,CommandLine | ConvertTo-Json")
             p = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                               capture_output=True, text=True, timeout=60)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             out = (p.stdout or "").strip()
             if out:
                 items = json.loads(out)
@@ -1569,7 +1569,7 @@ def _kill_lingshu_children() -> list:
             continue
         try:
             r = subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             if r.returncode == 0:
                 killed.append({"pid": pid, "cmd": (cmd or "")[:120]})
             else:
@@ -2015,7 +2015,7 @@ def _ollama_exe() -> Path | None:
     """找 ollama.exe：PATH 上的优先（where.exe），其次默认安装目录。"""
     try:
         out = subprocess.run(["where.exe", "ollama"], capture_output=True,
-                             text=True, timeout=5).stdout.strip()
+                             text=True, encoding="utf-8", errors="replace", timeout=5).stdout.strip()
         first = out.splitlines()[0].strip() if out else ""
         if first.lower().endswith(".exe") and Path(first).is_file():
             return Path(first)
@@ -2334,7 +2334,7 @@ def _ollama_pull_model() -> bool:
             return False
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         r = subprocess.run([str(exe), "pull", _OLLAMA_MODEL], capture_output=True,
-                           text=True, timeout=600, creationflags=flags)
+                           text=True, encoding="utf-8", errors="replace", timeout=600, creationflags=flags)
         return r.returncode == 0
     except Exception:
         return False

@@ -1609,14 +1609,14 @@ def _fetch_git_source(repo_url: str, branch: str, source: str) -> Path:
             [git, "-c", "core.autocrlf=false", "-c", "core.eol=lf",
              "clone", "--depth", "1", "--single-branch",
              "--branch", branch, repo_url, str(staging)],
-            check=True, capture_output=True, text=True, timeout=_remote_timeout())
+            check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=_remote_timeout())
         if not (staging / "SKILL.md").is_file():
             raise RuntimeError("git 克隆后找不到 SKILL.md（仓库结构不符）")
         # 拿 HEAD SHA 写标记，供下次 SHA 快路径命中
         try:
             sha = subprocess.run(
                 [git, "-C", str(staging), "rev-parse", "HEAD"],
-                check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+                check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15).stdout.strip()
         except Exception:
             sha = ""
         if sha:

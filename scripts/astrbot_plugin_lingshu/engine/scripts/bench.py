@@ -42,7 +42,7 @@ def _run(args: list, home: Path, timeout: float = 120, strict: bool = True) -> t
            "BRAIN_MEMORY_BACKUP_DIR": str(home / "backups")}
     t0 = time.perf_counter()
     r = subprocess.run([sys.executable, str(BRAIN), *args],
-                       capture_output=True, text=True, timeout=timeout, env=env)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
     dt = time.perf_counter() - t0
     if strict and r.returncode not in (0,):
         raise RuntimeError(f"brain.py {' '.join(args)} 退出码 {r.returncode}: {r.stderr[-300:]}")

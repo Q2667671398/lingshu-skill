@@ -21,6 +21,8 @@ from pathlib import Path
 
 from core import *
 
+import core              # 可变路径（WORKING_FILE 等）必须走 core.X：import * 是快照，切 HOME 后会过期
+
 import memory as _mem   # load_all / save_all / retention / 归档等（模块级延迟引用避免循环）
 
 # ---------------------------------------------------------------- 做梦 / 巩固
@@ -103,7 +105,7 @@ def replay_recent(limit: int = _REPLAY_MAX) -> list:
                       "text": (m.get("text") or "")[:200],
                       "ts": _num(m.get("created"), 0), "from": "memory"})
     try:
-        for r in read_jsonl(WORKING_FILE):
+        for r in read_jsonl(core.WORKING_FILE):
             if not r.get("open", True):
                 continue
             ts = _num(r.get("ts"), 0)
