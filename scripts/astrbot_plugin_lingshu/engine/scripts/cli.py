@@ -1224,6 +1224,13 @@ def _main(argv=None) -> int:
     p_inj.add_argument("--user-said", default=None, metavar="TEXT",
                        help="用户最新一句话：过情绪启发式产候选提示（v3.02 #11，只产候选不落盘）")
 
+    # 五-B：注入漂移自检——连渲染几次注入包，量稳定前缀有没有被实时内容污染
+    p_idr = sub.add_parser("inject-drift",
+                           help="注入漂移自检：连渲染几次注入包，检查稳定前缀是否稳定（prompt 缓存友好度）")
+    p_idr.add_argument("--runs", type=int, default=3, help="渲染次数（默认 3）")
+    p_idr.add_argument("--query", default="", help="按指定查询生成（缺省是不带查询的 startup 注入包）")
+    p_idr.add_argument("--json", action="store_true")
+
     p_dream = sub.add_parser("dream", help="做梦：整理与巩固记忆")
     p_dream.add_argument("--trigger", default="manual")
     p_dream.add_argument("--apply", default=None, help="应用整理结果 JSON")
@@ -1323,6 +1330,10 @@ def _main(argv=None) -> int:
     p_st.add_argument("--used", type=float, default=None,
                       help="当前上下文已用百分比 0-100（缺省用最近一次 check-context 记下的水位）")
     p_st.add_argument("--json", action="store_true")
+    # #7：status 是"查询"，默认不拿退出码报警——否则 cron/脚本里水位一高就被当成失败。
+    # 需要告警语义的调用方显式加 --exit-code（0 正常 / 1 该清点 / 2 该做梦 / 3 该封存）。
+    p_st.add_argument("--exit-code", action="store_true",
+                      help="按水位返回退出码（0 正常 / 1 清点 / 2 做梦 / 3 封存）；缺省恒 0")
 
     p_doc = sub.add_parser("doctor", help="六合一体检：audit / persona / diagnose / 写权限 / 备份对账 / 日志异常计数")
     p_doc.add_argument("--json", action="store_true")
@@ -1930,6 +1941,23 @@ def _main(argv=None) -> int:
                 pass
         print(injection)
         return 0
+
+    if args.cmd == "inject-drift":
+        rep = inject_drift(args.runs, args.query or "")
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0 if rep["ok"] else 1
+        print(f"注入漂移自检（{rep['runs']} 次）："
+              + ("稳定 ✅" if rep["ok"] else "有漂移 ⚠"))
+        print(f"  稳定前缀 {rep['stable_chars']} 字符（占全包 {rep['stable_share']:.0%}）")
+        print(f"  公共前缀 {rep['common_prefix_chars']} 字符，稳定度 {rep['stable_ratio']:.2%}")
+        if not rep["marker_found"]:
+            print("  ⚠ 没找到实时状态分界线——注入包结构可能被改坏了")
+        if rep["minute_content_in_stable"]:
+            print("  ⚠ 稳定前缀里混进了分钟级时间（HH:MM）——会每分钟毁掉一次 prompt 缓存")
+        if rep["first_diff_at"] >= 0:
+            print(f"  首个差异位置：第 {rep['first_diff_at']} 字符")
+        return 0 if rep["ok"] else 1
 
     if args.cmd == "dream":
         if getattr(args, "verify", False):
@@ -2680,6 +2708,11 @@ def _main(argv=None) -> int:
         return 0
 
     if args.cmd == "work":
+        # 五-E：顺手把做完超过一天的条目物理归档（幂等，失败不挡主流程）
+        try:
+            work_sweep()
+        except Exception:
+            pass
         if args.action == "add":
             text = " ".join(args.text).strip()
             if not text:
@@ -2703,9 +2736,10 @@ def _main(argv=None) -> int:
             if idx < 1 or idx > cur["count"]:
                 print(f"序号越界：当前暂存只有 {cur['count']} 条。", file=sys.stderr)
                 return 1
-            rows = work_done(idx)
-            done = rows[idx - 1]
-            print(f"第 {idx} 条已标记完成：{done.get('text', '')}——做完的事不再占心思。")
+            # 文本先取：work_done 内部会顺带归档过期条目，返回的 rows 位置可能已变
+            done_text = cur["items"][idx - 1].get("text", "")
+            work_done(idx)
+            print(f"第 {idx} 条已标记完成：{done_text}——做完的事不再占心思。")
             return 0
         if args.action == "flush":
             res = work_flush(args.why or "会话结束前决定留下", skip_done=args.skip_done)
@@ -2874,7 +2908,7 @@ def _main(argv=None) -> int:
             print(f"  最近一次 session 结束水位：{wl['last_session_pct']}")
             if wl.get("action"):
                 print(f"  建议：{wl['action']}")
-        return wl["exit_code"]
+        return wl["exit_code"] if args.exit_code else 0
 
     if args.cmd == "doctor":
         # 六合一体检：已有实现直接复用，不重写逻辑；单项失败不影响其他项

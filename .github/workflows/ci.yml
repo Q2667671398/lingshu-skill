@@ -32,6 +32,34 @@ jobs:
       - name: checksums --check
         run: python scripts/astrbot_plugin_lingshu/make_checksums.py --check
 
-      # 语法全量编译检查（tests/ 已本地化不入库，只查 scripts）
+      # 语法全量编译检查（含 tests/）
       - name: py_compile
-        run: python -m compileall -q scripts
+        run: python -m compileall -q scripts tests
+
+      # 隐私与功能单测：逐个直接运行（纯标准库，无 pytest 依赖）
+      # 隔离 HOME：BRAIN_MEMORY_HOME/LINGSHU_GLOBAL_SKILLS 指向临时目录，不碰真实记忆库
+      - name: tests
+        env:
+          BRAIN_MEMORY_HOME: ${{ runner.temp }}/ls-ci-home
+          LINGSHU_GLOBAL_SKILLS: ${{ runner.temp }}/ls-ci-skills
+        shell: bash
+        run: |
+          set -e
+          mkdir -p "$BRAIN_MEMORY_HOME" "$LINGSHU_GLOBAL_SKILLS"
+          fail=0
+          for t in tests/test_*.py; do
+            echo "::group::$t"
+            python "$t" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      # 健康自检：隔离 HOME 全新初始化，doctor 应零 fail（warn 允许）
+      - name: doctor
+        env:
+          BRAIN_MEMORY_HOME: ${{ runner.temp }}/ls-ci-doctor
+        run: |
+          mkdir -p "$BRAIN_MEMORY_HOME"
+          python scripts/brain.py doctor --json
+          python scripts/brain.py doctor --json >/dev/null; rc=$?
+          if [ "$rc" -eq 2 ]; then exit 1; else exit 0; fi

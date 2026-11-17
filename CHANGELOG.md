@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.16（2026-11-17）
+
+> 本轮主题：**prompt 缓存友好化与工作记忆治理**（问题清单 五-A/B/C/D/E）。
+
+- **五-A 注入前缀稳定化**：`build_injection()` 拆双桶——稳定前缀（人格 brief + 规则/教训/知识等静态块）在前，新增 `INJECT_DYN_MARKER` 分界线，时间/情绪/工作记忆/话题栈/新记忆/到期复核/睡醒结论/待办梦/例行/理智/睡醒债/待审核/漂移等全部实时内容迁入分界线之后。宿主按前缀缓存 prompt 时不再因秒级/分钟级变化整段失效。
+- **五-B 新增 `inject-drift` 自检命令**：连渲染 N 次注入包，量最长公共前缀与稳定段长度之比（`stable_ratio ≥ 0.999` 为稳），并专项检查稳定段是否泄漏分钟级时间。自检期临时置只读，避免三次 recall 产生副作用（加固记忆/覆盖 usage 快照）。`--json` 输出报告，异常退出码 1。
+- **五-C CI 加 tests + doctor step**：`py_compile` 扩到 `tests/`；新增逐个运行 `tests/test_*.py`（隔离 `BRAIN_MEMORY_HOME`/`LINGSHU_GLOBAL_SKILLS` 指向 runner 临时目录）；新增 `doctor --json` step（全新 HOME 初始化，返回码 2 即 fail）。
+- **五-D 梦抽检未复核提醒**：`dreams/verify-sample.json` 存在且未复核时，注入包尾部轻提示一次「`dream verify` 看对照 → `dream verify --done`」。修了命名空间遮蔽坑：合并后 `dream` 名字是 `dream()` 函数，必须 `import dream as _dream_mod`。
+- **五-E 工作记忆 24h 物理归档**：新增 `WORK_DONE_TTL = 24h`；`work done` 记 `done_at`；`work_sweep()` 把完成超 24h 的条目追加归档到 `working-archive.jsonl`（幂等、从原始文件读），触发点：`work` 命令与 `dream` 报告。归档后注入不再翻旧账。
+
 ## v3.15（2026-11-16）
 
 > 本轮主题：**把"打 tag"变成推送前的硬动作**，避免市场版本说明再次停在旧版本。

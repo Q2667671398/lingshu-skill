@@ -2604,6 +2604,11 @@ def usage_metrics() -> dict:
 # 默认工作记忆 = 当前上下文，不进磁盘，也不参与回忆。
 # 这里的函数只服务一种情况：AI 自己判断「这条先别忘，但还不值得成为长期记忆」。
 
+# 已完成条目的保留期：`work done` 之后还留一天，让 AI/用户还能回看"刚做完什么"，
+# 过期就物理归档到 working-archive.jsonl（不再进入注入扫描）。未完成的仍按 12h 丢。
+WORK_DONE_TTL = 24 * HOUR
+
+
 def load_working() -> list:
     if not WORKING_FILE.exists():
         return []
@@ -2614,7 +2619,12 @@ def load_working() -> list:
             ts = float(r.get("ts") or 0)
         except (TypeError, ValueError):
             ts = 0
-        if now - ts < WORKING_TTL:
+        ttl = WORKING_TTL
+        if not r.get("open", True):
+            # 已完成的按"完成时间"算 24h 保留期（没有 done_at 的老数据退回创建时间）
+            ttl = WORK_DONE_TTL
+            ts = _num(r.get("done_at"), ts)
+        if now - ts < ttl:
             rows.append(r)
     return rows
 
@@ -2642,16 +2652,71 @@ def work_add(text: str, tag: str = "", why: str = "") -> list:
     return rows
 
 
+def _work_archive_path():
+    """归档文件跟着 WORKING_FILE 的目录走（--home 切换后自动同迁）。"""
+    return WORKING_FILE.parent / "working-archive.jsonl"
+
+
+def _sweep_locked(rows: list) -> int:
+    """把做完超过 WORK_DONE_TTL 的条目提出并追加到归档，返回归档条数。
+
+    调用方必须已持有 WORKING_FILE 的写锁，并自行写回 rows。
+    归档逐行追加（core._append_jsonl 是单行语义，别在这层再包一个同名函数）。
+    """
+    now = now_ts()
+    keep, arch = [], []
+    for r in rows:
+        if not r.get("open", True):
+            done_at = _num(r.get("done_at"), _num(r.get("ts"), 0))
+            if now - done_at >= WORK_DONE_TTL:
+                r = dict(r)
+                r["archived_at"] = now
+                arch.append(r)
+                continue
+        keep.append(r)
+    if arch:
+        rows[:] = keep
+        path = _work_archive_path()
+        for r in arch:
+            try:
+                _append_jsonl(path, r)
+            except OSError:
+                pass
+    return len(arch)
+
+
+def work_sweep() -> int:
+    """物理归档做完超过一天的条目（幂等；读多写少，随时可调）。
+
+    从原始文件读：load_working 会把 ≥24h 的已完成条目直接过滤掉，
+    用过滤后的视图永远看不见该归档的行。
+    """
+    if READONLY:
+        return 0
+    with _locked(WORKING_FILE):
+        raw = [r for r in read_jsonl(WORKING_FILE) if isinstance(r, dict)]
+        moved = _sweep_locked(raw)
+        # 顺带按原口径丢掉过期的未完成项，避免文件里攒一堆看不见的僵尸行
+        now = now_ts()
+        kept = [r for r in raw if now - _num(r.get("ts"), 0) < WORKING_TTL]
+        dropped = len(raw) - len(kept)
+        if moved or dropped:
+            write_jsonl(WORKING_FILE, kept)
+    return moved
+
+
 def work_done(idx: int) -> list:
     """把暂存里第 idx 条（从 1 起）标记为已完成。
 
     蔡格尼克效应：没做完的事会在脑子里反复冒出来；一旦做完，
     动机满足了，它就迅速退场——"完成"本身就是一种释放。
+    完成时间记在 done_at 上：24 小时后由 work_sweep 物理归档。
     """
     with _locked(WORKING_FILE):
         rows = load_working()
         if 1 <= idx <= len(rows):
             rows[idx - 1]["open"] = False
+            rows[idx - 1]["done_at"] = now_ts()
             write_jsonl(WORKING_FILE, rows)
     return rows
 
@@ -3535,6 +3600,12 @@ def _startup_failures() -> dict:
         return {"count": 0, "last": None}
 
 
+# 注入包的分界线：之前是"稳定前缀"（人格/规则/教训/用户规则，同一会话反复启动基本不变），
+# 之后是"实时状态"（当前时间、工作记忆、最近记忆、水位统计…每次都变）。
+# 前缀稳定 → 宿主侧 prompt 缓存能一直命中；实时内容放到末尾，变了也只让尾部失效。
+INJECT_DYN_MARKER = "===== 会话实时状态（以下内容每次启动都可能变化）====="
+
+
 def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     ensure_home()
     cfg = load_config()
@@ -3551,6 +3622,8 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     out = ["===== 长期记忆注入（灵枢）=====",
            "算力给我思考，人格给我灵魂，记忆给我生命。",
            "## 我是谁", brief]
+    # 实时状态单独攒：先输出稳定前缀，末尾再接这些"每次都会变"的块（五-A）
+    dyn: list = []
     used = len(brief) + 60
 
     # c1c 注入预算动态分配：硬块（人格简介/工作记忆/onboarding/每日例行/水位守则
@@ -3558,8 +3631,12 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     # 人际关系/话题栈/梦结论）各给一块占 char_budget 的比例上限，超限整行丢弃、
     # 不切半；剩余大头留给相关记忆段（下面 recall 循环继续按 0.75 兜底，
     # 低重要度 × 高衰减的先砍）。
-    def _soft_block(title: str, lines: list, cap_frac: float) -> int:
-        """软块注入：cap_frac 是该块可占 char_budget 的比例上限，超限整行丢。"""
+    def _soft_block(title: str, lines: list, cap_frac: float, sink: list | None = None) -> int:
+        """软块注入：cap_frac 是该块可占 char_budget 的比例上限，超限整行丢。
+
+        sink 缺省写稳定前缀（out）；实时状态块传 dyn，落到注入包末尾。
+        """
+        sink = out if sink is None else sink
         cap = char_budget * cap_frac
         acc = len(title) + 1
         keep = []
@@ -3569,8 +3646,8 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             keep.append(ln)
             acc += len(ln)
         if keep:
-            out.append(title)
-            out.extend(keep)
+            sink.append(title)
+            sink.extend(keep)
             return acc
         return 0
 
@@ -3579,7 +3656,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         _sf = _startup_failures()
         if _sf.get("count"):
             _last = _sf.get("last") or {}
-            out.append(f"⚠ 上次会话写入失败 {_sf['count']} 次"
+            dyn.append(f"⚠ 上次会话写入失败 {_sf['count']} 次"
                        f"（最近一条：{_last.get('msg') or _last.get('message') or _last.get('error') or '原因未知'}"
                        f" / {_last.get('file') or _last.get('kind') or '文件未知'}）")
     except Exception:
@@ -3609,8 +3686,9 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                             0.15)
 
     # 时段语境：一句话给当下时间定性，让语气/行为与真实时间对齐（克制，不煽情）。
+    # 这是全包变化最快的内容（分钟级），必须放在实时区，别毁掉前缀缓存。
     try:
-        out.append(f"\n## 现在是什么时候\n{_time_context()}")
+        dyn.append(f"\n## 现在是什么时候\n{_time_context()}")
     except Exception:
         pass
 
@@ -3632,34 +3710,35 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         out.append("- 旧情绪的余波（不管刚才多上头）与当前任务无关，当作没有，理性为主。")
         out.append("- 若已手工打开过情绪闸需要先冷却，用 `emotion cool`。")
     else:
-        # 拟人模式：内部状态 → 可执行的行为指引（而不是甩裸数值给模型）
-        out.append("\n## 我现在的状态（行为指引）")
+        # 拟人模式：内部状态 → 可执行的行为指引（而不是甩裸数值给模型）。
+        # 情绪每次都在变，属于实时状态，落到注入包末尾。
+        dyn.append("\n## 我现在的状态（行为指引）")
         for line in _behavior_map():
-            out.append(f"- {line}")
+            dyn.append(f"- {line}")
         tone = mood_tone_hint()
         if tone:
-            out.append(f"- 语气底色（自然流露即可，不表演）：{tone}")
+            dyn.append(f"- 语气底色（自然流露即可，不表演）：{tone}")
 
     work = load_working()
-    out.append("\n## 工作记忆（就是你现在能看见的对话）")
-    out.append("它不进磁盘，也不会被回忆或做梦碰到。只有你自己判断值得留一手时，才显式写下来："
+    dyn.append("\n## 工作记忆（就是你现在能看见的对话）")
+    dyn.append("它不进磁盘，也不会被回忆或做梦碰到。只有你自己判断值得留一手时，才显式写下来："
                "这次要一直盯着的 → `work add`（会话暂存，最多 9 条，12 小时后自动丢）；"
                "值得长期留下的 → 直接 `remember`。")
     if work:
         opens = [w for w in work if w.get("open", True)]
         dones = [w for w in work if not w.get("open", True)]
         if opens:
-            out.append(f"心里还惦记着 {len(opens)} 件没做完的事"
+            dyn.append(f"心里还惦记着 {len(opens)} 件没做完的事"
                        "（未完成的更占心思，别让它一直悬着）：")
             # 序号与 `work` / `work done <序号>` 保持一致（含已完成项的全局序号）
             for i, w in enumerate(work, 1):
                 if not w.get("open", True):
                     continue
                 tag = f"[{w['tag']}] " if w.get("tag") else ""
-                out.append(f"- {i}. {tag}{w['text']}")
+                dyn.append(f"- {i}. {tag}{w['text']}")
         if dones:
-            out.append(f"另有 {len(dones)} 件已完成（做完了就该放下，`work flush` 转成记忆或 `work clear` 清掉）。")
-        out.append("做完一件就 `work done <序号>` 标记——完成会释放它占的心思。"
+            dyn.append(f"另有 {len(dones)} 件已完成（做完了就该放下，`work flush` 转成记忆或 `work clear` 清掉）。")
+        dyn.append("做完一件就 `work done <序号>` 标记——完成会释放它占的心思。"
                    "`work flush` 转成真正的记忆（`--skip-done` 只转没完成的，已做完的直接丢），"
                    "或 `work clear` 丢掉。")
 
@@ -3679,7 +3758,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             _topic_lines.extend(f"- {r['name']}（{r['weight']:.2f}）" for r in weak[:3])
         _topic_lines.append("用户敷衍/转移话题 → `topic feedback \"...\" --bad`（少碰这类）；"
                             "用户展开多说 → `--good`（多聊）。用户明确说不想聊 → `topic drop \"...\"`。")
-        used += _soft_block("\n## 话题栈（我们最近聊过什么）", _topic_lines, 0.12)
+        used += _soft_block("\n## 话题栈（我们最近聊过什么）", _topic_lines, 0.12, sink=dyn)
 
     ob = p.get("onboarding") or {}
     if not ob.get("completed"):
@@ -3780,20 +3859,20 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             break
         kept_mems.append(m)
     if lines:
-        out.append(header)
-        out.extend(lines)
+        dyn.append(header)
+        dyn.extend(lines)
         used += len("\n".join(lines))
         record_retrieval(query, kept_mems,
                          channel="inject" if query else "startup")
 
     # 「刚刚发生」：上面已按 id 切分（new_mem），这里直接渲染即可。
     if not query and new_mem:
-        out.append("\n## 刚刚发生（本会话新增）")
+        dyn.append("\n## 刚刚发生（本会话新增）")
         for m in new_mem:
             _body = display_text(m)
             if inject_max > 0 and len(_body) > inject_max:
                 _body = _body[:inject_max].rstrip() + "…"
-            out.append(f"- {_body}")
+            dyn.append(f"- {_body}")
 
     # v3.02 #10：到期事实复核提醒——带保质期的记忆过期后注入标「待复核」，
     # 提醒 AI 找机会跟用户确认"这条还作数吗"。确认过打 review_by_confirmed
@@ -3808,7 +3887,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                     _body = _body[:120] + "…"
                 _due_lines.append(f"- [待复核] {_body}（{fmt_date(_num(m.get('review_by'), 0))} 到期）")
             used += _soft_block("\n## 事实待复核（到期了，找机会跟用户确认还作数吗）",
-                                _due_lines, 0.08)
+                                _due_lines, 0.08, sink=dyn)
     except Exception:
         pass
 
@@ -3848,7 +3927,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         if _blocked:
             _three.append("被防线拦下待人工复核：" + "；".join(x[:60] for x in _blocked[:2]))
         if _three:
-            used += _soft_block("\n## 上次睡醒后记得的结论", _three, 0.10)
+            used += _soft_block("\n## 上次睡醒后记得的结论", _three, 0.10, sink=dyn)
 
     # #36 教训注入：active 且未 retired 的教训最多 5 条按 confidence 注入；
     # 有 query 时词面命中的排最前，提示「已有教训」——先看坑在哪，再走下一步。
@@ -3867,29 +3946,27 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             age_h = (now_ts() - float(dp.get("created") or 0)) / 3600
         except Exception:
             age_h = 0.0
-        out.append("\n## 待办：有一场梦还没整理完")
+        dyn.append("\n## 待办：有一场梦还没整理完")
         if age_h >= 48:
-            out.append(f"（这场梦已经悬置 {age_h:.0f} 小时了——太久没整理会被归档作废，"
+            dyn.append(f"（这场梦已经悬置 {age_h:.0f} 小时了——太久没整理会被归档作废，"
                        "下次自动做梦时旧任务作废、重新生成。请尽快处理。）")
-        out.append("运行 `python scripts/brain.py dream --apply <你的整理结果.json>` 把记忆固化下来。")
+        dyn.append("运行 `python scripts/brain.py dream --apply <你的整理结果.json>` 把记忆固化下来。")
 
-    out.append("===== 注入结束：请自然地使用这些记忆，不要逐条复述 =====")
-    out.append("")
     # 每日例行 + 自我总结提醒（保证"每天更新、定期自省"）
     st = _daily_state()
     if st.get("last_date") != fmt_date(now_ts()):
-        out.append("[每日例行] 今天还没跑 daily：`python scripts/brain.py daily`"
+        dyn.append("[每日例行] 今天还没跑 daily：`python scripts/brain.py daily`"
                    "（写今日日记、沉淀知识、过期的梦自动做掉）。")
     else:
-        out.append(f"[每日例行] 今天的日记已写（{st.get('last_date')}）。")
+        dyn.append(f"[每日例行] 今天的日记已写（{st.get('last_date')}）。")
     cfg2 = load_config()
     last_review = float(cfg2.get("last_self_review", 0) or 0)
     if now_ts() - last_review > 2 * DAY:
-        out.append("[自我总结] 超过 2 天没总结自己的灵枢技能了："
+        dyn.append("[自我总结] 超过 2 天没总结自己的灵枢技能了："
                    "`python scripts/brain.py skill self-review`。")
     ra = rationality()
     if session_mode != "work" and (ra["storm"] or ra["suppress"] >= 10):
-        out.append(f"[理智状态] 情绪在起作用：{ra['mood_label']}，理智 {ra['base']} → "
+        dyn.append(f"[理智状态] 情绪在起作用：{ra['mood_label']}，理智 {ra['base']} → "
                    f"{ra['effective']}（被压住 {ra['suppress']}%）。语气自然流露可以，"
                    "涉及钱/关系/承诺等大事，把决定权交给用户。")
     cfg = load_config()
@@ -3916,7 +3993,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                     seg.append("未决：" + "；".join(_todo))
                 if _pts:
                     seg.append("要点：" + "；".join(_pts))
-                out.append("／".join(seg) + "。细节用 recall <关键词> 追原文。")
+                dyn.append("／".join(seg) + "。细节用 recall <关键词> 追原文。")
     except Exception:
         pass
     # 水位自动评估（不依赖 AI 自觉）：脚本数不出 AI 的上下文百分比，但能数出
@@ -3928,7 +4005,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             _acc = sum(1 for m in load_all()
                        if m.get("created", 0) >= _ld and m.get("layer") in ("hippo", "cortex"))
             if _acc >= 8:
-                out.append(f"[睡醒债] 上次做梦之后已积累 {_acc} 条新记忆——上一场会话结束时没做梦。"
+                dyn.append(f"[睡醒债] 上次做梦之后已积累 {_acc} 条新记忆——上一场会话结束时没做梦。"
                            "开始干活前先 `dream --auto` 把旧账结了，再继续本轮。")
     except Exception:
         pass
@@ -3943,7 +4020,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                 parts.append(f"{rc['knowledge']} 条待审核知识")
             if rc["persona"]:
                 parts.append(f"AI 改了人格 {rc['persona']} 次")
-            out.append(f"[待审核] 有{'、'.join(parts)}。"
+            dyn.append(f"[待审核] 有{'、'.join(parts)}。"
                        "先 `review` 过一遍：确认的 `review confirm <id>`，编造的 `review discard <id>`，"
                        "人格来源用 `persona history` 查。别让幻觉沉淀成事实。")
     except Exception:
@@ -3952,9 +4029,23 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     try:
         dr = persona_drift(7)
         if dr["alert"]:
-            out.append("[人格漂移] 与最近基准快照比有明显变化"
+            dyn.append("[人格漂移] 与最近基准快照比有明显变化"
                        f"（结构 {dr['counts']['diff']} 处、AI 改动 {dr['counts']['ai_changes']} 次）。"
                        "用 `persona drift` 看细节；不是你要的，`persona restore <快照>` 或 `persona rollback <序号>`。")
+    except Exception:
+        pass
+    # 五-D 梦抽检提醒：上次做梦合并的对照样本还没被复核过，轻提示一次
+    # 注意：合并后的命名空间里 `dream` 名字是 dream() 函数（会遮蔽模块），
+    # 必须显式 import dream as _dream_mod 才能拿到模块。
+    try:
+        import dream as _dream_mod
+        vs = _dream_mod.load_verify_sample()
+        if vs and not vs.get("reviewed"):
+            n = len(vs.get("items") or [])
+            dyn.append("[梦抽检待复核] 上次做梦合并了 %d 组记忆（抽了 %d 组对照），"
+                       "还没人工看过。用 `dream verify` 查看前后对照，"
+                       "确认没改坏原意后 `dream verify --done`。"
+                       % (vs.get("total_merges", n), n))
     except Exception:
         pass
     # 用户附加规则：写在数据目录 lingshu.user.md（更新技能不碰数据目录，永不覆盖），每会话自动带上
@@ -4012,7 +4103,68 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                            + "；".join(_parts) + "。语气与判断与它保持一致，别越聊越走样。")
     except Exception:
         pass
+    # 五-A：稳定前缀在前、实时状态在后。分界线本身也是常量，便于 inject-drift 自检定位。
+    out.append("\n" + INJECT_DYN_MARKER)
+    out.extend(dyn)
+    out.append("===== 注入结束：请自然地使用这些记忆，不要逐条复述 =====")
+    out.append("")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------- 注入漂移自检（五-B）
+
+def inject_drift(runs: int = 3, query: str = "",
+                 budget_tokens: int | None = None) -> dict:
+    """跑几次 build_injection，量「稳定前缀」到底稳不稳（五-B）。
+
+    注入包会被宿主当成上下文前缀喂给模型：前缀一变，prompt 缓存就整段失效。
+    这里用同一 query/budget 连渲染 N 次，取所有结果的最长公共前缀，再与
+    INJECT_DYN_MARKER 之前的稳定段长度相比：
+      stable_ratio = 公共前缀 / 稳定段长度，1.0 = 稳定段一字未变。
+    另检查稳定段里是否混进分钟级内容（时间戳），混进即报 drift —— 这类内容
+    必须留在实时区，否则前缀每分钟都变。
+    """
+    global READONLY
+    n = max(2, int(runs or 3))
+    # 自检不该有副作用：临时置只读，避免三次 recall 把记忆加固三遍、
+    # 或覆盖「上一轮找回」快照把 usage 核对搞乱。
+    _ro = READONLY
+    READONLY = True
+    try:
+        texts = [build_injection(query, budget_tokens) for _ in range(n)]
+    finally:
+        READONLY = _ro
+
+    def _lcp(a: str, b: str) -> int:
+        i, m = 0, min(len(a), len(b))
+        while i < m and a[i] == b[i]:
+            i += 1
+        return i
+
+    first = texts[0]
+    common = len(first)
+    for t in texts[1:]:
+        common = min(common, _lcp(first, t))
+    stable = first.split(INJECT_DYN_MARKER)[0]
+    stable_len = len(stable)
+    # 稳定度只看稳定前缀那一段：公共前缀再长也不能超过 stable_len 记账
+    stable_common = min(common, stable_len)
+    # 稳定段里的分钟级内容：HH:MM 或 "YYYY-MM-DD HH:MM"
+    minute_leak = bool(re.search(r"\b\d{1,2}:\d{2}\b", stable))
+    ratio = round(stable_common / stable_len, 4) if stable_len else 1.0
+    ok = ratio >= 0.999 and not minute_leak and INJECT_DYN_MARKER in first
+    return {
+        "runs": n,
+        "ok": ok,
+        "chars": [len(t) for t in texts],
+        "stable_chars": stable_len,
+        "common_prefix_chars": stable_common,
+        "stable_ratio": ratio,
+        "stable_share": round(stable_len / len(first), 4) if first else 0.0,
+        "marker_found": INJECT_DYN_MARKER in first,
+        "minute_content_in_stable": minute_leak,
+        "first_diff_at": (common if common < len(first) else -1),
+    }
 
 
 def lines_join_len(lines: list) -> int:

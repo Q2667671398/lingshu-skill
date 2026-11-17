@@ -46,5 +46,5 @@ pnpm-lock.yaml
 docs/修复待办.md
 scripts/test_niah.py
 
-# 测试脚本本地化——永远不推送
-tests/
+# 测试脚本进仓库：CI 要跑它们（纯标准库、自建临时 HOME，不碰真实记忆库）
+# 注意：测试若需安装目标，必须自己设 LINGSHU_GLOBAL_SKILLS / BRAIN_MEMORY_HOME 到临时目录。

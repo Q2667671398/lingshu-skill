@@ -1,13 +1,13 @@
 {
-  "version": "3.15",
+  "version": "3.16",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "76a92491f68216d6391d6d7434e53c31fc9ea3599278131b9caac21da030b17b",
-      "size": 162445
+      "sha256": "1be3c5d514eae7cd312b3ed944d467e86e71002188dec028e06d157a3f03ab93",
+      "size": 164237
     },
     "README.md": {
-      "sha256": "6b328a90aa93cfc4dcb54d37bb93d5d03a4e40933fab231850b05821ff3374d9",
-      "size": 58154
+      "sha256": "c8241ca0053781bfe4e988a19675133c7dd13b8139c3dd9926a6445d7b8b8529",
+      "size": 59085
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "9491443c324064092052e4d0c6167ed8868dc873dbc4b57828bdc1c01ce350a3",
+      "sha256": "30e2d3e5e92a0f0f3877ce384414d265ed2d559ed86df6aa5906e29586fd1873",
       "size": 30540
     },
     "assets/panel.html": {
@@ -98,12 +98,12 @@
       "size": 4096
     },
     "package.json": {
-      "sha256": "08cb9c24eb974075d78e68078e26d501b3dae04f20d635b091ddb193628eba20",
-      "size": 840
+      "sha256": "57f1945b0a0163b465a13854710d8335dae9bc37171bdd54f8fdaf844c82d217",
+      "size": 860
     },
     "scripts/bench.py": {
-      "sha256": "1b0cbe80b177509c10a2b7f3795eddeac8d6856f1a68eb635fd931cb8af19b12",
-      "size": 5835
+      "sha256": "036d427e52e3fb7a63479428ef616c02d35b2c7ab5cb2dd389a836934a7d4ff4",
+      "size": 8455
     },
     "scripts/brain.py": {
       "sha256": "659be7e951fa6d1505ea5a7c1a7aff7fb3cb182633573a68ae135ccaa4b7f05f",
@@ -118,16 +118,16 @@
       "size": 10395
     },
     "scripts/cli.py": {
-      "sha256": "b3d1d728e716f7a0f874476ad9d7be69ebc1898ffad23e01a8c4b601ef4898e2",
-      "size": 215159
+      "sha256": "15df598eb191f801ac4754b9c98931e9ce123025df5afcf318d203569e0a9782",
+      "size": 217474
     },
     "scripts/core.py": {
       "sha256": "90f3bfc30c6aa0abaae7c1ef84190ebe868064eb5c60eaaac0f643ff5ec23c64",
       "size": 74902
     },
     "scripts/dream.py": {
-      "sha256": "00ab9bf6f3b3e543508651229dfe653acd9600b0b9367754a4988f0b896682dc",
-      "size": 52200
+      "sha256": "e25749c32fe6cb3b3845c9541ef663dffe8efaa0d9bd251f611e1359208800b9",
+      "size": 54968
     },
     "scripts/emotion.py": {
       "sha256": "3d810cd32e56334772d509e24c367702996678a91f48b1eb8f372e1b3ddb9001",
@@ -158,8 +158,8 @@
       "size": 1972
     },
     "scripts/memory.py": {
-      "sha256": "77aa396f9d3a2d65821624dd61b4c6b86be8153748f6df26f9a70e00b358c43f",
-      "size": 200375
+      "sha256": "a89463c89b10b175ef2e88f3d3be54b23a9cc9457f4d68f54e3b459fa37b2093",
+      "size": 207236
     },
     "scripts/panel_cloud.py": {
       "sha256": "fff72888123d45bbf05ab329a06b2126f1c0b972c76283ecff32454bc4155c58",

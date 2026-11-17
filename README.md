@@ -372,6 +372,19 @@ python scripts/brain.py assoc unlink m_3f2a... m_9c1d...
   3. **重启 AI 工具重试**：审批故障通常是会话级/临时性的，换个会话或重启客户端后可能恢复；
   4. **不要让 AI 绕过**：改名脚本、拆字符串拼命令等手段既不可靠也违反工具安全策略。
 
+### 常见问题：Windows 上 `python` 的退出码读不到（`%ERRORLEVEL%` 恒 0）
+
+- **现象**：在 CMD 里跑 `python scripts/brain.py doctor` 后用 `%ERRORLEVEL%` 判断结果，永远是 0；PowerShell 里 `$LASTEXITCODE` 同样不可靠。
+- **原因**：`python` 命令常常解析到 `python.cmd`（py launcher / Store 别名 / 某些环境管理器生成的包装脚本）。`.cmd` 只做转发，**不会把子进程退出码传回**，于是调用方看到的是包装脚本自己的 0。
+- **怎么办**：需要判断退出码时，**用 `python.exe` 的完整路径**（`where python` 找到它）：
+
+  ```powershell
+  & "D:\ServBay\packages\python\current\python.exe" scripts\brain.py doctor
+  $LASTEXITCODE   # 现在能拿到真实值：0 正常 / 1 WARN / 2 FAIL
+  ```
+
+  或者用 Python 侧间接判断：`python scripts/brain.py doctor --json`，读 JSON 里的 `ok` 字段（不依赖退出码）。
+
 ## 脚本 vs 模型：谁在真正干活
 
 **先打消一个误会：装上灵枢不等于自动拥有类人脑智能。** 这套脚本是「存储、调度、数学计算」；真正的「智能」——合并记忆、理解情绪、提炼知识——仍然靠你接入的大模型。谁干什么，边界如下：

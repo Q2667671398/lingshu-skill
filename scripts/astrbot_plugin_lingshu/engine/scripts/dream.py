@@ -273,6 +273,53 @@ def _dream_snapshot() -> str:
         return ""
 
 
+_FLUFF_WORDS = ("本轮", "综上", "总结", "摘要", "回顾一下", "已完成", "以上是",
+                "以上为", "本次", "小结")
+_ACTION_WORDS = ("别", "不要", "应该", "务必", "必须", "记得", "下次", "避免",
+                 "改成", "改为", "注意", "优先", "禁止", "只能", "要用", "先", "再")
+
+
+def _lesson_sentence(text: str, limit: int = 140) -> str:
+    """从自由文本里抽"可执行的一句"当教训；抽不出（纯摘要/套话）返回 ""。
+
+    教训的价值在"下次能照着做"，所以：
+      * 按句切分，优先挑带动作词（别/应该/务必/记得/改成…）的句子；
+      * 跳过摘要与收尾套话（本轮/综上/总结/已完成…）——它们不是教训；
+      * 到句号就停，不把一个完整结论拦腰截断；
+      * 一句都挑不出且原文够短（≤limit）才整句收下，否则放弃。
+    """
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    if not raw:
+        return ""
+    parts = [p.strip() for p in re.split(r"[。！？!?；;\n]+", raw) if p.strip()]
+    best, best_score = "", -1.0
+    for p in parts:
+        if len(p) < 8:
+            continue
+        score = sum(2.0 for w in _ACTION_WORDS if w in p)
+        score -= sum(3.0 for w in _FLUFF_WORDS if w in p)
+        # 太长的句子多半是叙事而不是结论，轻微降权
+        if len(p) > limit:
+            score -= 1.0
+        if score > best_score:
+            best, best_score = p, score
+    if best and best_score > 0:
+        return best[:limit].rstrip("，,、 ") + ("…" if len(best) > limit else "")
+    # 没有动作句：只有短文本才整条收下（长文本通常是摘要，不该进教训库）
+    if len(raw) <= 80 and not any(w in raw for w in _FLUFF_WORDS):
+        return raw
+    return ""
+
+
+def _lesson_conf(base: float, evidence: int) -> float:
+    """置信度按证据条数分级：1 条=base，每多一条 +0.10，封顶 0.6。
+
+    梦提炼的教训都还没被验证（validate 才会上调到 0.95），证据越多先验越强；
+    固定 0.4 会让"3 条证据"和"孤证"一样不可信，审核时看不出优先级。
+    """
+    return round(min(0.6, base + 0.10 * max(0, int(evidence) - 1)), 2)
+
+
 def _mine_lessons(records: list, max_lessons: int = 3) -> list:
     """教训提炼（#36）：扫描失败闭环证据源 → 生成待审教训候选。
 
@@ -281,7 +328,9 @@ def _mine_lessons(records: list, max_lessons: int = 3) -> list:
       2. 被 superseded_by 的旧记忆——结论错过一次被新事实取代；
       3. detect_conflicts 冲突对——两条记忆互相打架，其中带改口信号的当教训素材。
     每条教训 status="pending"（与 knowledge/persona 同一审核闸），
-    evidence 存证据记忆 id，confidence 起步 0.4（梦提炼的先验：像，但没验证过）。
+    evidence 存证据记忆 id；confidence 走 _lesson_conf 按证据条数分级
+    （0.4 起步、封顶 0.6，梦提炼的先验：像，但没验证过）。
+    文本一律经 _lesson_sentence 抽可执行句——摘要在教训库里没有可复用价值。
     返回本轮新建的教训（已入库，供梦报告引用）。
     """
     import memory as mem_mod
@@ -296,15 +345,16 @@ def _mine_lessons(records: list, max_lessons: int = 3) -> list:
                 return True
         return False
 
-    # 1) correction 改口记录：教训文本直接从改口原文提炼
+    # 1) correction 改口记录：从改口原文里抽可执行的一句
     corrections = [m for m in records
                    if m.get("correction") and m.get("id") and m.get("text", "").strip()]
     for m in corrections[:max_lessons]:
-        text = f"{m['text'].strip()}"
-        if _dup(text):
+        text = _lesson_sentence(str(m.get("text", "")))
+        if not text or _dup(text):
             continue
+        ev = [m["id"]]
         created.append(mem_mod.add_lesson(
-            text, evidence=[m["id"]], confidence=0.4, status="pending"))
+            text, evidence=ev, confidence=_lesson_conf(0.4, len(ev)), status="pending"))
         if len(created) >= max_lessons:
             return created
 
@@ -319,11 +369,13 @@ def _mine_lessons(records: list, max_lessons: int = 3) -> list:
         newer = by_id.get(new_id)
         if not newer or not str(newer.get("text", "")).strip():
             continue
-        text = f"「{str(newer.get('text', '')).strip()[:120]}」已取代旧结论——别再按旧的说。"
+        core = str(newer.get("text", "")).strip()
+        text = f"「{core[:120]}」已取代旧结论——别再按旧的说。"
         if _dup(text):
             continue
+        ev = [m["id"], new_id]
         created.append(mem_mod.add_lesson(
-            text, evidence=[m["id"], new_id], confidence=0.4, status="pending"))
+            text, evidence=ev, confidence=_lesson_conf(0.4, len(ev)), status="pending"))
 
     # 3) 冲突对：带改口信号的那一侧是更新的事实，提炼成教训
     try:
@@ -347,7 +399,7 @@ def _mine_lessons(records: list, max_lessons: int = 3) -> list:
             continue
         ev = [x.get("id") for x in (c.get("a"), c.get("b")) if x.get("id")]
         created.append(mem_mod.add_lesson(
-            text, evidence=ev, confidence=0.35, status="pending"))
+            text, evidence=ev, confidence=_lesson_conf(0.35, len(ev)), status="pending"))
     return created
 
 
@@ -389,6 +441,11 @@ def dream_priority() -> dict:
 
     # 3) 工作记忆堆积
     try:
+        # 五-E：做梦顺带把做完超过一天的暂存条目物理归档（原文进 working-archive.jsonl）
+        try:
+            _mem.work_sweep()
+        except Exception:
+            pass
         ws = _mem.work_status()
         reasons["working_open"] = ws["open_count"]
         if ws["open_count"] >= 3:
