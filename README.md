@@ -491,6 +491,14 @@ python scripts/check_tag.py --check
 > 这样「仓库很久没打 tag、市场版本说明一直停在旧版本」不会再发生。
 > 应急跳过：`LINGSHU_SKIP_TAG_CHECK=1 git push ...`（不建议）。
 
+> **Release 自动创建**：`.github/workflows/release.yml` 在推送 `v*` tag 时触发，
+> 自动把 CHANGELOG 对应版本小节写成 GitHub Release 正文。
+> **这一步不能省**：插件市场（dsh-market）的「版本说明」读的是
+> `awesome-dsh-plugin` 目录站抓取的 **GitHub Release**，不是 git tag；
+> 只打 tag 不建 Release，市场会一直显示上一次 Release 的说明。
+> 目录站每天抓一次，所以 Release 建好后，市场通常要等下一次抓取才更新（market 自身另有 1 小时缓存）。
+> 手动兜底：`gh release create v3.18 --notes-file <(sed -n '/^## v3.18/,/^## v3.1[0-7]/p' CHANGELOG.md)`。
+
 ### 用户侧更新
 
 **主仓库：<https://gitee.com/htmcwy_0/lingshu-skill>**　镜像：<https://github.com/Q2667671398/lingshu-skill>

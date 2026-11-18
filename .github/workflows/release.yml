@@ -1,0 +1,55 @@
+name: release
+
+# 打 tag 即发布：把 CHANGELOG 里对应版本的小节作为 Release 正文。
+# 为什么必须建 Release：插件市场（dsh-market）的「版本说明」读的是
+# awesome-dsh-plugin 目录站抓取的 GitHub Release，不是 git tag。
+# 只打 tag 不建 Release，市场会一直显示上一次 Release 的版本说明。
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 从 CHANGELOG 抽取本版本小节
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          python - "$TAG" > release-notes.md <<'PY'
+          import pathlib, re, sys
+
+          tag = sys.argv[1]
+          ver = tag[1:] if tag.startswith("v") else tag
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          heads = [(m.start(), m.group(1))
+                   for m in re.finditer(r"^## v([0-9]+\.[0-9]+)", text, re.M)]
+          for i, (pos, v) in enumerate(heads):
+              if v == ver:
+                  end = heads[i + 1][0] if i + 1 < len(heads) else len(text)
+                  print(text[pos:end].strip())
+                  break
+          else:
+              print(f"v{ver}")
+          PY
+          echo "--- release-notes.md（前 6 行）---"
+          head -6 release-notes.md
+
+      - name: 建/更新 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: lingshu ${{ github.ref_name }}
+          body_path: release-notes.md
+          make_latest: true

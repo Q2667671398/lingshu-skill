@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.18（2026-11-19）
+
+> 本轮主题：**发版自动化——tag 即 Release**。无运行时代码变更，只补发布链路。
+
+- **新增 `.github/workflows/release.yml`**：推送 `v*` tag 时自动创建/更新 GitHub Release，正文从 `CHANGELOG.md` 的对应版本小节抽取（找不到就退回 tag 名），并设为 latest。
+- **背景（实测）**：插件市场的「版本说明」来自目录站发布的 `dsh-plugin-updates` 数据包，而该包抓取的是 **GitHub Release**，不是 git tag——`dshmarket/lib/changelog.js` 明确写着 "The market asks GitHub for nothing"。仓库此前只有 3.01 / 3.04 / 2.80 三个 Release，所以 v3.14–v3.17 打了 tag、市场仍显示 3.04。
+- **已补建** v3.14 / v3.15 / v3.16 / v3.17 四个 Release（正文取各自 CHANGELOG 小节）。
+- **README 发布流程**：补上「Release 由 Actions 自动创建」的说明、目录站抓取延迟（每天一次 + market 1 小时缓存）与手动兜底命令。
+
 ## v3.17（2026-11-18）
 
 > 本轮主题：**成长可视化与特质的惯性**（问题清单 五-F/G/H）。

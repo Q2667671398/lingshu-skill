@@ -1,13 +1,13 @@
 {
-  "version": "3.17",
+  "version": "3.18",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "ce18baff05ec65d4130911586fa6c4b510926bd015dc5a7bd25748eebe9ea459",
-      "size": 165905
+      "sha256": "164aeb1e591e192dc6d6cfccfab352eac3422512041d19d3eb914d9f8879bb8e",
+      "size": 166901
     },
     "README.md": {
-      "sha256": "c8241ca0053781bfe4e988a19675133c7dd13b8139c3dd9926a6445d7b8b8529",
-      "size": 59085
+      "sha256": "925704c21936c0eadcef14588548d2a6e90e5c68150f0158bcf783a4cfe83eb4",
+      "size": 59755
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "fe78d8a1b57f5963f9eff51def057613d552f1c662a3a91fdde83269e6f3bdb1",
+      "sha256": "b20bc79cd280b67dcefe48444a15378ff26c10324f3d99736173e0b1bb787d2d",
       "size": 30540
     },
     "assets/panel.html": {
@@ -98,7 +98,7 @@
       "size": 4096
     },
     "package.json": {
-      "sha256": "1286edc7e1d8edf7d32db2c7839af2d3f80bd43a9a25709096a96c83d20fef13",
+      "sha256": "387cd764721468df9e9a9944d6238a85868abcaf7d0cac120422a5abd817938e",
       "size": 860
     },
     "scripts/bench.py": {
