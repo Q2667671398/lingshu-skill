@@ -3606,11 +3606,109 @@ def _startup_failures() -> dict:
 INJECT_DYN_MARKER = "===== 会话实时状态（以下内容每次启动都可能变化）====="
 
 
+# ---------------------------------------------------------------- 注入包会话快照（五-D/候选1）
+
+_INJECT_CACHE_FILES = ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl", "archive.jsonl",
+                       "persona.json", "working.jsonl", "topics.jsonl",
+                       "daily_state.json", "lingshu.user.md")
+# 注意：config.json 故意不在键里——cmd_startup 每次 startup 都写 last_startup/wake_count，
+# mtime 必变会把缓存每轮打穿。影响注入的关键配置（mode/budget/ttl）已单独入键。
+
+
+def _inject_cache_key(query: str, budget: int, cfg: dict) -> str | None:
+    """注入包缓存键：输入要素 + 关键数据文件 mtime 的哈希。
+
+    任何一次记忆/人格/配置写入都会改 mtime → 键变 → 缓存失效。
+    取不到（文件不存在记 "0"）也稳定。返回 None 表示缓存不可用。
+    """
+    try:
+        parts = [str(query or ""), str(budget), str(cfg.get("mode") or ""),
+                 str(cfg.get("session_state_ttl") or 0)]
+        for name in _INJECT_CACHE_FILES:
+            f = HOME / name
+            try:
+                st = f.stat()
+                parts.append(f"{name}:{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                parts.append(f"{name}:0")
+        return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+    except Exception:
+        return None
+
+
+def _inject_cache_load(cfg: dict, key: str) -> str | None:
+    """TTL 内且键匹配 → 返回上次注入文本；否则 None。只读降级也能用。"""
+    try:
+        f = SESSIONS_DIR / "inject_cache.json"
+        if not f.is_file():
+            return None
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+        if data.get("key") != key:
+            return None
+        ttl = max(60, int(cfg.get("session_state_ttl") or 1800))
+        if now_ts() - int(data.get("ts") or 0) > ttl:
+            return None
+        text = data.get("text")
+        return text if isinstance(text, str) and text else None
+    except Exception:
+        return None
+
+
+def _inject_cache_save(cfg: dict, key: str, text: str) -> None:
+    """原子写缓存；失败静默（缓存只是加速，不是数据）。"""
+    if READONLY:
+        return
+    try:
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        atomic_json(SESSIONS_DIR / "inject_cache.json",
+                    {"key": key, "ts": now_ts(), "text": text})
+    except Exception:
+        pass
+
+
+def inject_cache_clear() -> dict:
+    """手动清掉注入包缓存（session-state clear 用）。"""
+    removed = False
+    try:
+        f = SESSIONS_DIR / "inject_cache.json"
+        if f.is_file():
+            f.unlink()
+            removed = True
+    except OSError:
+        pass
+    return {"ok": True, "removed": removed}
+
+
+def inject_cache_info(cfg: dict | None = None) -> dict:
+    """缓存状态（session-state show 用）。"""
+    cfg = cfg or load_config()
+    f = SESSIONS_DIR / "inject_cache.json"
+    out = {"enabled": bool(cfg.get("session_state_cache")),
+           "ttl": int(cfg.get("session_state_ttl") or 1800),
+           "path": str(f)}
+    try:
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+        out["ts"] = data.get("ts")
+        out["age_sec"] = now_ts() - int(data.get("ts") or 0)
+        out["chars"] = len(data.get("text") or "")
+    except Exception:
+        out["ts"] = None
+    return out
+
+
 def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     ensure_home()
     cfg = load_config()
     # budget 0/负数按 1 兜底：`budget_tokens or ...` 会把 0 静默吞掉，负数则算出负 char_budget
     budget = budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else _cfg_num(cfg, "budget_tokens", 2400, int)
+    # 五-D/候选1：开关打开时，库没变 + TTL 内直接复用上次注入文本，
+    # 跳过整库遍历与 recall 重算（跨天恢复首轮明显更快）。默认关闭。
+    if cfg.get("session_state_cache"):
+        _ck = _inject_cache_key(query, budget, cfg)
+        if _ck:
+            _cached = _inject_cache_load(cfg, _ck)
+            if _cached:
+                return _cached
     char_budget = int(budget * 1.8)
     # 每条记忆注入时的正文截断上限（可调）：budget 提高后单条也别无限长，
     # 默认 600 字符，够 AI "记得详细点"，又不让一条记忆独吞预算。
@@ -4108,7 +4206,11 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     out.extend(dyn)
     out.append("===== 注入结束：请自然地使用这些记忆，不要逐条复述 =====")
     out.append("")
-    return "\n".join(out)
+    _result = "\n".join(out)
+    # 五-D/候选1：本次渲染结果落会话快照（READONLY 下 _inject_cache_save 自行跳过）
+    if cfg.get("session_state_cache") and _ck:
+        _inject_cache_save(cfg, _ck, _result)
+    return _result
 
 
 # ---------------------------------------------------------------- 注入漂移自检（五-B）
@@ -4224,3 +4326,201 @@ def list_memories(limit: int = 30, layer: str | None = None) -> list:
         records = [m for m in records if m.get("layer") == layer]
     records.sort(key=lambda m: _num(m.get("created"), 0), reverse=True)
     return records[:limit]
+
+
+# ---------------------------------------------------------------- 跨对话上下文摄取（候选7）
+# 把别的会话/宿主导出的对话增量读成 episode 记忆，让灵枢在另一个会话里也能
+# recall 到那边聊过的事。设计约束：
+#   * 默认关（config.dialogue_ingest），必须显式给 dialogue_sources 目录；
+#   * 按字节偏移增量读——重复摄取零新增、文件追加只处理新尾巴；
+#   * 只认 .jsonl/.md/.txt，深层目录最多两级，避免误扫整个磁盘；
+#   * 每条块过 remember() 正常脱敏/近重复合并，不绕开记忆主链路。
+
+_DIALOGUE_EXTS = (".jsonl", ".md", ".txt")
+_DIALOGUE_MAX_DEPTH = 2
+
+
+def _dialogue_offsets_path() -> Path:
+    return HOME / "dialogue_offsets.json"
+
+
+def _dialogue_load_offsets() -> dict:
+    p = _dialogue_offsets_path()
+    if not p.exists():
+        return {}
+    try:
+        d = json.loads(p.read_text(encoding="utf-8-sig"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _dialogue_turns_from_text(text: str, ext: str) -> list:
+    """把导出片段解析成 [(role, text)]；role ∈ user / ai / other。"""
+    turns = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if ext == ".jsonl":
+            try:
+                d = json.loads(s)
+            except Exception:
+                continue
+            if isinstance(d, str):
+                turns.append(("other", d))
+                continue
+            if not isinstance(d, dict):
+                continue
+            txt = d.get("content") or d.get("text") or d.get("message") or ""
+            if isinstance(txt, list):   # OpenAI 风格 content parts
+                txt = " ".join(str(x.get("text") if isinstance(x, dict) else x) for x in txt)
+            txt = str(txt).strip()
+            if not txt:
+                continue
+            raw_role = str(d.get("role") or d.get("sender") or d.get("from") or "").lower()
+            if raw_role in ("user", "human", "me", "我", "用户"):
+                role = "user"
+            elif raw_role in ("assistant", "ai", "bot", "model", "灵枢", "助手"):
+                role = "ai"
+            else:
+                role = "other"
+            turns.append((role, txt))
+        else:
+            m = re.match(r"^\s*(user|human|assistant|ai|bot|model|我|用户|助手|灵枢)\s*[:：]\s*(.+)$",
+                         s, re.I)
+            if m:
+                who = m.group(1).lower()
+                role = "user" if who in ("user", "human", "我", "用户") else "ai"
+                turns.append((role, m.group(2).strip()))
+            else:
+                turns.append(("other", s))
+    return turns
+
+
+def _dialogue_chunks(turns: list, max_chars: int = 700) -> list:
+    """相邻轮次拼成块（用户/我 前缀）；块满就切，一块 = 一条 episode 记忆。"""
+    chunks, buf, size = [], [], 0
+    for role, text in turns:
+        if len(text) < 2:
+            continue
+        prefix = "用户: " if role == "user" else ("我: " if role == "ai" else "")
+        piece = prefix + text
+        if buf and size + len(piece) > max_chars:
+            chunks.append("\n".join(buf))
+            buf, size = [], 0
+        buf.append(piece)
+        size += len(piece) + 1
+    if buf:
+        chunks.append("\n".join(buf))
+    return [c for c in chunks if len(c) >= 8]
+
+
+def _dialogue_files(sources: list, max_files: int) -> list:
+    """收集候选文件（最多 max_files 个，按 mtime 新→旧）。"""
+    found = []
+    for src in sources:
+        root = Path(str(src)).expanduser()
+        if not root.is_dir():
+            continue
+        base_depth = len(root.parts)
+        for f in root.rglob("*"):
+            try:
+                if len(f.parts) - base_depth > _DIALOGUE_MAX_DEPTH:
+                    continue
+                if f.is_file() and f.suffix.lower() in _DIALOGUE_EXTS:
+                    found.append(f)
+            except OSError:
+                continue
+    found.sort(key=lambda f: -(f.stat().st_mtime if f.exists() else 0))
+    return found[:max_files]
+
+
+def ingest_dialogues(paths=None, limit: int | None = None, dry_run: bool = False) -> dict:
+    """增量摄取其他会话的对话导出 → episode 记忆。
+
+    参数：
+      paths  额外/替代的源目录（缺省用 config.dialogue_sources）
+      limit  本次最多处理多少个文件（缺省 config.dialogue_ingest_max_files）
+      dry_run 只统计不写库（不推进偏移、不写记忆）
+    返回：{enabled, files, scanned, imported, skipped, chars, dry_run}
+    """
+    cfg = load_config()
+    if not cfg.get("dialogue_ingest"):
+        return {"ok": True, "enabled": False, "files": 0, "scanned": 0,
+                "imported": 0, "skipped": 0, "chars": 0, "dry_run": dry_run,
+                "reason": "未开启：config dialogue_ingest=false"}
+    sources = [str(x) for x in (paths or cfg.get("dialogue_sources") or []) if str(x).strip()]
+    if not sources:
+        return {"ok": True, "enabled": True, "files": 0, "scanned": 0,
+                "imported": 0, "skipped": 0, "chars": 0, "dry_run": dry_run,
+                "reason": "没有配置 dialogue_sources 目录"}
+    max_files = max(1, min(int(limit or cfg.get("dialogue_ingest_max_files") or 50), 500))
+    max_chars = max(200, min(int(cfg.get("dialogue_ingest_max_chars") or 700), 2000))
+    files = _dialogue_files(sources, max_files)
+    offsets = _dialogue_load_offsets()
+    # 已有摄取记忆的原文集合：文件被截断/重放时按原文去重（id 不会重复生成）
+    try:
+        known = {(m.get("text") or "").strip()
+                 for m in load_all() if m.get("source") == "dialogue"}
+    except Exception:
+        known = set()
+    imported, skipped, chars, touched = 0, 0, 0, 0
+    for f in files:
+        key = str(f.resolve())
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        entry = offsets.get(key) or {}
+        # 用 offset==size 判断"已读干净"：尾部半行没读完时不跳过，
+        # 下次等它补上换行再继续（否则会永久漏掉最后一条）。
+        if entry.get("offset") == st.st_size and entry.get("mtime") == st.st_mtime:
+            continue   # 没变过：完全不读
+        start = int(entry.get("offset") or 0)
+        if st.st_size < start:
+            start = 0   # 文件被截断/重写：从头再来（原文去重兜底）
+        try:
+            with open(f, "rb") as fh:
+                fh.seek(start)
+                blob = fh.read()
+        except OSError:
+            continue
+        # 偏移永远落在完整行边界：尾部半行（正在写/无换行结尾）留到下次，
+        # 否则续读时会把一条完整的新记录误当成"残片"丢掉。
+        if blob and not blob.endswith(b"\n"):
+            cut = blob.rfind(b"\n")
+            if cut < 0:
+                continue
+            blob = blob[:cut + 1]
+        text = blob.decode("utf-8", errors="replace")
+        turns = _dialogue_turns_from_text(text, f.suffix.lower())
+        for chunk in _dialogue_chunks(turns, max_chars):
+            if chunk.strip() in known:
+                skipped += 1
+                continue
+            if not dry_run:
+                try:
+                    remember(chunk, kind="episode", importance=0.45,
+                             tags=["对话摄取", f.stem], source="dialogue",
+                             channel=f"dialogue:{f.stem}")
+                except Exception as exc:
+                    log_event("dialogue", f"对话摄取写入失败（{f.name}）：{exc}", level="warn")
+                    continue
+            known.add(chunk.strip())
+            imported += 1
+            chars += len(chunk)
+        if not dry_run:
+            # offset 只推进到最后一个完整行末尾；尾部半行等下次补全
+            offsets[key] = {"offset": start + len(blob), "size": st.st_size,
+                            "mtime": st.st_mtime, "ts": now_ts()}
+            touched += 1
+    if not dry_run and touched:
+        try:
+            atomic_json(_dialogue_offsets_path(), offsets)
+        except Exception as exc:
+            log_event("dialogue", f"对话摄取偏移保存失败：{exc}", level="warn")
+    return {"ok": True, "enabled": True, "files": len(files), "scanned": len(files),
+            "imported": imported, "skipped": skipped, "chars": chars,
+            "dry_run": dry_run, "sources": sources}
+

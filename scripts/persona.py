@@ -2071,6 +2071,63 @@ def growth_trends(days: int = 30, limit: int = 4) -> dict:
     return {"days": days, "rising": rising[:limit], "fading": fading[:limit]}
 
 
+def persona_replay(days: int = 90, limit: int = 20) -> dict:
+    """只读回放（候选5）：对比最早快照与当前人格，输出偏移量与拐点。
+
+    全程走 readonly_scope：load_persona 的迁移补写、任何记账一律跳过；
+    前后各取一次 data_fingerprint，用 unchanged 自证"没写库"。
+    """
+    days = max(1, min(int(days or 90), 3650))
+    limit = max(1, min(int(limit or 20), 200))
+    before = data_fingerprint()
+    offsets, baseline, err = [], None, ""
+    with readonly_scope():
+        try:
+            snaps = [s for s in persona_snapshots(100000)
+                     if s.get("label") != "restore前自动备份"]
+            if snaps:
+                oldest = snaps[-1]
+                base = json.loads((PERSONA_SNAP_DIR / f"{oldest['name']}.json")
+                                  .read_text(encoding="utf-8-sig"))
+                bp = base.get("persona") or {}
+                cur = load_persona()
+                baseline = {"name": oldest["name"], "label": oldest.get("label"),
+                            "ts": oldest.get("ts")}
+                for section in ("traits", "drives", "identity"):
+                    b = bp.get(section) or {}
+                    c = cur.get(section) or {}
+                    for k in sorted(set(b) | set(c)):
+                        if b.get(k) == c.get(k):
+                            continue
+                        if section == "traits":
+                            try:
+                                fa = trait_value(b.get(k))
+                                ta = trait_value(c.get(k))
+                            except (TypeError, ValueError):
+                                continue
+                            dlt = ta - fa
+                            if abs(dlt) < 1:
+                                continue
+                            offsets.append({"section": section, "key": k,
+                                            "from": round(fa, 1), "to": round(ta, 1),
+                                            "delta": round(dlt, 1)})
+                        else:
+                            offsets.append({"section": section, "key": k,
+                                            "from": b.get(k), "to": c.get(k), "delta": None})
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            log_event("persona", f"只读回放降级：{err}", level="warn")
+        tl = growth_timeline(days, limit=limit)
+        events = tl.get("events") or []
+    after = data_fingerprint()
+    offsets.sort(key=lambda x: -abs(x.get("delta") or 0))
+    return {"days": days, "baseline": baseline, "offsets": offsets,
+            "offset_count": len(offsets),
+            "inflections": events, "inflection_count": len(events),
+            "readonly": True, "unchanged": before == after,
+            "fingerprint": before[:12], "error": err}
+
+
 # ———————— 自认识（self-model）————————
 # 与 traits 的区别：traits 是"性格倾向数值"，self_model 是 AI 用文字对自己能力
 # 边界的认知——擅长什么、短板在哪、哪些还没弄清。数值漂移由做梦攒账驱动，
@@ -2079,6 +2136,42 @@ def growth_trends(days: int = 30, limit: int = 4) -> dict:
 
 _SELF_MODEL_BUCKET_MAP = {"strength": "strengths", "limitation": "limitations",
                           "uncertainty": "uncertainties"}
+
+
+# ---------------------------------------------------------------- 临界饱和余量（候选4）
+
+SATURATION_ALERT = 0.80   # 饱和度 ≥ 此值视为"贴近临界点"
+
+
+def saturation_report(threshold: float = SATURATION_ALERT) -> dict:
+    """traits 距 0/100 边界的临界余量（0~1，越大越贴近边界）。
+
+    饱和度 = 1 - min(v, 100-v)/50：正中 50 分 = 0（最稳），
+    触到 0 或 100 = 1（完全饱和，所有同向调整都会被夹住）。
+    只读；返回告警清单，供 CLI/每日例行决定要不要提醒。
+    """
+    try:
+        threshold = max(0.0, min(float(threshold), 1.0))
+    except (TypeError, ValueError):
+        threshold = SATURATION_ALERT
+    p = load_persona()
+    items = []
+    for k, v in (p.get("traits") or {}).items():
+        try:
+            val = trait_value(v)
+        except (TypeError, ValueError):
+            continue
+        sat = 1.0 - min(val, 100.0 - val) / 50.0
+        items.append({"key": k, "value": round(val, 1),
+                      "saturation": round(sat, 3),
+                      "edge": "上限" if val >= 50 else "下限",
+                      "distance": round(min(val, 100.0 - val), 1)})
+    items.sort(key=lambda x: -x["saturation"])
+    alerts = [x for x in items if x["saturation"] >= threshold]
+    return {"ok": True, "threshold": threshold, "traits": items,
+            "max": items[0]["saturation"] if items else 0.0,
+            "alerts": alerts, "alert_count": len(alerts)}
+
 
 
 def self_model_get() -> dict:

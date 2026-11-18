@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.19（2026-11-19）
+
+> 本轮主题：**跨对话摄取与只读自证**（问题清单候选 1 / 4 / 5 / 7）。
+
+- **候选7 跨对话上下文摄取**：新增 `ingest-dialogues` 子命令——把其他会话/宿主导出的对话文件（`.jsonl` / `.md` / `.txt`）增量读成 `episode` 记忆，在另一个会话里也能 `recall` 到那边聊过的事。按字节偏移续读（偏移只推进到完整行末尾），重复摄取零新增、文件追加只处理新尾巴；解析兼容 OpenAI 风格 `{"role","content"}` 与 `用户: / 我: ` 行格式；按原文去重，文件被截断会从头重放。默认关闭（`config.dialogue_ingest=false`），必须显式配置 `dialogue_sources` 目录，深层最多两级；`dialogue_ingest_auto=true` 时在 `startup` 顺带增量摄取（只 stat，没新内容近乎零开销）。
+- **候选1 会话级注入快照**：`config.session_state_cache` 打开后，`build_injection` 用「输入要素 + 数据文件 mtime」做键缓存整份注入包，库没变且 TTL（默认 1800s）内直接复用——跨天恢复首轮不再整库遍历与 recall 重算。任何记忆/人格写入都会改 mtime 自动失效，正确性不靠 TTL 兜底；`config.json` 故意不入键（startup 每轮写 `last_startup` 会打穿缓存）。新增 `session-state show|clear` 查看/清理。
+- **候选5 只读回放**：新增 `replay` 子命令，对比最早人格快照与当前值输出 traits 偏移量（含方向与幅度）与近 N 天成长拐点；全程走新增的 `readonly_scope()`，迁移补写/记账一律跳过，并用 `data_fingerprint()` 在前后各取一次全库指纹自证「没写库」。
+- **候选4 临界饱和余量**：新增 `saturation` 子命令——traits 距 0/100 边界的饱和度 `1 - min(v,100-v)/50`（正中 50 分最稳、顶到边界为 1），≥0.8 告警提示「再往同方向调很容易被夹在边界上」。纯读，不改排序。
+
 ## v3.18（2026-11-19）
 
 > 本轮主题：**发版自动化——tag 即 Release**。无运行时代码变更，只补发布链路。

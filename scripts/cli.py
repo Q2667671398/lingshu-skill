@@ -719,6 +719,17 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
         # startup 标记：写入失败可见化的分界线——这条之后出现的 warn/error
         # 就是"上次会话期间的失败"，注入包顶部会亮出来。
         log_event("startup", "会话开始，注入完成", level="info")
+        # 候选7：近实时摄取——只 stat 文件，没新内容近乎零开销；
+        # 注入已在上面完成，所以本轮新摄取的记忆从下一次 recall/startup 起生效。
+        try:
+            _cfg = load_config()
+            if _cfg.get("dialogue_ingest") and _cfg.get("dialogue_ingest_auto"):
+                _rep = ingest_dialogues(limit=20)
+                if _rep.get("imported"):
+                    log_event("dialogue", f"会话开始自动摄取 {_rep['imported']} 条对话记忆",
+                              level="info")
+        except Exception as exc:
+            log_event("dialogue", f"会话开始自动摄取失败：{exc}", level="warn")
     return 10 if READONLY else 0
 
 
@@ -1243,6 +1254,35 @@ def _main(argv=None) -> int:
     p_idr.add_argument("--runs", type=int, default=3, help="渲染次数（默认 3）")
     p_idr.add_argument("--query", default="", help="按指定查询生成（缺省是不带查询的 startup 注入包）")
     p_idr.add_argument("--json", action="store_true")
+
+    # 五-D/候选1：会话级注入快照查看/清理
+    p_sst = sub.add_parser("session-state",
+                           help="会话级注入快照：查看缓存状态或清理（需 config session_state_cache=true 才生效）")
+    p_sst.add_argument("action", nargs="?", default="show", choices=["show", "clear"])
+    p_sst.add_argument("--json", action="store_true")
+
+    # 候选5：只读回放——对比最早快照与当前人格，只输出偏移与拐点，不写库
+    p_rpl = sub.add_parser("replay",
+                           help="只读回放：对比最早快照与当前人格，输出偏移量与拐点（运行前后全库不变）")
+    p_rpl.add_argument("--days", type=int, default=90, help="拐点回看天数（默认 90）")
+    p_rpl.add_argument("--limit", type=int, default=20, help="拐点条数上限（默认 20）")
+    p_rpl.add_argument("--json", action="store_true")
+
+    # 候选4：临界饱和余量——traits 贴近 0/100 边界时提前告警
+    p_sat = sub.add_parser("saturation",
+                           help="临界饱和余量：traits 距 0/100 边界的余量，≥0.8 告警")
+    p_sat.add_argument("--threshold", type=float, default=0.80,
+                       help="告警阈值（默认 0.80）")
+    p_sat.add_argument("--json", action="store_true")
+
+    # 候选7：跨对话上下文摄取——把别的会话导出的对话增量读成记忆
+    p_dlg = sub.add_parser("ingest-dialogues",
+                           help="跨对话摄取：把其他会话导出的对话（JSONL/MD/TXT）增量读成记忆")
+    p_dlg.add_argument("--path", action="append", default=None,
+                       help="对话导出目录（可多次；缺省用 config dialogue_sources）")
+    p_dlg.add_argument("--limit", type=int, default=None, help="本次最多处理多少文件")
+    p_dlg.add_argument("--dry-run", action="store_true", help="只统计不写库")
+    p_dlg.add_argument("--json", action="store_true")
 
     p_dream = sub.add_parser("dream", help="做梦：整理与巩固记忆")
     p_dream.add_argument("--trigger", default="manual")
@@ -1971,6 +2011,96 @@ def _main(argv=None) -> int:
         if rep["first_diff_at"] >= 0:
             print(f"  首个差异位置：第 {rep['first_diff_at']} 字符")
         return 0 if rep["ok"] else 1
+
+    if args.cmd == "session-state":
+        # 五-D/候选1：查看/清理注入包快照缓存
+        if args.action == "clear":
+            rep = inject_cache_clear()
+            if args.json:
+                print(json.dumps(rep, ensure_ascii=False, indent=2))
+            else:
+                print("已清理注入包快照缓存" if rep.get("removed")
+                      else "没有缓存文件（本来就没生成过）")
+            return 0
+        info = inject_cache_info(load_config())
+        if args.json:
+            print(json.dumps(info, ensure_ascii=False, indent=2))
+            return 0
+        print(f"会话快照缓存：{'已启用' if info['enabled'] else '未启用'}"
+              "（config session_state_cache）")
+        print(f"  TTL：{info['ttl']} 秒")
+        print(f"  文件：{info['path']}")
+        if info.get("ts"):
+            age = info.get("age_sec") or 0
+            state = "有效" if (info["enabled"] and age <= info["ttl"]) else "已过期/未启用"
+            print(f"  最近生成：{age} 秒前（{state}），{info.get('chars', 0)} 字符")
+        else:
+            print("  还没生成过缓存")
+        return 0
+
+    if args.cmd == "saturation":
+        rep = saturation_report(args.threshold)
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0
+        print(f"临界饱和余量（阈值 {rep['threshold']:.2f}；1=已顶到 0/100 边界）")
+        if not rep["traits"]:
+            print("  还没有 traits 数据（先在初识里养出人格，或 `persona set`）")
+            return 0
+        for t in rep["traits"][:10]:
+            mark = " ⚠ 贴近临界" if t["saturation"] >= rep["threshold"] else ""
+            print(f"  - {t['key']}: {t['value']}（距{t['edge']} {t['distance']}，"
+                  f"饱和度 {t['saturation']:.2f}）{mark}")
+        if rep["alerts"]:
+            print(f"告警：{rep['alert_count']} 项已贴近临界，再往同方向调很容易被夹在边界上。")
+        else:
+            print("无告警：所有 trait 离边界都还有余量。")
+        return 0
+
+
+    if args.cmd == "replay":
+        rep = persona_replay(args.days, args.limit)
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0
+        print(f"只读回放（近 {rep['days']} 天拐点 / 最早快照对比）")
+        if rep.get("error"):
+            print(f"  ⚠ 部分数据读失败：{rep['error']}")
+        if rep["baseline"]:
+            b = rep["baseline"]
+            print(f"  基线快照：{b.get('label') or b['name']}（{fmt_time(int(b.get('ts') or 0))}）")
+        else:
+            print("  还没有人格快照，偏移量无从对比（先跑 `persona snapshot`）")
+        print(f"  偏移 {rep['offset_count']} 处" + (
+            "：" if rep["offsets"] else ""))
+        for o in rep["offsets"][:10]:
+            if o.get("delta") is not None:
+                print(f"    - {o['section']}.{o['key']}: {o['from']} → {o['to']}"
+                      f"（{'+' if o['delta'] > 0 else ''}{o['delta']}）")
+            else:
+                print(f"    - {o['section']}.{o['key']}: {o['from']!r} → {o['to']!r}")
+        print(f"  拐点 {rep['inflection_count']} 个：")
+        for e in rep["inflections"][:10]:
+            print(f"    - [{fmt_date(int(e['ts']))}] {e['title']}｜{e['detail']}")
+        print("  只读自证：" + ("全库未变 ✅" if rep["unchanged"] else "⚠ 指纹变了（回放不该写库）"))
+        return 0
+
+    if args.cmd == "ingest-dialogues":
+        rep = ingest_dialogues(args.path, args.limit, dry_run=args.dry_run)
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0 if rep.get("ok") else 1
+        if not rep.get("enabled"):
+            print("未开启跨对话摄取：" + (rep.get("reason") or ""))
+            print("开启方式：`python scripts/brain.py config set dialogue_ingest true`，"
+                  "并把对话导出目录写进 dialogue_sources（config set 支持 JSON 数组）。")
+            return 0
+        print(f"跨对话摄取（{'试运行' if rep['dry_run'] else '已写入'}）："
+              f"扫描 {rep['scanned']} 个文件，新增 {rep['imported']} 条，"
+              f"跳过重复 {rep['skipped']} 条，共 {rep['chars']} 字符")
+        if rep.get("reason"):
+            print("  提示：" + rep["reason"])
+        return 0
 
     if args.cmd == "dream":
         if getattr(args, "verify", False):

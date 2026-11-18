@@ -147,6 +147,11 @@ ARCHIVE_IDLE_DAYS = 180         # 被想起过的记忆，还需静置超过半�
 # 运行日志：锁冲突 / 内部异常 / 解析报错留痕，面板「日志」页可看
 LOG_FILE = HOME / "lingshu.log"
 
+# 会话级 state 快照目录（五-D/候选1）：startup 注入包缓存落这里。
+# 键 = 输入要素（query/budget）+ 关键文件 mtime 的哈希；库没变 + TTL 内直接复用，
+# 跨天恢复首轮不再整库遍历。默认关闭，config.session_state_cache 打开。
+SESSIONS_DIR = HOME / "sessions"
+
 # 工作记忆：当前上下文本身就是工作记忆，默认不落盘。
 # 只有 AI 自己决定留一手时才写 working.jsonl（会话级暂存，容量 7±2，过期即弃）。
 WORKING_FILE = HOME / "working.jsonl"
@@ -190,6 +195,20 @@ DEFAULT_CONFIG = {
     #   mood_inject_per_day = 每天最多注入 N 次心情摘要，0 = 不限额。
     "mood_inject_change_delta": True,
     "mood_inject_per_day": 6,
+    # 五-D/候选1 会话级 state 快照：startup 注入包缓存（默认关）。
+    # 开启后，库文件 mtime 未变 + TTL 内的重复 startup 直接复用上次注入文本，
+    # 跳过整库遍历与 recall 重算（跨天恢复首轮明显更快）。
+    # 任何记忆/人格/配置写入都会改变 mtime → 缓存自动失效，正确性不靠 TTL 兜底。
+    "session_state_cache": False,
+    "session_state_ttl": 1800,
+    # 候选7 跨对话上下文摄取：把别的会话/宿主导出的对话（.jsonl/.md/.txt）
+    # 增量读成 episode 记忆，让灵枢在另一个会话里也能"想起"那边聊过的事。
+    # 默认关（跨会话隐私）；开启需同时给 dialogue_sources 目录，绝不自动扫描全盘。
+    "dialogue_ingest": False,
+    "dialogue_sources": [],
+    "dialogue_ingest_max_files": 50,     # 单次最多扫多少个文件
+    "dialogue_ingest_max_chars": 700,    # 单条摄取记忆（一个对话块）的字符上限
+    "dialogue_ingest_auto": False,       # startup 时顺带增量摄取（近实时；只 stat，没新内容不开销）
     # 会话模式：auto = 按场景自动切换；work = 恒为工程模式（情绪隔离、理性优先）；
     # human = 恒为拟人模式（情绪照常注入）。用于解决"刚聊完情绪化话题立刻写代码"。
     "mode": "auto",
@@ -1454,7 +1473,7 @@ def _extract_ro(argv: list) -> tuple:
 def _rebind_paths() -> None:
     """按当前 HOME 重算所有派生路径常量（纯赋值，不触发跨模块同步）。"""
     global LOG_FILE, WORKING_FILE, VERBATIM_DIR, ASSOC_FILE, PERSONA_SNAP_DIR, DAILY_FILE
-    global RETRIEVAL_FILE, USAGE_FILE, CONSENT_FILE, TOPIC_FILE
+    global RETRIEVAL_FILE, USAGE_FILE, CONSENT_FILE, TOPIC_FILE, SESSIONS_DIR
     LOG_FILE = HOME / "lingshu.log"
     WORKING_FILE = HOME / "working.jsonl"
     TOPIC_FILE = HOME / "topics.jsonl"
@@ -1465,12 +1484,61 @@ def _rebind_paths() -> None:
     RETRIEVAL_FILE = HOME / "last_retrieval.json"
     USAGE_FILE = HOME / "recall_usage.jsonl"
     CONSENT_FILE = HOME / "consent.json"
+    SESSIONS_DIR = HOME / "sessions"
 
 
 def _recompute_paths() -> None:
     """集中重算由 HOME 派生的路径，再同步给各子模块（--home 切换后必须调用）。"""
     _rebind_paths()
     _sync_state()
+
+
+# ---------------------------------------------------------------- 只读回放支撑（候选5）
+
+_FINGERPRINT_FILES = ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl", "archive.jsonl",
+                      "persona.json", "persona_snapshots.jsonl", "emotions.jsonl",
+                      "topics.jsonl", "working.jsonl", "assoc.jsonl",
+                      "lingshu.user.md", "config.json", "verbatim")
+
+
+def data_fingerprint() -> str:
+    """数据目录关键文件的轻量指纹（只读回放前后一致性校验用）。
+
+    只看数据文件，不看日志（lingshu.log 会被正常操作追加）。
+    用 size+mtime_ns 而非全文哈希：回放只读时两者都不变，足够判"没写库"。
+    """
+    h = hashlib.sha1()
+    for name in _FINGERPRINT_FILES:
+        f = HOME / name
+        try:
+            if f.is_dir():
+                for sub in sorted(f.rglob("*")):
+                    if sub.is_file():
+                        st = sub.stat()
+                        h.update(f"{sub.relative_to(HOME)}:{st.st_size}:{st.st_mtime_ns}\n".encode())
+            elif f.is_file():
+                st = f.stat()
+                h.update(f"{name}:{st.st_size}:{st.st_mtime_ns}\n".encode())
+        except OSError:
+            pass
+    return h.hexdigest()
+
+
+@contextmanager
+def readonly_scope():
+    """临时只读：期间所有按 READONLY 判断的写入路径被跳过（回放/自检用）。
+
+    拆分后每个子模块各持一份 READONLY 副本，必须经 _sync_state() 统一回灌；
+    退出时恢复原值（原本就只读时保持只读）。
+    """
+    prev = READONLY
+    globals()["READONLY"] = True
+    _sync_state()
+    try:
+        yield
+    finally:
+        globals()["READONLY"] = prev
+        _sync_state()
 
 
 def _override_home(argv: list) -> list:
