@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.21（2026-11-19）
+
+> 本轮主题：**把 CI 从"一直红"救回绿**——上一版修掉 `manifest --check` 后，暴露了第二个红灯。
+
+- **修：插件 CHECKSUMS.json 与 engine 副本不一致**。v3.19 更新了 `cli/core/memory/persona` 并把它们同步进 `scripts/astrbot_plugin_lingshu/engine/`，但 `CHECKSUMS.json` 没跟着重算；CI 的 `checksums --check` 因此报 4 个文件不一致。已重新生成（31 个文件哈希一致）。
+- 记录：v3.20 修掉 manifest 只收 git 跟踪文件后，CI 的 `manifest --check` 已通过；这是它后面的第二个红灯。
+- 无运行时代码变更。
+
 ## v3.20（2026-11-19）
 
 > 本轮主题：**修掉"CI 永远红"和"锁文件父目录不存在"两个硬伤**（问题清单 §六 #15 / #22），顺手把 README 版本号补回。
