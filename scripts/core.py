@@ -1134,6 +1134,12 @@ def _locked(path: Path, timeout: float = 10.0):
         # 本线程已持锁：重入，避免 update_persona → save_persona 这类嵌套把自己锁死
         yield
         return
+    # 父目录不存在时 os.open 会抛 FileNotFoundError（新 HOME/测试隔离环境常见）；
+    # 锁是"写盘前最后一步"，这里补建目录比让调用方炸掉更合适。
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     deadline = time.time() + timeout
     while True:
         try:

@@ -1,12 +1,12 @@
 {
-  "version": "3.19",
+  "version": "3.20",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "205be163c7b98f8ce15382d3ef47bab11154b9a6ed4fe558498aa45d905f9099",
-      "size": 168856
+      "sha256": "ac20b7ef8b4ca19a5eca540c77cbee5e138ea0e6924053b7600ac49150111eb3",
+      "size": 169893
     },
     "README.md": {
-      "sha256": "925704c21936c0eadcef14588548d2a6e90e5c68150f0158bcf783a4cfe83eb4",
+      "sha256": "08e741457781f73b072e8b1fbb0f85e0a74471d25ca39a30a0be521ecf2a3914",
       "size": 59755
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "fcf39db916ab8111e8fdeb519be77b48a54280619c2ea4fa52a206877e57647e",
+      "sha256": "ab7809b50ec12884215c6ad5a63a44e00f4f64a441f6fa7061b15c63aabda080",
       "size": 30540
     },
     "assets/panel.html": {
@@ -85,10 +85,6 @@
       "sha256": "2cab01a7b824b402bca41d8739d36133265bb8622385876e1b499385aa1aaa99",
       "size": 10172
     },
-    "docs/修复待办.md": {
-      "sha256": "15ed376df6f8c062f46850dc2b0d3a8d4c9ee8f52188f80f92f344ec4a5d041a",
-      "size": 50886
-    },
     "docs/第四轮提案-暂存.md": {
       "sha256": "0f9bdca61157013ad2767b0efe3098d26d3748b2b2a86fbd4f2626b1980ae991",
       "size": 5083
@@ -98,7 +94,7 @@
       "size": 4096
     },
     "package.json": {
-      "sha256": "c8e84cdf66126dc6661d2e578e22a8346c6cd22cae97a2750c9dce248030ff92",
+      "sha256": "94f231def464e75e0d47ca00cdc177687263f29b89a3196507bd61ecb0c51e58",
       "size": 860
     },
     "scripts/bench.py": {
@@ -122,8 +118,8 @@
       "size": 225645
     },
     "scripts/core.py": {
-      "sha256": "bb1b7c0c4064508069d8d4c5ac800e481367a28af2f98f3b13b3666336cb492e",
-      "size": 78155
+      "sha256": "eafa9d7b42f72571b021d3ae9bfe66d8ab19a6558f1fc0267fb89ca2cd8e3674",
+      "size": 78445
     },
     "scripts/dream.py": {
       "sha256": "e25749c32fe6cb3b3845c9541ef663dffe8efaa0d9bd251f611e1359208800b9",
@@ -150,8 +146,8 @@
       "size": 763
     },
     "scripts/make_manifest.py": {
-      "sha256": "f7ee18964b5ad22f64985a9a59bccf0b8b4c63a475950c378f7747d3a1a27dc0",
-      "size": 8106
+      "sha256": "346ebceb5cc00d448f4309d6701b7684e8b09f347d09964a3179eb88904db7eb",
+      "size": 9504
     },
     "scripts/make_plugin_zip.py": {
       "sha256": "f6752d29179dd0a371d56b01656e02b1d5c956fff7f7b4d64b23eaa8006441a3",

@@ -25,6 +25,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -96,12 +97,30 @@ def read_skill_version(root: Path = ROOT) -> str:
     return m.group(1).strip()
 
 
+def _tracked_files(root: Path) -> set[str] | None:
+    """git 仓库里返回被跟踪文件的相对路径集合；非仓库/失败返回 None。
+
+    为什么要这个：docs/ 下可能有作者本地保留的草稿（.gitignore 里写着"永不推送"），
+    扫描时若只看磁盘，就会把它们算进发布清单——本地 --check 通过，CI 干净检出后
+    必然报"清单里的文件不存在"。清单是发布契约，只该包含会被发布的东西。
+    """
+    try:
+        r = subprocess.run(["git", "-C", str(root), "ls-files", "-z"],
+                           capture_output=True)
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    return {p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p}
+
+
 def scan_files(root: Path = ROOT) -> dict:
     """返回 {相对路径(posix): {"sha256":…, "size":…}}，键已排序。"""
     files: dict[str, dict] = {}
+    tracked = _tracked_files(root)   # git 仓库：只收被跟踪文件（见 _tracked_files 注释）
     for name in SCAN_FILES:
         p = root / name
-        if p.is_file():
+        if p.is_file() and (tracked is None or name in tracked):
             sha, size = sha256_file(p)
             files[name] = {"sha256": sha, "size": size}
     for d in SCAN_DIRS:
@@ -112,6 +131,8 @@ def scan_files(root: Path = ROOT) -> dict:
             if not f.is_file():
                 continue
             rel = f.relative_to(root).as_posix()
+            if tracked is not None and rel not in tracked:
+                continue
             if _excluded(rel, f.name):
                 continue
             sha, size = sha256_file(f)
@@ -145,13 +166,23 @@ def check(root: Path = ROOT) -> int:
     # 覆盖面自检（#73：逐文件比对）：发布目录里每个"应发布"的磁盘文件都必须在
     # 清单里；反向清单里也不该有磁盘上不存在的 key。整目录漏扫（如 cordis-plugin
     # 没进 SCAN_DIRS）会让该目录全部文件报"漏"，部分漏（10 进 1）也能检出。
+    # 只比较"被 git 跟踪"的文件：.gitignore 里的本地草稿不算发布内容（否则本地
+    # 检查通过、CI 干净检出必失败，见 #15）。
+    tracked = _tracked_files(root)
     for d in SCAN_DIRS:
         base = root / d
         if not base.is_dir():
             continue
-        disk = {f.relative_to(root).as_posix()
-                for f in base.rglob("*") if f.is_file()
-                and not _excluded(f.relative_to(root).as_posix(), f.name)}
+        disk = set()
+        for f in base.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(root).as_posix()
+            if tracked is not None and rel not in tracked:
+                continue
+            if _excluded(rel, f.name):
+                continue
+            disk.add(rel)
         keys = {k for k in cur["files"] if k.startswith(d + "/")}
         missing = sorted(disk - keys)
         extra = sorted(keys - disk)

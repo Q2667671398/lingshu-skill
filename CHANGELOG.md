@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.20（2026-11-19）
+
+> 本轮主题：**修掉"CI 永远红"和"锁文件父目录不存在"两个硬伤**（问题清单 §六 #15 / #22），顺手把 README 版本号补回。
+
+- **修：manifest 把未入库的本地草稿算进发布清单**。`make_manifest.py` 现在在 git 仓库内**只收 `git ls-files` 跟踪的文件**（非 git 环境回退原扫描逻辑）；`--check` 的覆盖面自检同样只比较被跟踪文件。此前 `docs/修复待办.md`（.gitignore 里写明"永不推送"）与 `docs/成长提案-存档.md` 被算进 47 个文件里，本地 `--check` 通过、CI 干净检出必失败——最近 7 次 ci run 的失败步骤都是 `manifest --check`，根因就是它。
+- **修：`_locked()` 不建父目录**。`os.open(lock, O_CREAT...)` 在 HOME 尚未初始化时抛 `FileNotFoundError`（`test_selfupdate_egg` 实锤），现在先 `lock.parent.mkdir(parents=True, exist_ok=True)` 再抢锁。
+- **文档**：README 版本号从 v3.14 同步到 v3.20（此前连续 5 个版本没跟）。
+
 ## v3.19（2026-11-19）
 
 > 本轮主题：**跨对话摄取与只读自证**（问题清单候选 1 / 4 / 5 / 7）。
