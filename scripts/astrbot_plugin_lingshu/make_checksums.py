@@ -43,6 +43,10 @@ def scan() -> dict[str, str]:
         parts = set(rel.parts)
         if parts & EXCLUDE_PARTS or rel.suffix.lower() in EXCLUDE_SUFFIXES or not p.is_file():
             continue
+        # 下划线开头 = 作者本地的临时脚本（.gitignore 里 ``_*`` 永远不推送）。
+        # 算进清单会让本地 --check 通过、CI 干净检出必失败（v3.21 的 CI 红灯）。
+        if rel.name.startswith("_"):
+            continue
         if posix in INCLUDE_FILES or any(posix.startswith(x) for x in INCLUDE_PREFIXES):
             out[posix] = _sha(p)
     return out

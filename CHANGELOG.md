@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.22（2026-11-19）
+
+> 本轮主题：**同一类根因的第三处**——本地下划线脚本被算进发布校验。
+
+- **修：`make_checksums.py` 把本地临时脚本算进 CHECKSUMS**。`engine/scripts/_smoke_v299.py`、`_panel_smoke_v299.py`、`_sync_trae_cn.py` 是 `.gitignore` 里 `_*` 规则排除的本地文件，但扫描时照样被哈希进 `CHECKSUMS.json`（共 31 项）；CI 干净检出后这些文件不存在 → `checksums --check` 报"清单里磁盘上没有的条目"（v3.21 的 CI 红灯）。现在扫描跳过 `_` 开头的文件，清单 27 项，模拟干净检出通过。
+- **同根因回顾**：v3.20 的 `manifest --check`、v3.21 的 `checksums --check`、本条，都是"工具扫描磁盘时没排除不发布的东西"。区别只是 manifest 用 git 跟踪过滤，checksums 用 `_` 前缀过滤。
+- 无运行时代码变更。
+
 ## v3.21（2026-11-19）
 
 > 本轮主题：**把 CI 从"一直红"救回绿**——上一版修掉 `manifest --check` 后，暴露了第二个红灯。

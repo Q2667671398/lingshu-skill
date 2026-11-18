@@ -1,7 +1,6 @@
 {
   "PATCH_NOTES.md": "9296e524f743f358fd11115598398a754cfd69534526dde9c8ad85f14a418f89",
   "README.md": "3d634d743b085eebd2cbb5dd3a00edfa728ed23947e20cc29e7c3b29087ec043",
-  "_conf_schema.json": "51a484cfa04a686bc923e960f5937e19eb52bb329a937050c268ad1cc5c12170",
   "engine/CHANGELOG.md": "e5db76cfca4df7ebffa860db12f2d8c190594ce6a7c3c091033b5f2c82e97853",
   "engine/README.md": "31de6570a9dd5a19fb6b326f5ec789276853c9557554b0bc6733631a5f54df33",
   "engine/SKILL-lite.md": "055fa7bc54f273e5fa16517c38b2a7d25f0726ece43428b68fbf60d276f197a3",
@@ -12,9 +11,6 @@
   "engine/docs/mechanics.md": "a19fe323f3d81d1753dbdac2a760df3dd74c105277e23819dc8e119ad96bc1af",
   "engine/docs/models.md": "596bc1a3414f2de5569dcb41a0c494acae7daa534efd5a91dbcc3c4cb308d695",
   "engine/docs/panel-api.md": "2cab01a7b824b402bca41d8739d36133265bb8622385876e1b499385aa1aaa99",
-  "engine/scripts/_panel_smoke_v299.py": "f3076d0c434cb9d42d2bd54bf02fad3715b64aee0570deec0fe9198315c5ab8c",
-  "engine/scripts/_smoke_v299.py": "0fb9781809d89b5e529f31e6089997fec715ca99c92c13f26f669d6a3f6290bd",
-  "engine/scripts/_sync_trae_cn.py": "66e3e8fe1f6e15b71a2d827646fb64f4376bd16db0dc403c1c12d185bff9e682",
   "engine/scripts/bench.py": "036d427e52e3fb7a63479428ef616c02d35b2c7ab5cb2dd389a836934a7d4ff4",
   "engine/scripts/brain.py": "659be7e951fa6d1505ea5a7c1a7aff7fb3cb182633573a68ae135ccaa4b7f05f",
   "engine/scripts/check_tag.py": "a5110c81328919c55ace738a4bc7e38487db7d8b59f1aa12f086caa1a6825eaa",
