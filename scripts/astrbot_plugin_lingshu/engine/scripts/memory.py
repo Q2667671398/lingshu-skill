@@ -1135,8 +1135,22 @@ def _water_level(used_pct: float | None = None) -> dict:
     # 第几次醒来：startup 标记累计（config.wake_count，cmd_startup 自增）
     wake_count = int(_cfg_num(cfg, "wake_count", 0, int))
     last_session_pct = cfg.get("last_session_pct")   # 最近一次 check-context --used 记下的水位
+    last_pct_at = _cfg_num(cfg, "last_session_pct_at", 0)   # 那次记录的时间戳（v3.23）
 
-    pct = float(used_pct) if used_pct is not None else float(_cfg_num(cfg, "last_session_pct", 0))
+    used_given = used_pct is not None
+    if used_given:
+        pct = float(used_pct)
+        source = "explicit"
+    elif last_session_pct is not None:
+        pct = float(_cfg_num(cfg, "last_session_pct", 0))
+        source = "config"      # 历史残留值，不是实时测量
+    else:
+        pct = 0.0
+        source = "default"
+    # v3.23：非实时输入一律标 stale —— 旧版把几天前的 last_session_pct 当"当前水位"返回，
+    # 比没有更危险（看到 60% 会以为刚刚测过）。
+    stale = not used_given
+    age_hours = round((now - last_pct_at) / 3600, 1) if (stale and last_pct_at) else None
     if pct > 1.0:
         pct = pct / 100.0   # 兼容 0-100 口径：--used 65 与 0.65 等价
     review = _cfg_num(cfg, "review_threshold", 0.60)
@@ -1154,10 +1168,15 @@ def _water_level(used_pct: float | None = None) -> dict:
     else:
         action = ""
         level = "ok"
+    # v3.23：非实时输入（stale）不给"建议"，也不返回非零退出码——
+    # 拿几天前的数字催 AI 去做梦/封存是误导。
+    exit_code = 0 if level == "ok" else (1 if level == "review" else (2 if level == "dream" else 3))
+    if stale:
+        level, action, exit_code = "stale", "", 0
     return {
-        "pct": round(pct, 1),
+        "pct": round(pct, 2),
         "level": level,
-        "exit_code": 0 if level == "ok" else (1 if level == "review" else (2 if level == "dream" else 3)),
+        "exit_code": exit_code,
         "action": action,
         "thresholds": {"review": review, "dream": dream_th, "escape": escape},
         "counts": counts,
@@ -1165,6 +1184,9 @@ def _water_level(used_pct: float | None = None) -> dict:
         "hours_since_handoff": round(hours_since_handoff, 1) if hours_since_handoff is not None else None,
         "wake_count": wake_count,
         "last_session_pct": last_session_pct,
+        "source": source,
+        "stale": stale,
+        "last_session_pct_age_hours": age_hours,
     }
 
 

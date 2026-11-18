@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.23（2026-11-19）
+
+> 本轮主题：**让上下文水位守卫真的会响**（问题清单 §七 #30/#31/#32）。
+
+- **修：水位估算漏掉大头（#30）**。`estimateWater` 旧版只数 `decision.messages` 的 text 字符，system prompt 与工具 schema 完全不计——本 profile 光这两项就上万 token，真实 65% 时估算只有 20%，阈值永远不触发。现在：①优先取宿主 usage（`inputTokens + cacheReadTokens + cacheWriteTokens`，或 `totalTokens`）；②字符兜底加 `systemOverheadTokens`（默认 18000）；③`charsPerToken` 3→2（中文更接近 1.5–2）；④新增 `waterCheckTurns`（默认 10）：估算还没跨阈值也每 10 轮戳一次软自检，防止低估时全程沉默。
+- **修：`status --json` 把几天前的残留当"当前水位"（#31）**。无 `--used` 时改标 `stale: true`，并返回 `source`（explicit/config/default）与 `last_session_pct_age_hours`；stale 时不再给"该做梦/该封存"的建议、退出码归 0。`check-context` 现在同时记 `last_session_pct_at`。
+- **修：灵枢插件可重复挂载（#32）**。`lingshu-startup` / `lingshu-cron` 各加进程级挂载守卫：同一 DSH 进程里第二份直接跳过并告警。profile 同时启用独立包与 `lingshu-skill`（根包内部已挂载）时，不再每会话注入两遍人格/记忆——此前两份注入约白烧 3k token/会话，且旧副本可能来自不同版本引擎。
+- 建议：确认 `dsh.profile.bundles` 里只保留 `lingshu-skill`，删掉独立的 `dsh-lingshu-startup`（根包已内置）。
+
 ## v3.22（2026-11-19）
 
 > 本轮主题：**同一类根因的第三处**——本地下划线脚本被算进发布校验。

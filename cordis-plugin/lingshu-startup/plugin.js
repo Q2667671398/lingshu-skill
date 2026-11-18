@@ -198,6 +198,13 @@ function runStartup(pythonExe, pythonCmdFallback, brainPy, budget, timeoutMs) {
 }
 
 export function apply(ctx, config) {
+  // v3.23：重复挂载守卫。profile 同时启用独立包与根包时，同一进程会出现两份 startup，
+  // 每会话注入两遍人格/记忆（白烧 ~3k token，且两份可能来自不同版本引擎）。
+  if (globalThis.__lingshuStartupApplied) {
+    try { ctx.logger?.warn?.('lingshu-startup: 已有一份灵枢 startup 在运行，跳过重复挂载') } catch {}
+    return
+  }
+  globalThis.__lingshuStartupApplied = true
   const cfg = mergeConfig(config)
   // pending：agent -> 注入文本。agent/created 只负责把文本存进来，
   // 真正投递在 agent/pre-step 里做（见下）。

@@ -1,12 +1,12 @@
 {
-  "version": "3.22",
+  "version": "3.23",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "b9a7a7a1c8f73d08bd3792837c317610813106b22f1a9759c5913d3d27be0ec5",
-      "size": 171411
+      "sha256": "e341a3f4e75f8ec644c5e069e75c67cbf0f9b1a6378c8d0132eb12f8a8380598",
+      "size": 173005
     },
     "README.md": {
-      "sha256": "782bbfc65d14a3f07063dc14f06d90ca3ad24845ba5ae4f2aa00b1afbd52f899",
+      "sha256": "bfd4d0eaef6ca3f8b101e63cbd99234c1f56352c8df9bf54a3e3634f6eb79cae",
       "size": 59755
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "7a2f925124b9cec10dac2e156953618f063c336fc481d43560b7e70cac499381",
+      "sha256": "3b9c7ccc3ccf6b4be840297b8d6d5346bd8ff8d4bda83ce0b46284b8a1ce0624",
       "size": 30540
     },
     "assets/panel.html": {
@@ -38,8 +38,8 @@
       "size": 2205
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "9e121f91e61814b4f9d9720acee0ec419d44fe82d58123c86b602271d0dbe5c5",
-      "size": 25265
+      "sha256": "0c6d1a0334fb7000f1897f2549bd1eba59fa66f1e09fccf2ff126c8bf85a8ca0",
+      "size": 27071
     },
     "cordis-plugin/lingshu-im/plugin.js": {
       "sha256": "e59b4e0082b2fdf70fb567a983906ae9c6a22c64f8be79d667461791a7404ce0",
@@ -62,8 +62,8 @@
       "size": 1391
     },
     "cordis-plugin/lingshu-startup/plugin.js": {
-      "sha256": "92305def06ff9466dc34c92a7efa25c7d4c03bf4aa573d24b94c6d43037bd93e",
-      "size": 13114
+      "sha256": "21a3d651ade1c8c32dfa263401059157187b115712c6f090fae7452e2a5d0342",
+      "size": 13559
     },
     "cordis.patch.yml": {
       "sha256": "f0c18e561c15f2afa40e77ed71ca08a220b11487ccf8975da47b684c6055eead",
@@ -94,7 +94,7 @@
       "size": 4096
     },
     "package.json": {
-      "sha256": "fefd3b3ec0095913048195da78d96f6b5141bc83315848c3d01ee9d1fe41f10a",
+      "sha256": "df6c5d327c5849f23c29b3cdae200c60057aa5824e0b8b5d40503ea249e28b88",
       "size": 860
     },
     "scripts/bench.py": {
@@ -114,8 +114,8 @@
       "size": 10395
     },
     "scripts/cli.py": {
-      "sha256": "36e3a623f94776d96fce2e067035c1376c6fcdf5cb7b9942fe13f50c8b86fc9f",
-      "size": 225645
+      "sha256": "f4fe044c3fe808d4e927bf27b9c9450381f799f8ac945e092e995667940f6738",
+      "size": 226511
     },
     "scripts/core.py": {
       "sha256": "eafa9d7b42f72571b021d3ae9bfe66d8ab19a6558f1fc0267fb89ca2cd8e3674",
@@ -154,8 +154,8 @@
       "size": 1972
     },
     "scripts/memory.py": {
-      "sha256": "eeab63a22346807a40210d110eb6a75582e56545eb15c4054d2f545d84d40573",
-      "size": 219811
+      "sha256": "084c4e07e7924613213225d89c80d109c07918246b57878dbc9209420364c2d0",
+      "size": 220791
     },
     "scripts/panel_cloud.py": {
       "sha256": "fff72888123d45bbf05ab329a06b2126f1c0b972c76283ecff32454bc4155c58",

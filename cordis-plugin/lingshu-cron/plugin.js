@@ -35,8 +35,10 @@ const DEFAULTS = {
   runUsage: true,         // 每轮 turn-stopping 静默跑 usage --reply
   injectReview: true,     // review 有 pending 时注入提醒（每轮有内容才注）
   waterGuard: true,       // 水位守卫：pre-step 估真实水位，首次跨 60/75/90 各注一条提醒（v3.01）
-  charsPerToken: 3,       // 中文语境 token 估算：约 3 字符 ≈ 1 token（粗估够用）
+  charsPerToken: 2,       // 中文语境 token 估算：约 2 字符 ≈ 1 token（v3.23 从 3 下调，避免低估）
+  systemOverheadTokens: 18000, // system prompt + 工具 schema 的固定开销（不进 messages，v3.23）
   contextLimit: 131072,   // 模型上下文窗口 token 数（估算分母；宿主给 usage 时用宿主值）
+  waterCheckTurns: 10,    // 每 N 轮做一次「软自检」：估算没到阈值也提醒 AI 自查（v3.23）
   reviewCacheMs: 30000,   // review --json 结果缓存时长（pre-step 每步都跑，别真跑）
   pruneInjected: true,    // 上下文无感清理：把灵枢自己注入过的旧提醒从消息流里清掉
                           // （原文已被 extract 封存海马体，清掉 = 归档后遗忘，不丢信息）
@@ -224,6 +226,14 @@ function notice(text) {
 // ---------------------------------------------------------------- 插件主体
 
 export function apply(ctx, config) {
+  // v3.23：重复挂载守卫。profile 里同时启用独立包 dsh-lingshu-startup 与 lingshu-skill
+  // （根包 index.js 内部也挂 startup/cron）时，同一进程会出现两份 cron：
+  // 定时任务重复跑、水位提醒重复注入。进程级只允许一份。
+  if (globalThis.__lingshuCronApplied) {
+    try { ctx.logger?.warn?.('lingshu-cron: 已有一份灵枢 cron 在运行，跳过重复挂载') } catch {}
+    return
+  }
+  globalThis.__lingshuCronApplied = true
   const cfg = mergeConfig(config)
 
   const turns = new Map()   // agent -> 本会话轮次
@@ -421,19 +431,27 @@ export function apply(ctx, config) {
     } catch {} // turn-stopping 是串行事件，任何异常都不能拖住回合关闭
   })
 
-  // 水位估算：宿主模型在消息元数据里给了 usage.totalTokens 就用真值；
-  // 否则把本会话消息文本字符数按 charsPerToken 折算成 token 再除以窗口（粗估，够触发阈值判断）。
-  // 返回 0-100 整数百分比；拿不到任何依据（无消息无 usage）返回 null。
+  // 水位估算：宿主给了 usage 就用真值（prompt 侧 = 未缓存 + 缓存读 + 缓存写）；
+  // 否则按「消息正文字符数 + system/工具固定开销」折算。
+  // v3.23 修：旧版只数 messages 的 text 字符，system prompt 与工具 schema 完全不计，
+  // 而本 profile 光这两项就上万 token —— 真实 65% 时估算只有 20%，阈值永远不触发。
+  // 返回 {pct, source}；拿不到任何依据返回 null。
   function estimateWater(agent, decision) {
     try {
       const msgs = Array.isArray(decision?.messages) ? decision.messages : []
-      // ① 宿主 usage：从最近带 usage 的消息/元数据里取 totalTokens（各家字段名不一，宽松取）
+      const num = (x) => (Number.isFinite(x) ? x : 0)
       for (let i = msgs.length - 1; i >= 0; i--) {
         const u = msgs[i]?.metadata?.usage || msgs[i]?.usage || msgs[i]?.modelUsage
-        const tt = u?.totalTokens ?? u?.outputTokens != null ? (u.totalTokens ?? (u.inputTokens ?? 0) + u.outputTokens) : null
-        if (Number.isFinite(tt) && tt > 0) return Math.min(100, Math.round(tt / cfg.contextLimit * 100))
+          || msgs[i]?.metadata?.modelUsage
+        if (!u || typeof u !== 'object') continue
+        const prompt = num(u.inputTokens ?? u.promptTokens) + num(u.cacheReadTokens)
+          + num(u.cacheWriteTokens)
+        const total = num(u.totalTokens)
+        const used = total > 0 ? total : prompt
+        if (used > 0) {
+          return { pct: Math.min(100, Math.round(used / cfg.contextLimit * 100)), source: 'usage' }
+        }
       }
-      // ② 字符数估算：只算 text 部分，排除本插件注入的旧提醒（会被 prune 掉，不算真实负载）
       let chars = 0
       for (const m of msgs) {
         if (m?.source?.name === 'lingshu') continue
@@ -442,7 +460,8 @@ export function apply(ctx, config) {
         }
       }
       if (!chars) return null
-      return Math.min(100, Math.round(chars / cfg.charsPerToken / cfg.contextLimit * 100))
+      const tokens = chars / cfg.charsPerToken + (cfg.systemOverheadTokens || 0)
+      return { pct: Math.min(100, Math.round(tokens / cfg.contextLimit * 100)), source: 'chars' }
     } catch { return null }
   }
 
@@ -536,22 +555,39 @@ export function apply(ctx, config) {
         }
       }
 
-      // 2) 水位守卫（v3.01 重设计）：不再每 N 轮插一条假 --used 60，
-      //    而是估算本会话真实水位（宿主给 usage 就用宿主值，否则按消息字符数估算），
-      //    首次跨过 60/75/90 阈值时各注入一条带真实数字的提醒（跨过才注，不重复打扰）。
+      // 2) 水位守卫（v3.01 设计 / v3.23 修估算口径）：估算真实水位（宿主 usage 优先，
+      //    否则「消息字符 + system/工具固定开销」），首次跨过 60/75/90 各注入一条带真实数字的提醒。
+      //    另加软自检：每 waterCheckTurns 轮若还没跨阈值，也戳一下，防止估算偏低时永远不响。
       if (cfg.waterGuard) {
         const est = estimateWater(agent, decision)
-        if (est != null) {
-          const step = est >= 90 ? 90 : est >= 75 ? 75 : est >= 60 ? 60 : 0
-          const st = waterState.get(agent) || { max: 0 }
+        const pct = est && Number.isFinite(est.pct) ? est.pct : null
+        const st = waterState.get(agent) || { max: 0, softAt: -1 }
+        if (pct != null) {
+          const step = pct >= 90 ? 90 : pct >= 75 ? 75 : pct >= 60 ? 60 : 0
           if (step > (st.max || 0)) {
-            waterState.set(agent, { max: step })   // 跨过的最高档记下来：60→75→90 只各提醒一次
-            const raw = await runBrain(pythonExe, cfg.python, brainPy, ['check-context', '--used', String(est)], 15000)
+            st.max = step
+            waterState.set(agent, st)
+            const raw = await runBrain(pythonExe, cfg.python, brainPy, ['check-context', '--used', String(pct)], 15000)
             const text = raw ? raw.trim() : ''
             if (text) {
               return { ...decision, messages: [...decision.messages, notice(text)] }
             }
           }
+          // 软自检：估算明显偏低时（比如没到 60）也不能全程沉默
+          const every = Math.max(0, Number(cfg.waterCheckTurns) || 0)
+          if (every > 0 && step === 0 && n > 0 && n % every === 0 && st.softAt !== n) {
+            st.softAt = n
+            waterState.set(agent, st)
+            return {
+              ...decision,
+              messages: [...decision.messages, notice(
+                `【灵枢·水位自检】估算约 ${pct}%（来源：${est.source}，可能偏低）。`
+                + '若你觉得上下文已经偏满，先跑 `check-context --used <你估的百分比>`；到 75% 就跑 `dream --auto`。'
+              )],
+            }
+          }
+        } else {
+          waterState.set(agent, st)
         }
       }
 

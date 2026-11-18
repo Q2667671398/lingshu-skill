@@ -692,8 +692,15 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
     try:
         wl = memory._water_level()
         pct = int(wl.get("pct", 0))
-        lines = [f"水位：{pct}%（上次会话结束水位 {wl.get('last_session_pct', '未知')}）",
-                 f"第 {wl.get('wake_count', 1)} 次醒来"]
+        if wl.get("stale"):
+            _last = wl.get("last_session_pct")
+            _age = wl.get("last_session_pct_age_hours")
+            head = "水位：未知（本次尚未测量）"
+            if _last is not None:
+                head += f"，上次记录 {_last}%" + (f"（{_age}h 前）" if _age is not None else "")
+            lines = [head, f"第 {wl.get('wake_count', 1)} 次醒来"]
+        else:
+            lines = [f"水位：{pct}%（本会话实测）", f"第 {wl.get('wake_count', 1)} 次醒来"]
         if wl.get("hours_since_dream") is not None:
             lines.append(f"距上次做梦 {wl['hours_since_dream']:.1f}h")
         if wl.get("hours_since_handoff") is not None:
@@ -3048,7 +3055,12 @@ def _main(argv=None) -> int:
             print(json.dumps(wl, ensure_ascii=False, indent=2))
         else:
             th = wl["thresholds"]
-            print(f"水位 {wl['pct']:.0f}%（清点 {th['review']:.0%} / 做梦 {th['dream']:.0%} / "
+            _pct_txt = (f"水位未知（本次未测量"
+                        + (f"；上次记录 {wl['last_session_pct']}%"
+                           + (f"，{wl['last_session_pct_age_hours']}h 前" if wl.get("last_session_pct_age_hours") is not None else "")
+                           if wl.get("last_session_pct") is not None else "")
+                        + "）") if wl.get("stale") else f"水位 {wl['pct']:.0f}%"
+            print(f"{_pct_txt}（清点 {th['review']:.0%} / 做梦 {th['dream']:.0%} / "
                   f"封存 {th['escape']:.0%}）· 级别 {wl['level']}")
             print(f"  各层条数：{wl['counts']}")
             print(f"  距上次做梦 {wl['hours_since_dream']}h，距上次交接 {wl['hours_since_handoff']}h，"
@@ -3634,6 +3646,7 @@ def _main(argv=None) -> int:
                 with _locked(HOME / "config.json"):
                     cfg = load_config()
                     cfg["last_session_pct"] = round(used, 1)
+                    cfg["last_session_pct_at"] = now_ts()   # v3.23：给 status 判 stale 用
                     atomic_json(HOME / "config.json", cfg)
             except Exception:
                 pass
