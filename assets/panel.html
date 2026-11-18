@@ -757,6 +757,15 @@
         </div>
       </div>
 
+      <div class="card" style="margin-bottom:14px">
+        <div class="row">
+          <h2 style="margin:0">成长时间线</h2>
+          <span class="sub" id="timeline-state" style="margin-left:auto">—</span>
+        </div>
+        <div class="sub" style="margin-top:6px">性格跳变、成形时刻、被纠正的节点——成长里的拐点都在这。</div>
+        <div id="growth-timeline" style="margin-top:10px"></div>
+      </div>
+
       <div class="split" style="margin-bottom:14px">
         <div class="card">
           <div class="row">
@@ -2477,6 +2486,42 @@ function renderGrowth(){
     : "还没有做过成长复盘。生成素材包，让 AI 写第一篇。") + (evo ? `\n最近进化：${evo}` : "");
   $("growth-last").style.whiteSpace = "pre-wrap";
   renderEvolution();
+  loadGrowthTimeline();
+}
+
+// 五-G：成长时间线（性格跳变 / 成形时刻 / 被纠正节点），纯展示
+function renderGrowthTimeline(rows){
+  const box = $("growth-timeline");
+  if (!box) return;
+  const state = $("timeline-state");
+  if (!rows || !rows.length){
+    box.innerHTML = `<div class="empty">还没有明显的转折点。再相处一段，这里会自己长出节点。</div>`;
+    if (state) state.textContent = "0 个节点";
+    return;
+  }
+  const label = {trait: "性格", emotion: "成形时刻", correction: "被纠正"};
+  const badge = {trait: "cortex", emotion: "hippo", correction: "archive"};
+  box.innerHTML = rows.map(r => {
+    const date = r.ts ? new Date(r.ts * 1000).toLocaleDateString("zh-CN") : "";
+    return `<div class="mem" style="padding:10px 12px">
+      <div class="mem-body w100">
+        <div class="mem-top">
+          <span class="badge ${badge[r.kind] || "cortex"}">${esc(label[r.kind] || r.kind || "")}</span>
+          <b class="ellip">${esc(r.title || "")}</b>
+          <span class="date ellip" style="margin-left:auto">${date}</span>
+        </div>
+        <p>${esc(r.detail || "")}</p>
+      </div>
+    </div>`;
+  }).join("");
+  if (state) state.textContent = `${rows.length} 个节点`;
+}
+
+async function loadGrowthTimeline(){
+  try {
+    const r = await api("/api/growth/timeline?days=365&limit=60");
+    renderGrowthTimeline(r.events || []);
+  } catch (e) { console.error("成长时间线:", e); }
 }
 
 const EVO_KIND_LABEL = {persona: "人格", thinking: "思考", skill: "技能", knowledge: "知识", self: "其他"};

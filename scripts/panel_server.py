@@ -730,6 +730,12 @@ class Handler(BaseHTTPRequestHandler):
             # 画像候选（persona_pending.jsonl）：待确认特征 + 证据链
             self._json({"suggestions": brain.persona_suggest_list()})
             return
+        if path == "/api/growth/timeline":
+            # 五-G：成长时间线——性格跳变 / 成形时刻 / 被纠正节点（纯展示，零风险）
+            days = _int_param(url, "days", 365, 1, 3650)
+            limit = _int_param(url, "limit", 60, 1, 300)
+            self._json(brain.growth_timeline(days, limit))
+            return
         if path == "/api/logs":
             limit = _int_param(url, "limit", 200, 1, 2000)
             level = (parse_qs(url.query).get("level") or [""])[0] or None

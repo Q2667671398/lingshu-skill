@@ -981,6 +981,19 @@ def daily(dry_run: bool = False, force: bool = False, feel_specs: list | None = 
         body.append("今天值得沉淀的想法：")
         body += [f"- {display_text(m)}" for m in insight_mems[:5]]
 
+    # ---- 五-H：趋势收敛（近 30 天标签/类型走向，纯读不写）----
+    try:
+        trends = growth_trends(30)
+    except Exception as exc:
+        log_event("daily", f"趋势统计失败（不影响例行）：{exc}", level="warn")
+        trends = {"days": 30, "rising": [], "fading": []}
+    if trends["rising"]:
+        body.append("这阵子在变强的倾向：" + "、".join(
+            f"{x['label']}（{x['old']}→{x['new']}）" for x in trends["rising"]) + "。")
+    if trends["fading"]:
+        body.append("这阵子在淡化的倾向：" + "、".join(
+            f"{x['label']}（{x['old']}→{x['new']}）" for x in trends["fading"]) + "。")
+
     # ---- 2) 更新知识库：把今天重要的洞见/偏好提炼成可复用结论（dry_run 不落盘）
     k_added, k_merged = 0, 0
     if dry_run:
@@ -1067,7 +1080,7 @@ def daily(dry_run: bool = False, force: bool = False, feel_specs: list | None = 
         "knowledge_added": k_added, "knowledge_merged": k_merged,
         "dreamed": dreamed,
         "feelings_added": len(feel_added), "feelings_bad": bad_specs,
-        "mood": mood_brief(),
+        "mood": mood_brief(), "trends": trends,
     }
 def _print_mem(m: dict, score: float | None = None, parts: dict | None = None) -> None:
     star = "★" * max(1, round(_num(m.get("importance"), 0.5) * 5))
@@ -2702,6 +2715,11 @@ def _main(argv=None) -> int:
         if r.get("feelings_bad"):
             print("  没记的情绪：" + "；".join(r["feelings_bad"]), file=sys.stderr)
         print(f"  知识库：新增 {r['knowledge_added']} 条，合并 {r['knowledge_merged']} 条")
+        tr = r.get("trends") or {}
+        if tr.get("rising"):
+            print("  在变强的倾向：" + "、".join(x["label"] for x in tr["rising"]))
+        if tr.get("fading"):
+            print("  在淡化的倾向：" + "、".join(x["label"] for x in tr["fading"]))
         print(f"  做梦：{'已自动做掉' if r['dreamed'] else '还没到 24 小时，不急'}。")
         print(f"  今日心情：{r['mood']}")
         print("（每天只跑一次；要重跑加 --force）")

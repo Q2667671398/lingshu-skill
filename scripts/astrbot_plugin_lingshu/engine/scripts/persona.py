@@ -60,6 +60,93 @@ def set_trait(traits: dict, name: str, value, why: str = "", evidence=None) -> N
         traits[name] = {"value": int(value), "why": why or "初识时用户指定", "evidence": ev}
 
 
+# ---------------------------------------------------------------- traits 阻尼与回归（五-F）
+# 特质不是"被事件直接写死的数字"，而是带惯性的状态场：
+#   1) traits_baseline 记每条特质的基线（长期稳定值）与上次结算时间；
+#   2) 每次真正要改人格时，先按半衰期把当前值往基线拉（30 天消化掉一半偏差）；
+#   3) 改完把基线朝新值挪一小步——一次性事件大部分会回落，持续偏离才沉淀成真改变。
+# 每次写入路径都已先拍 persona_snapshots.jsonl 快照，回滚走既有的 persona rollback。
+TRAIT_RELAX_HALF_LIFE = 30 * DAY   # 偏差半衰期：30 天回到基线的一半
+TRAIT_BASELINE_ADOPT = 0.15        # 每次真实改动沉淀进基线的比例
+
+
+def _trait_int(value):
+    """0-100 整数化；非法值返回 None（基线表可能被手改坏）。"""
+    try:
+        return max(0, min(100, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return None
+
+
+def _trait_baseline_store(p: dict) -> dict:
+    tb = p.get("traits_baseline")
+    if not isinstance(tb, dict):
+        tb = {}
+        p["traits_baseline"] = tb
+    return tb
+
+
+def _trait_relax(p: dict, now: float | None = None) -> dict:
+    """按半衰期把 traits 拉回基线。返回 {名称: (改前, 改后)}。
+
+    基线缺失时用当前值补一条（当前值即平静状态）；整数没变化就不写 history，
+    避免每次调用都堆记账。只动 traits，不碰 identity/drives。
+    """
+    now = now if now is not None else now_ts()
+    tb = _trait_baseline_store(p)
+    tr = p.get("traits") or {}
+    hist = p.setdefault("history", [])
+    moved = {}
+    for name, cur_raw in tr.items():
+        cur = _trait_int(trait_value(cur_raw))
+        if cur is None:
+            continue
+        item = tb.get(name)
+        if not isinstance(item, dict):
+            tb[name] = {"value": cur, "ts": now}
+            continue
+        base = _trait_int(item.get("value"))
+        if base is None:
+            item["value"] = cur
+            item["ts"] = now
+            continue
+        elapsed = max(0.0, now - _num(item.get("ts"), now))
+        item["ts"] = now
+        if elapsed < 1:
+            continue
+        factor = 0.5 ** (elapsed / TRAIT_RELAX_HALF_LIFE)
+        new = _trait_int(base + (cur - base) * factor)
+        if new is None or new == cur:
+            continue
+        meta = trait_meta(cur_raw)
+        set_trait(tr, name, new, why=meta["why"], evidence=meta["evidence"])
+        hist.append({"ts": int(now), "field": f"traits.{name}(回归)",
+                     "from": cur, "to": new, "why": "基线回归",
+                     "source": "trait_relax"})
+        moved[name] = (cur, new)
+    return moved
+
+
+def _trait_adopt(p: dict, name: str, old, new, now: float | None = None) -> None:
+    """一次真实改动后，让基线朝新值挪一小步（持续偏离才会变成新基线）。
+
+    首次改动时基线从改前值开始——这样这次事件的偏差才有地方回落。
+    """
+    new_v = _trait_int(new)
+    if new_v is None:
+        return
+    old_v = _trait_int(old)
+    now = now if now is not None else now_ts()
+    tb = _trait_baseline_store(p)
+    item = tb.get(name)
+    base = _trait_int(item.get("value")) if isinstance(item, dict) else None
+    if base is None:
+        tb[name] = {"value": old_v if old_v is not None else new_v, "ts": now}
+        return
+    item["value"] = _trait_int(base + (new_v - base) * TRAIT_BASELINE_ADOPT)
+    item["ts"] = now
+
+
 def default_persona() -> dict:
     """出厂是一张白纸：没有名字、没有性格、没有内驱数值，全部靠初识与互动长出来。"""
     return {
@@ -219,6 +306,16 @@ def load_persona() -> dict:
                 tr[name] = {"value": t, "why": "数值沿用初识时的设定（旧档案迁移，暂无逐条溯源）",
                             "evidence": []}
                 changed = True
+    # 五-F 迁移：旧档案没有 traits_baseline 时，用当前值当基线（当前值即平静状态）。
+    # 只在缺失时建一次，之后由 _trait_relax / _trait_adopt 维护；只读模式不落盘。
+    if not isinstance(p.get("traits_baseline"), dict) and isinstance(tr, dict):
+        _now_b = now_ts()
+        p["traits_baseline"] = {}
+        for _name, _t in tr.items():
+            _v = _trait_int(trait_value(_t))
+            if _v is not None:
+                p["traits_baseline"][_name] = {"value": _v, "ts": _now_b}
+        changed = True
     hist = p.get("history")
     if isinstance(hist, list):
         for h in hist:
@@ -382,10 +479,15 @@ def persona_brief(p: dict, mood: bool = True) -> str:
     if traits:
         # 溯源展示：特质名 数值 —— 为什么（why），让数值带行为依据而不是机械参数
         top = sorted(traits.items(), key=lambda x: trait_value(x[1]), reverse=True)
+        tb = p.get("traits_baseline") if isinstance(p.get("traits_baseline"), dict) else {}
         parts = []
         for k, v in top[:3]:
             meta = trait_meta(v)
-            parts.append(f"{k} {trait_value(v):.0f}" + (f" —— {meta['why']}" if meta["why"] else ""))
+            # 五-F：离基线够远时标一句，模型知道"这不是我本来的样子，会慢慢回落"
+            b = tb.get(k)
+            bv = _trait_int(b.get("value")) if isinstance(b, dict) else None
+            gap = "" if bv is None or abs(trait_value(v) - bv) < 15 else f"（基线 {bv}，正在回落）"
+            parts.append(f"{k} {trait_value(v):.0f}{gap}" + (f" —— {meta['why']}" if meta["why"] else ""))
         line = "我的性格：" + "；".join(parts)
         low = [(k, v) for k, v in top[-2:] if trait_value(v) < 50]
         if low:
@@ -509,6 +611,9 @@ def _update_persona_inner(updates: dict, why: str, source: str,
                           action="update", source=source or "unknown", why=why)
     rejected = []
     now = now_ts()
+    # 五-F：先按半衰期把 traits 拉回基线，再应用本次事件——
+    # 于是"上次事件留下的偏差"会随时间被消化，而不是永久叠加。
+    _trait_relax(p, now)
     st = p.setdefault("state", {})
     ev = p.setdefault("evolved", {})
     ev.setdefault("habits", [])
@@ -587,9 +692,12 @@ def _update_persona_inner(updates: dict, why: str, source: str,
             rejected.append(f"traits.{key}(非法值)")
             continue
         # 溯源：漂移改动记触发依据（evidence 由调用方传入），evidence 永远是数组
-        ev = list(evidence) if evidence else []
-        set_trait(p["traits"], key, new, why=why, evidence=ev)
+        # 注意变量名别用 ev——上面 ev 是 evolved 段，被列表覆盖会让后面的 habits/likes
+        # 更新写到 list 上直接崩。
+        trait_ev = list(evidence) if evidence else []
+        set_trait(p["traits"], key, new, why=why, evidence=trait_ev)
         log(f"traits.{key}", old_val, new)
+        _trait_adopt(p, key, old_val, new, now)
     if updates.get("mood"):
         mood = updates["mood"]
         if isinstance(mood, dict):
@@ -673,6 +781,8 @@ def _set_persona_field_inner(path: str, value: str) -> dict:
     p = load_persona()
     # 自动快照：CLI/面板单字段改写也会动人格，改坏了要能回滚
     save_persona_snapshot(p, action="edit", source="字段改写", why=f"set {path}")
+    # 五-F：单字段改写前先结算基线回归
+    _trait_relax(p, now_ts())
     root = path.split(".")[0]
     if root not in _PERSONA_ROOTS:
         raise ValueError(f"不认识的字段：{path}（可用 identity.* / traits.* / drives.* / state.* / "
@@ -716,7 +826,9 @@ def _set_persona_field_inner(path: str, value: str) -> dict:
     node[leaf] = val
     # traits 写入走 set_trait 收拢结构（value/why/evidence），不落裸数字
     if root == "traits":
+        old_val = trait_value(old) if old is not None else None
         set_trait(node, leaf, val, why="用户手动调整", evidence=[])
+        _trait_adopt(p, leaf, old_val if old_val is not None else val, val, now_ts())
     p.setdefault("history", []).append({"ts": now_ts(), "field": path, "from": old, "to": val, "why": "手动编辑"})
     save_persona(p)
     return p
@@ -1181,6 +1293,8 @@ def edit_persona(identity: dict | None = None, traits: dict | None = None,
     # 自动快照：手动编辑也会改人格，改坏了要能一键回到这一刻之前
     save_persona_snapshot(p, action="edit", source="手动编辑", why=why)
     now = now_ts()
+    # 五-F：手动编辑前也先结算一次基线回归（与做梦路径同一口径）
+    _trait_relax(p, now)
     hist = p.setdefault("history", [])
     ident = p.setdefault("identity", {})
     tr = p.setdefault("traits", {})
@@ -1222,6 +1336,7 @@ def edit_persona(identity: dict | None = None, traits: dict | None = None,
         log(f"traits.{key}", old_val, new)
         # 手动编辑路径：evidence=[]、why="用户手动调整"（evidence 永远是数组）
         set_trait(tr, key, new, why=why or "用户手动调整", evidence=[])
+        _trait_adopt(p, key, old_val if old_val is not None else base, new, now)
     for key in DRIVE_KEYS:
         if (drives or {}).get(key) is not None:
             try:
@@ -1815,6 +1930,145 @@ def persona_audit(days: int = 30) -> dict:
         by_source[src] = by_source.get(src, 0) + 1
     return {"days": days, "total": len(timeline),
             "by_source": by_source, "timeline": timeline[:100]}
+
+
+# ---------------------------------------------------------------- 成长时间线 / 趋势（五-G/H）
+
+def growth_timeline(days: int = 365, limit: int = 60) -> dict:
+    """成长里的拐点：性格跳变、成形时刻、被纠正的节点，按时间倒序。
+
+    三个源都是已有数据，不新建存储：
+      - persona history 里 traits 跳变 ≥10（排除漂移累积/回归等记账行）
+      - emotions.jsonl 的 formative 峰值情绪
+      - 记忆库 correction=True 的改口记录
+    纯展示，不改任何数据；单个源坏了不影响其余（防御式）。
+    """
+    days = max(1, min(int(days or 365), 3650))
+    limit = max(1, min(int(limit or 60), 300))
+    cutoff = now_ts() - days * DAY
+    events = []
+
+    # 1) traits 跳变 ≥10（只认真正落盘的历史行）
+    try:
+        for h in load_persona().get("history", []):
+            if not isinstance(h, dict):
+                continue
+            ts = _num(h.get("ts"), 0)
+            field = str(h.get("field") or "")
+            if ts < cutoff or not field.startswith("traits.") or "(" in field:
+                continue
+            try:
+                a = trait_value(h.get("from"))
+                b = trait_value(h.get("to"))
+            except (TypeError, ValueError):
+                continue
+            jump = b - a
+            if abs(jump) < 10:
+                continue
+            name = field.split(".", 1)[1]
+            detail = f"{a:.0f} → {b:.0f}"
+            why = str(h.get("why") or "").strip()
+            if why and why != "做梦整理":
+                detail += f"：{why}"
+            events.append({"ts": int(ts), "kind": "trait",
+                           "title": f"{name} {'+' if jump > 0 else ''}{jump:.0f}",
+                           "detail": detail,
+                           "source": str(h.get("source") or why or "")})
+    except Exception as exc:
+        log_event("persona", f"成长时间线读人格历史降级：{exc}", level="warn")
+
+    # 2) 成形时刻（峰值情绪）
+    try:
+        import emotion as _emo
+        for ev in _emo.formative_events(max(1.0, float(days))):
+            ts = _num(ev.get("ts"), 0)
+            if ts < cutoff:
+                continue
+            emo = str(ev.get("emotion") or "强烈的情绪")
+            why = str(ev.get("why") or ev.get("about") or "").strip()
+            try:
+                pct = f"{float(ev.get('intensity') or 0):.0%}"
+            except (TypeError, ValueError):
+                pct = ""
+            events.append({"ts": int(ts), "kind": "emotion",
+                           "title": f"{emo}{(' ' + pct) if pct else ''}",
+                           "detail": why or "一次成形时刻",
+                           "source": "formative"})
+    except Exception as exc:
+        log_event("persona", f"成长时间线读情绪事件降级：{exc}", level="warn")
+
+    # 3) 被纠正的记忆（失败闭环的第一手证据）
+    try:
+        import memory as _mem
+        for m in _mem.load_all():
+            if not isinstance(m, dict) or not m.get("correction"):
+                continue
+            ts = _num(m.get("created"), 0)
+            if ts < cutoff:
+                continue
+            events.append({"ts": int(ts), "kind": "correction",
+                           "title": "被纠正一次",
+                           "detail": _mem.display_text(m),
+                           "source": str(m.get("id") or "")})
+    except Exception as exc:
+        log_event("persona", f"成长时间线读纠错记忆降级：{exc}", level="warn")
+
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    return {"days": days, "total": len(events), "events": events[:limit]}
+
+
+def growth_trends(days: int = 30, limit: int = 4) -> dict:
+    """最近 N 天记忆的标签/类型走向：窗口对半切，比较前后两段频率。
+
+    只输出「在变强 / 在淡化」的提示，不写人格、不改数据。
+    门槛：全窗口至少出现 3 次，且后半段频率达到前半段的 1.5 倍（或反之）。
+    """
+    days = max(4, min(int(days or 30), 365))
+    limit = max(1, min(int(limit or 4), 12))
+    now = now_ts()
+    cutoff = now - days * DAY
+    mid = now - (days / 2) * DAY
+    old_c, new_c = {}, {}
+
+    def bump(bucket: dict, key: str):
+        if key:
+            bucket[key] = bucket.get(key, 0) + 1
+
+    try:
+        import memory as _mem
+        rows = _mem.load_all()
+    except Exception as exc:
+        log_event("persona", f"趋势统计读记忆降级：{exc}", level="warn")
+        rows = []
+    for m in rows:
+        if not isinstance(m, dict):
+            continue
+        ts = _num(m.get("created"), 0)
+        if ts < cutoff:
+            continue
+        bucket = new_c if ts >= mid else old_c
+        bump(bucket, "kind:" + str(m.get("kind") or "?"))
+        for t in (m.get("tags") or []):
+            bump(bucket, "tag:" + str(t))
+
+    def label(key: str) -> str:
+        dim, _, name = key.partition(":")
+        return ("标签 " if dim == "tag" else "类型 ") + name
+
+    rising, fading = [], []
+    for key in set(old_c) | set(new_c):
+        o, n = old_c.get(key, 0), new_c.get(key, 0)
+        if o + n < 3:
+            continue
+        item = {"name": key.partition(":")[2], "dim": key.partition(":")[0],
+                "label": label(key), "old": o, "new": n}
+        if n >= 2 and n >= o * 1.5:
+            rising.append(item)
+        elif o >= 2 and o >= n * 1.5:
+            fading.append(item)
+    rising.sort(key=lambda x: x["new"] - x["old"], reverse=True)
+    fading.sort(key=lambda x: x["old"] - x["new"], reverse=True)
+    return {"days": days, "rising": rising[:limit], "fading": fading[:limit]}
 
 
 # ———————— 自认识（self-model）————————
