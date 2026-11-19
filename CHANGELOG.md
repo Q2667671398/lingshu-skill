@@ -1,5 +1,16 @@
 # 更新日志
 
+## v3.38（2026-11-19）
+
+> 主题：**面板模块化 + 全局搜索（Ctrl/⌘+K）+ 记忆列表懒渲染**。
+
+- **面板拆成可维护源码**：新增 `panel_src/`（`index.html` 外壳 + `styles/*.css` + `js/*.js` + `blocks.json`）与 `scripts/panel_build.py`：
+  - `--split` 一次性从单文件拆出（已做，重建字节一致）；默认重建 `assets/panel.html`；`--check` 校验源码与产物同步（CI/pre-commit 可用）。
+  - 拆完仍是同一份产物，**零行为变化**（拆分当天实测 sha256 前后一致）。
+- **命令面板**：`Ctrl/⌘ + K` 打开，输入即筛：页面跳转（读左侧导航）+ 固定动作（刷新/洞察/主题/密度）+ 记忆搜索（`/api/search`，结果只渲染文本节点）。
+- **记忆列表懒渲染**：`>120` 条走 `LSVirtual`（先渲 80，滚到底再追加 80，IntersectionObserver 触发），保留卡片自然高度；≤120 条仍走原 innerHTML 路径。
+- **测试**：`tests/test_panel_build.py` 4 项（源码与产物一致、9 个模块文件齐全、命令面板/懒渲染契约、node 语法）。
+
 ## v3.37（2026-11-19）
 
 > 主题：**失败可见化**——autid 里 `except Exception` 835 处、`except: pass` 294 处，fail-open 是设计，但"吞了多少"要能看见。

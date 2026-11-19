@@ -1,0 +1,24 @@
+
+  /* 覆盖层：全屏半透明遮罩 + 居中卡片，关闭按钮右上角 */
+  #pm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;display:flex;
+    align-items:center;justify-content:center;padding:24px}
+  #pm-overlay.hidden{display:none}
+  #pm-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+    width:min(720px,100%);max-height:84vh;display:flex;flex-direction:column;overflow:hidden}
+  #pm-tabs{display:flex;gap:8px;padding:14px 18px 0}
+  #pm-tabs button{all:unset;cursor:pointer;padding:8px 16px;border-radius:9px 9px 0 0;
+    font-size:13px;color:var(--muted);border:1px solid transparent}
+  #pm-tabs button.on{color:var(--text);background:var(--surface2);border-color:var(--line)}
+  #pm-body{flex:1;overflow:auto;padding:16px 18px;border-top:1px solid var(--line)}
+  #pm-body .sub{font-size:11px;color:var(--faint)}
+  .pm-item{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .pm-item:last-child{border-bottom:none}
+  .pm-item .grow{flex:1;min-width:0}
+  .pm-item .nm{font-size:13px;font-weight:600}
+  .pm-item .nm small{color:var(--faint);font-weight:400;margin-left:6px}
+  .pm-item .ds{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pm-tag{font-size:10px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--faint)}
+  .pm-tag.err{border-color:rgba(201,107,95,.4);color:#dda49b}
+  .pm-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  #pm-close{all:unset;cursor:pointer;padding:10px 18px;font-size:13px;color:var(--muted)}
+  #pm-close:hover{color:var(--text)}

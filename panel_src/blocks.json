@@ -1,0 +1,47 @@
+[
+  {
+    "kind": "style",
+    "open": "<style>",
+    "file": "styles/base.css"
+  },
+  {
+    "kind": "script",
+    "open": "<script>",
+    "file": "js/app.js"
+  },
+  {
+    "kind": "script",
+    "open": "<script>",
+    "file": "js/core.js"
+  },
+  {
+    "kind": "style",
+    "open": "<style>",
+    "file": "styles/views.css"
+  },
+  {
+    "kind": "script",
+    "open": "<script>",
+    "file": "js/panels.js"
+  },
+  {
+    "kind": "style",
+    "open": "<style id=\"ls-enhance-style\">",
+    "file": "styles/enhance.css"
+  },
+  {
+    "kind": "script",
+    "open": "<script>",
+    "file": "js/enhance.js"
+  },
+  {
+    "kind": "script",
+    "open": "<script>",
+    "file": "js/virtual-list.js"
+  },
+  {
+    "kind": "script",
+    "open": "<script>",
+    "file": "js/command-palette.js"
+  }
+]

@@ -1,13 +1,13 @@
 {
-  "version": "3.37",
+  "version": "3.38",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "b2301812e466859c1f527e3675e002f48c59b2acad80a4cbb937ca46f872baaf",
-      "size": 188887
+      "sha256": "6be2ddc4db0030e648741a315e0be4a96784cef95b5e329892d92330d7eec108",
+      "size": 189991
     },
     "README.md": {
-      "sha256": "70e4be984e0d4a8b16b629eb24139683db22494b2c2e02f00ad06036ae269538",
-      "size": 62186
+      "sha256": "7ec99390584e230135183e47ed6efa54bfdd5c89b7daad9038e1d521c94130c1",
+      "size": 62363
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,12 +18,12 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "c65e169eea6f9502e296f51a6fcc23e4207728d6ac30c9476306fdca4862779c",
+      "sha256": "cae36975c2c3d9bf6a5eb48b9255354499e04687d5abc3b27801018946c06418",
       "size": 33614
     },
     "assets/panel.html": {
-      "sha256": "692ad652c5eced35693073f58553a016fef07d4634b2974f56292003c308a01c",
-      "size": 280337
+      "sha256": "3d11b97663099a5f75107122d7a9e078c813dcaa59f9fb53cbc2b69de94f8147",
+      "size": 288978
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
@@ -98,7 +98,7 @@
       "size": 5219
     },
     "package.json": {
-      "sha256": "d27d63262d3fbe9ccc2c03517b508fe90d751b5954e0ea8644b89bd920d9ed91",
+      "sha256": "6fbc9fe0a417c82ba6ab39a3e5891e01481aaed35bc72fd9f0fb321c9009668f",
       "size": 860
     },
     "scripts/assembler.py": {
@@ -176,6 +176,10 @@
     "scripts/memory.py": {
       "sha256": "d45542d6dda9dcde2d7b3bb545c9b73a92ca53c461afe3decbfbaae8b214b4d2",
       "size": 230458
+    },
+    "scripts/panel_build.py": {
+      "sha256": "49c61898f32e487071d315802a665d09026aa3aaf6b701f3fe52ab0911812e83",
+      "size": 3900
     },
     "scripts/panel_cloud.py": {
       "sha256": "fff72888123d45bbf05ab329a06b2126f1c0b972c76283ecff32454bc4155c58",

@@ -1,0 +1,44 @@
+
+  :root[data-theme="light"]{
+    --bg:#f6f4ef; --surface:#fffdf8; --surface2:#f0ede5; --line:#ddd6c8;
+    --text:#23201a; --muted:#6b6459; --faint:#9a9284;
+    --amber:#a9741c; --amber-soft:rgba(169,116,28,.12);
+    --teal:#2f7d72; --red:#a8453a; --violet:#5b52a3;
+  }
+  :root[data-density="compact"] body{font-size:13px;line-height:1.5}
+  :root[data-density="compact"] .card{padding:10px 12px}
+  :root[data-density="compact"] nav button{padding:5px 8px}
+  #ls-dock{position:fixed;right:18px;bottom:18px;width:340px;max-height:72vh;z-index:9999;
+    display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);
+    border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.45);overflow:hidden;
+    font:13px/1.55 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:var(--text)}
+  #ls-dock.ls-collapsed{width:auto}
+  #ls-dock.ls-collapsed .ls-body{display:none}
+  .ls-head{display:flex;align-items:center;gap:8px;padding:10px 12px;
+    background:var(--surface2);border-bottom:1px solid var(--line);cursor:grab}
+  .ls-head b{font-weight:600;letter-spacing:.3px;flex:1}
+  .ls-head .ls-dot{width:7px;height:7px;border-radius:50%;background:var(--teal)}
+  .ls-head .ls-dot.bad{background:var(--red)}
+  .ls-head button{background:none;border:1px solid var(--line);color:var(--muted);
+    border-radius:7px;padding:2px 7px;font-size:12px;cursor:pointer}
+  .ls-head button:hover{color:var(--text);border-color:var(--amber)}
+  .ls-body{padding:10px 12px 12px;overflow:auto}
+  .ls-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px}
+  .ls-kpi{background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .ls-kpi .k{color:var(--faint);font-size:11px;letter-spacing:.4px}
+  .ls-kpi .v{font-size:17px;font-weight:600;margin-top:2px;color:var(--amber)}
+  .ls-kpi .s{color:var(--muted);font-size:11px;margin-top:2px}
+  .ls-row{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px dashed var(--line)}
+  .ls-row:first-of-type{border-top:0}
+  .ls-row .k{color:var(--faint);min-width:58px;font-size:12px}
+  .ls-row .v{flex:1;color:var(--text);font-size:12px;word-break:break-word}
+  .ls-tools{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+  .ls-tools select,.ls-tools button{background:var(--surface2);border:1px solid var(--line);
+    color:var(--text);border-radius:8px;padding:4px 8px;font-size:12px}
+  .ls-tools button{cursor:pointer}
+  .ls-tools button:hover{border-color:var(--amber)}
+  .ls-empty{color:var(--muted);font-size:12px;padding:8px 0}
+  @media (prefers-reduced-motion:no-preference){
+    #ls-dock{transition:box-shadow .2s ease,transform .2s ease}
+  }
+  @media (max-width:760px){#ls-dock{width:calc(100vw - 24px);right:12px;bottom:12px}}

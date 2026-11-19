@@ -1,0 +1,828 @@
+﻿﻿﻿﻿<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>灵枢 · 类脑记忆</title>
+<!--@@BLOCK:0@@-->
+</head>
+<body>
+<div id="net-banner">面板连接中断，正在重试…</div>
+<div class="app">
+  <aside>
+    <div class="brand">
+      <div class="orb"></div>
+      <div>灵枢<small>类脑记忆</small></div>
+    </div>
+    <nav>
+      <button class="active" data-tab="overview" aria-label="概览"><span class="ic">◉</span><span>概览</span></button>
+      <button data-tab="memories" aria-label="记忆"><span class="ic">◈</span><span>记忆</span></button>
+      <button data-tab="persona" aria-label="人格"><span class="ic">☾</span><span>人格</span></button>
+      <button data-tab="knowledge" aria-label="知识"><span class="ic">▤</span><span>知识</span></button>
+      <button data-tab="notes" aria-label="笔记"><span class="ic">✎</span><span>笔记</span></button>
+      <button data-tab="skills" aria-label="技能"><span class="ic">⚙</span><span>技能</span></button>
+      <button data-tab="emotion" aria-label="心情"><span class="ic">♡</span><span>心情</span></button>
+      <button data-tab="graph" aria-label="联想"><span class="ic">⌬</span><span>联想</span></button>
+      <button data-tab="growth" aria-label="成长"><span class="ic">↗</span><span>成长</span></button>
+      <button data-tab="dream" aria-label="梦"><span class="ic">✦</span><span>梦</span></button>
+      <button data-tab="logs" aria-label="日志"><span class="ic">☰</span><span>日志</span></button>
+      <button data-tab="diag" aria-label="自诊断"><span class="ic">✚</span><span>诊断</span></button>
+      <button data-tab="store" aria-label="插件商店"><span class="ic">⇘</span><span>插件商店</span></button>
+      <button data-tab="ext" aria-label="本地能力"><span class="ic">⬢</span><span>本地能力</span></button>
+      <button id="btn-panels" aria-label="面板管理"><span class="ic">▧</span><span>面板</span></button>
+    </nav>
+    <div class="sidefoot" id="sidefoot"></div>
+  </aside>
+
+  <main>
+    <header>
+      <div>
+        <h1 id="pageTitle">概览</h1>
+        <div class="sub" id="pageSub"></div>
+      </div>
+      <div class="sub" id="clock">2026/10/23 15:59:00</div>
+      <button class="btn" id="btn-self-update" title="检查灵枢本体有没有更新" style="margin-left:12px"><span id="upd-label">检查更新</span><span id="upd-dot" style="display:none;width:8px;height:8px;border-radius:50%;background:#c47f17;margin-left:6px"></span></button>
+    </header>
+
+    <div class="card hidden" id="ro-banner" style="margin-bottom:14px;border-color:var(--red);background:rgba(201,107,95,.08)">
+      <h2 style="margin-bottom:4px;color:var(--red)">只读模式</h2>
+      <div class="sub">记忆库目录不可写（权限不足）。页面上的任何修改都不会保存——先去修目录权限，再刷新。</div>
+    </div>
+
+    <!-- 概览 -->
+    <section class="view active" id="view-overview">
+      <div class="card hidden" id="onboard-banner" style="margin-bottom:14px;border-color:var(--amber)">
+        <div class="row">
+          <div>
+            <h2 style="margin-bottom:4px">初识还没完成</h2>
+            <div class="sub" id="onboard-text"></div>
+          </div>
+          <button class="btn" id="onboard-go">去完成</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="hero">
+          <div>
+            <div class="name" id="p-name">—</div>
+            <div class="role" id="p-role"></div>
+            <div class="moodline">
+              <span class="mood-badge" id="p-mood">平静</span>
+              <span class="mood-cat" id="p-mood-cat"></span>
+            </div>
+            <div class="sub" id="p-mood-detail" style="margin-top:2px"></div>
+            <div class="sub" id="p-reason" style="margin-top:4px"></div>
+            <div class="chips" id="p-chips"></div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><div class="n" id="m-total">0</div><div class="l">总记忆</div></div>
+            <div class="metric"><div class="n" id="m-cortex">0</div><div class="l">长期</div></div>
+            <div class="metric"><div class="n" id="m-hippo">0</div><div class="l">短期</div></div>
+            <div class="metric"><div class="n" id="m-archive">0</div><div class="l">归档</div></div>
+            <div class="metric"><div class="n" id="m-ret">0%</div><div class="l">保留率</div></div>
+          </div>
+        </div>
+        <div class="traits" id="p-traits"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">会话模式判定</h2>
+            <div class="sub" id="mode-detail-text">auto 模式按本轮话题自动切换，下面会显示判定依据。</div>
+          </div>
+          <div class="row" style="margin-left:auto;flex-wrap:wrap">
+            <input id="mode-try-q" placeholder="输入一句话题试试，如：帮我修下这个报错" style="min-width:280px;flex:1">
+            <button class="ghost" id="btn-mode-try">试试判定</button>
+          </div>
+        </div>
+        <div id="mode-try-out" class="sub" style="margin-top:10px"></div>
+      </div>
+
+      <div id="alert-box"></div>
+
+      <div class="split">
+        <div class="card">
+          <h2>最近写下的事</h2>
+          <div id="recent-list"></div>
+        </div>
+        <div class="card">
+          <h2>身体状态</h2>
+          <div id="stat-lines"></div>
+          <h2 style="margin-top:22px">情绪轨迹 · 近 7 天</h2>
+          <div id="emo-arc" class="sub">还没有情绪记录。</div>
+          <h2 style="margin-top:22px">上次做梦</h2>
+          <div id="last-dream" class="sub">还没有做过梦</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 记忆 -->
+    <section class="view" id="view-memories">
+      <div class="toolbar">
+        <input class="search" id="search" placeholder="字面筛选：输入一句话或几个关键词…（回车 = 模糊回忆）">
+        <select id="layerFilter">
+          <option value="">全部层</option>
+          <option value="cortex">长期记忆</option>
+          <option value="hippo">短期记忆</option>
+          <option value="dust">淡忘区</option>
+          <option value="archive">归档层</option>
+        </select>
+        <select id="pendingFilter">
+          <option value="">全部状态</option>
+          <option value="1">只看待审核</option>
+        </select>
+        <select id="impFilter">
+          <option value="">重要性</option>
+          <option value="high">高 ≥7</option>
+          <option value="mid">中 4–7</option>
+          <option value="low">低 &lt;4</option>
+        </select>
+        <select id="timeFilter">
+          <option value="0">全部时间</option>
+          <option value="7">近 7 天</option>
+          <option value="30">近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
+        <input id="tagFilter" placeholder="标签" style="width:96px">
+        <input id="emoFilter" placeholder="情绪" style="width:96px">
+        <select id="sortFilter">
+          <option value="created">最新优先</option>
+          <option value="importance">按重要性</option>
+          <option value="retention">按记忆强度</option>
+        </select>
+        <button class="ghost" id="btn-search">回忆</button>
+        <button class="ghost" id="btn-viewmode" title="切换列表 / 时间线视图">▤ 时间线</button>
+        <button class="ghost" id="btn-inject">注入预览</button>
+        <button class="ghost" id="btn-conflicts">冲突检查</button>
+        <button class="btn" id="btn-add">＋ 写一条</button>
+      </div>
+      <div id="bulk-bar" class="card" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px">
+        <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="bulk-all"> 全选
+        </label>
+        <span class="sub" id="bulk-count" style="min-width:70px">已选 0 条</span>
+        <button class="ghost" id="bulk-confirm">✓ 批量确认</button>
+        <button class="ghost" id="bulk-discard">✗ 批量废弃</button>
+        <input id="bulk-imp" type="number" min="1" max="10" placeholder="重要性 1-10" style="width:118px">
+        <button class="ghost" id="bulk-imp-btn">批量设重要性</button>
+        <input id="bulk-tag" placeholder="标签，逗号分隔" style="width:150px">
+        <button class="ghost" id="bulk-tag-add">批量加标签</button>
+        <button class="ghost" id="bulk-tag-rm">批量删标签</button>
+        <button class="ghost" id="bulk-pin">批量置顶</button>
+        <button class="ghost" id="bulk-unpin">批量取消置顶</button>
+        <button class="ghost" id="bulk-freeze" title="冻结后不参与召回/注入/做梦，仍可查看">❄ 批量冻结</button>
+        <button class="ghost" id="bulk-unfreeze">批量解冻</button>
+        <button class="ghost" id="bulk-delete" style="color:var(--red)">批量删除</button>
+      </div>
+      <div id="layer-bar" class="card" style="margin-bottom:14px;padding:10px 16px" title="记忆库各层分布"></div>
+      <div class="card hidden" id="conflict-box" style="margin-bottom:14px;border-color:rgba(201,107,95,.4)">
+        <h2>可能冲突的记忆</h2>
+        <div class="sub" style="margin-bottom:8px">启发式扫描，只做提醒、不下结论。确认哪条过时后，手动淡忘或改写它。</div>
+        <div id="conflict-list"></div>
+      </div>
+      <div id="mem-list"></div>
+    </section>
+
+    <!-- 人格 -->
+    <section class="view" id="view-persona">
+      <div class="split">
+        <div class="card">
+          <h2>自我设定 · 可自行改写</h2>
+          <div class="sub" style="margin-bottom:10px">没有预写的人格种子。名字和性格由初识决定：用户不知道，就由它自己取；之后它想改也能改，每次改动都留一条历史。</div>
+          <div class="field"><label>名字</label><input id="pf-name" placeholder="空着 = 还没有名字"></div>
+          <div class="field"><label>身份</label><input id="pf-role" placeholder="空着 = 还没定"></div>
+          <div class="field"><label>怎么称呼你</label><input id="pf-callme" placeholder="空着 = 还没定"></div>
+          <div class="field"><label>性格（每行一个，如 好奇:85；空着 = 还没有）</label><textarea id="pf-traits" rows="6" spellcheck="false"></textarea></div>
+          <div class="field"><label>喜欢（逗号分隔；长出来的喜好也会在右侧标签里）</label><input id="pf-likes" placeholder="如 深夜的对话,把复杂的事讲清楚"></div>
+          <div class="field"><label>讨厌（逗号分隔）</label><input id="pf-dislikes" placeholder="如 敷衍的答案"></div>
+          <div class="field"><label>好奇心</label><input id="pf-cur" type="number" min="0" max="100" placeholder="未成形（由用户态度长出来）"></div>
+          <div class="field"><label>理智</label><input id="pf-reason" type="number" min="0" max="100" placeholder="未成形（由用户态度长出来）"></div>
+          <div class="sub" style="margin-bottom:8px">这两项没有出厂值。用户嫌你想太多/话多 → 理智上调；用户想让你多问、多挖 → 好奇心上调。</div>
+          <div class="row">
+            <span class="sub" id="pf-path"></span>
+            <button class="btn" id="btn-persona">保存人格</button>
+          </div>
+        </div>
+        <div>
+          <div class="card" style="margin-bottom:14px">
+            <h2>此刻状态</h2>
+            <div class="field"><label>情绪</label><input id="st-mood" placeholder="还没记录"></div>
+            <div class="field"><label>情绪原因</label><input id="st-note" placeholder="为什么是这个情绪"></div>
+            <div class="field"><label>精力</label><div class="range"><input type="range" id="st-energy" min="0" max="100" value="70"><b id="st-energy-v">70</b></div></div>
+            <div class="field"><label>亲密度</label><div class="range"><input type="range" id="st-closeness" min="0" max="100" value="50"><b id="st-closeness-v">50</b></div></div>
+            <button class="btn" id="btn-state">保存状态</button>
+          </div>
+          <div class="card">
+            <h2>长出来的部分</h2>
+            <div id="evolved"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>画像归纳建议</h2>
+        <div class="sub" style="margin-bottom:8px">从最近的记忆里归纳出的候选：喜欢/讨厌/关系。采纳会写进「长出来的部分」并带证据链（可在演化历史里看到证据是哪条记忆）。</div>
+        <div style="margin-bottom:8px"><button class="ghost" id="btn-suggest-scan" style="padding:3px 12px;font-size:12px">扫描最近记忆</button> <button class="ghost" id="btn-suggest-refresh" style="padding:3px 12px;font-size:12px">刷新列表</button></div>
+        <div id="persona-suggest"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>AI 近期改动 · 待你过目</h2>
+        <div class="sub" style="margin-bottom:8px">做梦/自我总结由 AI 发起的人格变更（手动编辑、回滚、初识回答不算）。不对就点「回滚到此」撤销。</div>
+        <div id="ai-changes"></div>
+        <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+          <button class="ghost" id="btn-persona-diff" style="padding:3px 12px;font-size:12px">查看变化明细</button>
+          <button class="ghost" id="btn-changes-viewed" style="padding:3px 12px;font-size:12px">标记已读</button>
+        </div>
+        <div id="persona-diff" style="margin-top:10px"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>自动快照 · 按时间可回滚</h2>
+        <div class="sub" style="margin-bottom:8px">每次改人格（AI 或手动）都会先存一份完整快照。改坏了点「回滚到此」回到那一刻；回滚前会再存一份"回滚前"快照，可以再回回。</div>
+        <div style="margin-bottom:8px"><button class="ghost" id="btn-snapshots" style="padding:3px 12px;font-size:12px">刷新快照列表</button></div>
+        <div id="snapshots"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>演化历史</h2>
+        <div id="history"></div>
+      </div>
+    </section>
+
+    <!-- 知识 -->
+    <section class="view" id="view-knowledge">
+      <div class="toolbar">
+        <input class="search" id="kg-search" placeholder="检索知识：主题、结论或一句话…">
+        <select id="kg-topic"><option value="">全部主题</option></select>
+        <button class="ghost" id="kg-btn-search">检索</button>
+        <button class="btn" id="kg-btn-add">＋ 写一条知识</button>
+        <button class="ghost" id="kg-btn-tidy">整理知识库</button>
+      </div>
+      <div class="card hidden" id="kg-tidy" style="margin-bottom:14px">
+        <h2>待整理的知识</h2>
+        <div id="kg-tidy-info" class="sub"></div>
+        <div class="field" style="margin-top:10px">
+          <label>填写 apply.json（合并 / 更新 / 新建 / 删除）</label>
+          <textarea id="kg-apply" rows="12" spellcheck="false"></textarea>
+        </div>
+        <div class="row">
+          <span class="sub">合并后旧条目会删除，正文、要点与标签取并集。</span>
+          <button class="btn" id="kg-btn-apply">应用整理</button>
+        </div>
+      </div>
+      <div id="kg-list"></div>
+    </section>
+
+    <!-- 笔记 -->
+    <section class="view" id="view-notes">
+      <div class="toolbar">
+        <input class="search" id="note-search" placeholder="检索笔记：标题或正文…">
+        <select id="note-type">
+          <option value="">全部类型</option>
+          <option value="journal">日记</option>
+          <option value="log">工作日志</option>
+          <option value="growth">成长复盘</option>
+        </select>
+        <button class="ghost" id="note-btn-search">检索</button>
+        <button class="btn" id="note-btn-add">＋ 写笔记</button>
+      </div>
+      <div id="note-list"></div>
+    </section>
+
+    <!-- 技能 -->
+    <section class="view" id="view-skills">
+      <div class="toolbar">
+        <button class="btn" id="skill-btn-add">＋ 新建技能</button>
+        <button class="ghost" id="skill-btn-check">自检全部</button>
+        <span class="sub" style="margin-left:auto">写好的技能可一键装到全局技能目录，新会话即可调用</span>
+      </div>
+      <div id="skill-check"></div>
+      <div class="card" style="margin-bottom:12px">
+        <h2>技能根目录 · 跨宿主发现</h2>
+        <p class="sub">灵枢会只读扫描各宿主（DSH / Trae / Claude Code / Cursor…）约定的全局技能目录，发现现成技能就能直接使用或借用，不必先安装。也可以手动添加任意目录：</p>
+        <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+          <input id="skill-root-input" placeholder="例如 C:\Users\你\.trae-cn\skills" style="flex:1;min-width:260px">
+          <button class="btn" id="skill-root-add">添加目录</button>
+          <button class="ghost" id="skill-root-rescan">重新扫描</button>
+        </div>
+        <div id="skill-root-list" style="margin-top:12px"><div class="sub">加载中…</div></div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <h2>DSH（DeepSeek）插件 · 只读</h2>
+        <p class="sub">来自 <code>~/.dsh/profiles</code> 各 profile 的 bundle。这些是 DSH 运行时插件，不是灵枢技能——这里只展示，不修改。</p>
+        <div class="sub" style="margin-top:4px"><input id="dsh-plugins-filter" placeholder="过滤插件…" style="width:240px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--text)"></div>
+        <div id="dsh-plugin-list" style="margin-top:10px"></div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <h2>其他宿主的技能 · 只读可复用</h2>
+        <p class="sub">从上面各根目录扫描到的现成技能。「▶ 使用」= 读出内容照做；「⇙ 借用」= 复制一份变成自己的技能。</p>
+        <div id="skill-scan-list" style="margin-top:10px"></div>
+      </div>
+      <div id="skill-list"></div>
+    </section>
+
+    <!-- 心情 -->
+    <section class="view" id="view-emotion">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="align-items:flex-start;gap:20px;flex-wrap:wrap">
+          <div style="flex:1;min-width:220px">
+            <div class="sub">此刻心情</div>
+            <div class="mood-big" id="emo-label">平静</div>
+            <div class="sub" id="emo-meta"></div>
+            <div class="chips" id="emo-active" style="margin-top:10px"></div>
+          </div>
+          <div style="flex:1;min-width:240px">
+            <div class="sub" style="margin-bottom:8px">七情占比（还在起作用的情绪，按类汇总）</div>
+            <div id="emo-groups"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="split" style="margin-bottom:14px">
+        <div class="card">
+          <h2>记一笔感受</h2>
+          <div class="sub">当时多重就记多重，它会按半衰期自己回落。</div>
+          <div class="row" style="margin-top:10px;flex-wrap:wrap">
+            <select id="emo-pick" style="width:130px"></select>
+            <input id="emo-why" placeholder="因为什么（可留空）" style="flex:1;min-width:160px">
+            <input id="emo-int" type="number" value="0.6" min="0" max="1" step="0.1" style="width:80px" title="强度 0-1">
+            <button class="btn" id="btn-emo-feel">记下</button>
+          </div>
+          <div class="sub" id="emo-arc" style="margin-top:12px"></div>
+        </div>
+        <div class="card">
+          <h2>六欲</h2>
+          <div class="sub">底层需要，会随时间变淡；满足它，它才回升。</div>
+          <div id="desire-list" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h2>事件 → 情绪 · 认知评价</h2>
+        <div class="sub">情绪不是事件直接给的，是它自己先判断「这件事对我好不好、有多重」，再冒出对应的情绪（Lazarus 认知评价）。分量越重、越是坏事，越会压住理智——但压不掉一半以上，大事仍然交给你决定。</div>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap">
+          <input id="eva-event" placeholder="发生了一件事…（如：用户夸我做得好）" style="flex:1;min-width:220px">
+          <select id="eva-pol" style="width:130px">
+            <option value="auto">自动判向</option>
+            <option value="positive">好事</option>
+            <option value="negative">坏事</option>
+            <option value="neutral">平常事</option>
+          </select>
+          <div class="range" style="width:200px">
+            <span class="sub" style="white-space:nowrap">分量</span>
+            <input type="range" id="eva-imp" min="0" max="100" value="60">
+            <b id="eva-imp-v">60</b>
+          </div>
+          <button class="btn" id="btn-eva">评价一下</button>
+        </div>
+        <div id="eva-out" style="margin-top:12px"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h2>情绪-输出一致性核对</h2>
+        <div class="sub">后置轻量校验：把内部情绪状态和回复语气放一起比——心里正难过却满屏"哈哈太好了"，或正开心却冷冰冰敷衍，都会在这里亮告警。只提醒，不改任何记忆。</div>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap">
+          <textarea id="chk-reply" placeholder="把要发给用户（或刚发出去）的那段话粘进来" rows="2" spellcheck="false" style="flex:1;min-width:240px"></textarea>
+          <button class="btn" id="btn-chk">核对</button>
+        </div>
+        <div id="chk-out" style="margin-top:12px"></div>
+        <h2 style="margin-top:18px">最近的一致性告警</h2>
+        <div id="chk-alerts" class="sub" style="margin-top:8px">暂无告警。</div>
+      </div>
+
+      <div class="split">
+        <div class="card">
+          <h2>共情 · 跟着你的情绪走</h2>
+          <div class="sub">你开心它会跟着亮一点，你难过它会跟着沉一点，但不会丢了自己。</div>
+          <div class="row" style="margin-top:10px;flex-wrap:wrap">
+            <input id="mir-emo" placeholder="用户此刻的情绪（如：很累、很开心）" style="flex:1;min-width:180px">
+            <input id="mir-int" type="number" value="0.5" min="0" max="1" step="0.1" style="width:80px" title="强度 0-1">
+            <button class="btn" id="btn-mirror">共情一下</button>
+          </div>
+          <div id="mir-out" class="sub" style="margin-top:10px"></div>
+        </div>
+        <div class="card">
+          <h2>情感设置 · 随时可改</h2>
+          <div class="sub">这些是它自己的设定，你可以随时调。</div>
+          <div class="field" style="margin-top:10px"><label>共情程度</label>
+            <select id="cfg-empathy">
+              <option value="mirror">如实跟进（跟着你走）</option>
+              <option value="mild">只留一丝底色</option>
+              <option value="off">不跟，保持自己</option>
+            </select>
+          </div>
+          <div class="field"><label>跟进比例（gain）</label><div class="range"><input type="range" id="cfg-gain" min="0" max="100" value="50"><b id="cfg-gain-v">0.50</b></div></div>
+          <div class="field"><label>共情上限（max intensity）</label><div class="range"><input type="range" id="cfg-maxint" min="0" max="100" value="80"><b id="cfg-maxint-v">0.80</b></div></div>
+          <div class="field"><label>压下去的情绪（逗号分隔，如：怒,恶）</label><input id="cfg-supp" placeholder="留空 = 不压"></div>
+          <div class="field"><label>备注</label><input id="cfg-notes" placeholder="它自己或你写的一句话"></div>
+          <div class="row"><span class="sub" id="cfg-hint">改动记入人格演化历史。</span><button class="btn" id="btn-cfg">保存情感设置</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 联想 3D -->
+    <section class="view" id="view-graph">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">记忆联想 · 3D 空间</h2>
+            <div class="sub" id="graph-hint">以<b>人格星核</b>为中心自动放射连接全部记忆；共享实体/标签的记忆自动连线。点节点聚焦，邻居被点亮；<b>左键拖=旋转 · 右键拖=平移 · 滚轮=缩放 · Esc=退出聚焦</b>。</div>
+            <div class="row" style="margin-top:6px;gap:12px;flex-wrap:wrap">
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:12px;height:12px;border-radius:50%;background:#f0d078;box-shadow:0 0 8px #f0d078;display:inline-block"></i>人格星核</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#e05c4f;display:inline-block"></i>很重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#d9a441;display:inline-block"></i>较重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#5fa8a0;display:inline-block"></i>一般</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#7d8896;display:inline-block"></i>不重要</span>
+              <span class="sub" style="color:var(--faint)">颜色=重要程度 · 越近被想起越亮</span>
+            </div>
+          </div>
+          <div class="row" style="margin-left:auto;flex-wrap:wrap">
+            <input id="graph-search" placeholder="搜索记忆定位节点…" style="width:170px">
+            <select id="graph-layer" style="width:96px">
+              <option value="">全部层</option>
+              <option value="cortex">长期</option>
+              <option value="hippo">短期</option>
+              <option value="dust">淡忘</option>
+            </select>
+            <select id="graph-limit" style="width:110px">
+              <option value="120">120 节点</option>
+              <option value="300" selected>300 节点</option>
+              <option value="600">600 节点</option>
+            </select>
+            <button class="ghost" id="btn-graph-reset">重置视角</button>
+            <button class="ghost" id="btn-graph-refresh">刷新</button>
+            <button class="ghost" id="btn-graph-auto">自动联想</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden;position:relative">
+        <canvas id="graph-canvas" style="display:block;width:100%;height:560px;cursor:grab"></canvas>
+        <div id="graph-tip" class="sub" style="position:absolute;left:14px;bottom:12px;pointer-events:none;font-size:11.5px;color:var(--faint)"></div>
+        <div id="graph-loadtip" class="sub hidden" style="position:absolute;left:0;right:0;top:46%;text-align:center;pointer-events:none;font-size:13px;color:var(--faint)"></div>
+        <div id="graph-detail" class="card hidden" style="position:absolute;right:14px;top:14px;width:280px;max-height:80%;overflow:auto;background:rgba(17,21,26,.94);backdrop-filter:blur(6px)"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="row"><h2 style="margin:0">关联明细</h2><span class="sub" id="graph-stat" style="margin-left:auto"></span></div>
+        <div id="graph-neighbors" class="sub" style="margin-top:10px">点一个节点，看它连着什么。</div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06)">
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <input id="path-a" placeholder="节点 A：id 或 gist 关键词" style="flex:1;min-width:140px">
+            <span class="sub">→</span>
+            <input id="path-b" placeholder="节点 B：id 或 gist 关键词" style="flex:1;min-width:140px">
+            <button class="ghost" id="btn-graph-path">找关联路径</button>
+          </div>
+          <div id="graph-path-out" class="sub" style="margin-top:8px">最多沿 3 跳联想链找两条记忆怎么连起来，基于当前加载的子图。</div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>手动建立关联</h2>
+        <div class="sub" style="margin-bottom:10px">在记忆列表里找两条相关的（展示里点「✎」旁的 id，或记忆卡片右下角看 id），把它们连起来——点「自动联想」也能按共享实体/标签批量补边。</div>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <input id="link-a" placeholder="来源记忆 id，如 m_..." style="flex:1;min-width:150px">
+          <input id="link-b" placeholder="目标记忆 id" style="flex:1;min-width:150px">
+          <input id="link-rel" placeholder="关系（相关/因果/情绪…）" value="相关" style="width:120px">
+          <button class="btn" id="btn-link">连接</button>
+        </div>
+        <div id="link-info" class="sub" style="margin-top:8px">关联不需要太精确——能看出「为什么它们会一起被想起」就行。连多了，整片星图会自然长出记忆网络。</div>
+      </div>
+    </section>
+
+    <!-- 成长 -->
+    <section class="view" id="view-growth">
+      <div class="split" style="margin-bottom:14px">
+        <div class="card">
+          <h2>成长指标</h2>
+          <div id="growth-kpi" class="kgrid"></div>
+          <div id="growth-last" class="sub" style="margin-top:12px"></div>
+        </div>
+        <div class="card">
+          <h2>复盘素材</h2>
+          <div class="sub">把最近的记忆、知识、笔记和技能汇总，交给 AI 写成成长笔记。</div>
+          <div class="row" style="margin-top:10px">
+            <input id="review-days" type="number" value="7" min="1" max="90" style="width:80px">
+            <span class="sub">天</span>
+            <button class="btn" id="btn-review">生成素材包</button>
+          </div>
+          <textarea id="review-out" rows="12" style="margin-top:10px" spellcheck="false" placeholder="点上面按钮生成复盘素材"></textarea>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <div class="row">
+          <h2 style="margin:0">成长时间线</h2>
+          <span class="sub" id="timeline-state" style="margin-left:auto">—</span>
+        </div>
+        <div class="sub" style="margin-top:6px">性格跳变、成形时刻、被纠正的节点——成长里的拐点都在这。</div>
+        <div id="growth-timeline" style="margin-top:10px"></div>
+      </div>
+
+      <div class="split" style="margin-bottom:14px">
+        <div class="card">
+          <div class="row">
+            <h2 style="margin:0">每日例行</h2>
+            <span class="sub" id="daily-state" style="margin-left:auto">—</span>
+          </div>
+          <div class="sub" style="margin-top:6px">每天写一篇日记、把今天重要的想法沉淀进知识库，隔天就自动做一次梦。——保证它每天更新、不落在旧状态里。</div>
+          <div class="row" style="margin-top:12px;flex-wrap:wrap">
+            <button class="ghost" id="btn-daily-preview">先预览</button>
+            <button class="btn" id="btn-daily-run">执行今日例行</button>
+          </div>
+          <pre id="daily-out" class="pre" style="margin-top:10px;max-height:200px;overflow:auto;white-space:pre-wrap"></pre>
+        </div>
+        <div class="card">
+          <div class="row">
+            <h2 style="margin:0">灵枢自我总结</h2>
+            <span class="sub" id="selfreview-state" style="margin-left:auto">—</span>
+          </div>
+          <div class="sub" style="margin-top:6px">每 2-3 天做一次：汇总最近的记忆、知识、笔记、技能与进化，回答「哪里更像人、哪里还像工具、下一个想练什么」。</div>
+          <div class="row" style="margin-top:12px;flex-wrap:wrap">
+            <input id="selfreview-days" type="number" value="3" min="1" max="30" style="width:70px">
+            <span class="sub">天一次</span>
+            <button class="ghost" id="btn-selfreview-due">看是否到期</button>
+            <button class="btn" id="btn-selfreview-run">现在总结</button>
+          </div>
+          <textarea id="selfreview-out" rows="10" style="margin-top:10px" spellcheck="false" placeholder="点按钮生成总结素材"></textarea>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <h2>进化轨迹</h2>
+        <div class="sub">每一次真正的自我改进都留一条：改了什么、为什么、怎么验证。</div>
+        <div class="row" style="margin-top:10px">
+          <input id="evo-title" placeholder="这次改了什么" style="flex:1">
+          <select id="evo-kind" style="width:130px">
+            <option value="persona">人格</option>
+            <option value="thinking">思考方式</option>
+            <option value="skill">技能</option>
+            <option value="knowledge">知识</option>
+            <option value="self">其他</option>
+          </select>
+          <button class="btn" id="btn-evo">记一条</button>
+        </div>
+        <div class="field"><label>为什么改、怎么验证的</label><textarea id="evo-detail" rows="3" spellcheck="false"></textarea></div>
+        <div id="evo-list" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h2>初识 · 我是谁</h2>
+        <div id="onboard-box"></div>
+      </div>
+    </section>
+
+    <!-- 梦 -->
+    <section class="view" id="view-dream">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row">
+          <div>
+            <h2 style="margin-bottom:4px">睡眠巩固</h2>
+            <div class="sub">重放碎片 → 抽象压缩 → 写入长期记忆 → 淡化细节 → 形成人格洞见</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="ghost" id="btn-dream-ai" title="生成给 AI 的深度做梦指令，复制后发给 AI 执行">复制 AI 做梦指令</button>
+            <button class="btn" id="btn-dream" title="机器自动完成：重放 → 启发式压缩 → 直接沉淀，产出仍标待审核">现在做梦</button>
+          </div>
+        </div>
+        <div id="dream-summary" class="sub" style="margin-top:12px"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h2>待整理的碎片</h2>
+        <div id="pending-box"><div class="empty">现在没有悬而未决的梦。点上方按钮触发一次。</div></div>
+        <div id="apply-box" class="hidden" style="margin-top:16px">
+          <div class="field">
+            <label>把碎片压缩成长期记忆，写成 apply.json（可以改下面的模板，也能在网页里直接保存草稿再应用）</label>
+            <textarea id="apply-json" rows="14" spellcheck="false"></textarea>
+          </div>
+          <div class="row" style="flex-wrap:wrap;gap:8px">
+            <span class="sub" id="draft-state">草稿未保存</span>
+            <button class="ghost" id="btn-draft-save">保存草稿</button>
+            <button class="ghost" id="btn-draft-reset">重填空模板</button>
+            <button class="btn" id="btn-apply">沉淀这份记忆</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>梦日志</h2>
+        <div id="reports"></div>
+      </div>
+    </section>
+
+    <!-- 自诊断 -->
+    <section class="view" id="view-diag">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">自诊断</h2>
+            <div class="sub">不只展示记忆，还归因异常：死链（指向不存在的 id）、冲突未裁决、数据膨胀、来源归属完整率。</div>
+          </div>
+          <button class="ghost" id="btn-diag-fixlinks" style="margin-left:auto;display:none">清理死链</button>
+          <button class="ghost" id="btn-diag-refresh" style="margin-left:8px">重新体检</button>
+        </div>
+        <div id="diag-summary" style="margin-top:12px"></div>
+        <div id="diag-body" style="margin-top:10px"><div class="empty">加载中…</div></div>
+      </div>
+
+      <!-- 数据目录（查看 / 迁移） -->
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">数据目录</h2>
+            <div class="sub">记忆、人格、知识库都存在这里。想挪到别的盘：填一个空目录的绝对路径，点「迁移」——整库复制过去并记住新位置，旧目录原样保留，重启面板/新会话后生效。</div>
+          </div>
+          <button class="ghost" id="btn-home-refresh" style="margin-left:auto">刷新</button>
+        </div>
+        <div id="home-info" style="margin-top:12px"><div class="empty">加载中…</div></div>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap">
+          <input type="text" id="home-target" placeholder="例如 E:\灵枢记忆" style="flex:1;min-width:220px">
+          <button class="btn" id="btn-home-migrate">迁移到此处</button>
+        </div>
+        <div class="sub" id="home-msg" style="margin-top:8px"></div>
+      </div>
+    </section>
+
+    <!-- 运行日志 -->
+    <section class="view" id="view-logs">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">运行日志</h2>
+            <div class="sub">锁冲突 / 内部异常 / 解析报错都留在这里。与数据目录里的 <code>lingshu.log</code> 同源；命令行也可用 <code>python scripts/brain.py logs</code> 查看。</div>
+          </div>
+          <div class="row" style="margin-left:auto;flex-wrap:wrap">
+            <select id="log-level" style="width:120px">
+              <option value="warn">警告 + 错误</option>
+              <option value="all">全部级别</option>
+              <option value="error">仅错误</option>
+            </select>
+            <button class="ghost" id="btn-log-refresh">刷新</button>
+            <button class="danger" id="btn-log-clear">清空日志</button>
+          </div>
+        </div>
+        <div id="log-list" style="margin-top:12px"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-store">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">插件商店</h2>
+            <div class="sub">灵枢的宿主适配插件（AstrBot / cordis 等）都在这里。点「安装」导出到
+              <code>~/.brain-memory/extensions/installed/</code>，再按各插件说明复制到宿主的插件目录即可启用。</div>
+          </div>
+          <div class="row" style="margin-left:auto;flex-wrap:wrap">
+            <button class="ghost" id="btn-store-refresh">刷新</button>
+            <button class="ghost" id="btn-store-folder">打开安装目录</button>
+          </div>
+        </div>
+        <div id="store-list" style="margin-top:12px"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-ext">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">本地能力</h2>
+            <div class="sub">给灵枢加装本地能力：装好的扩展自动接入，卸载只需删目录。</div>
+          </div>
+          <div class="row" style="margin-left:auto">
+            <button class="ghost" id="btn-ext-refresh">刷新</button>
+          </div>
+        </div>
+        <div id="ext-ollama" style="margin-top:12px"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class=""></div>
+
+<!--@@BLOCK:1@@-->
+
+<div class="modal hidden" id="modal">
+  <div class="box">
+    <h3>写一条记忆</h3>
+    <div class="field"><label>内容（完整句子，包含谁/什么/为什么）</label><textarea id="add-text" rows="4"></textarea></div>
+    <div class="field"><label>类型</label>
+      <select id="add-kind">
+        <option value="fact">事实</option>
+        <option value="preference">偏好</option>
+        <option value="emotion">情绪</option>
+        <option value="insight">洞见</option>
+        <option value="habit">习惯</option>
+        <option value="episode">片段</option>
+      </select>
+    </div>
+    <div class="field"><label>重要性 <b id="add-imp-v">6</b>/10</label><input type="range" id="add-imp" min="1" max="10" value="6"></div>
+    <div class="field"><label>标签（逗号分隔）</label><input id="add-tags" placeholder="称呼,偏好"></div>
+    <div class="row" style="margin-top:16px">
+      <button class="ghost" id="add-cancel">取消</button>
+      <button class="btn" id="add-save">写入</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal hidden" id="kg-modal">
+  <div class="box">
+    <h3>写一条知识</h3>
+    <div class="field"><label>标题（一句结论，不是主题词）</label><input id="kg-title" placeholder="例如：venv 能隔离项目依赖"></div>
+    <div class="field"><label>主题</label><input id="kg-topic-in" placeholder="开发 / 用户偏好 / 项目背景"></div>
+    <div class="field"><label>正文（完整说明，为什么、怎么做）</label><textarea id="kg-body" rows="5"></textarea></div>
+    <div class="field"><label>要点（逗号分隔）</label><input id="kg-points" placeholder="独立环境,不污染全局"></div>
+    <div class="field"><label>标签（逗号分隔）</label><input id="kg-tags" placeholder="python,环境"></div>
+    <div class="row" style="margin-top:16px">
+      <button class="ghost" id="kg-cancel">取消</button>
+      <button class="btn" id="kg-save">写入</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal hidden" id="note-modal">
+  <div class="box">
+    <h3>写一篇笔记</h3>
+    <div class="field"><label>类型</label>
+      <select id="note-kind">
+        <option value="journal">日记</option>
+        <option value="log">工作日志</option>
+        <option value="growth">成长复盘</option>
+      </select>
+    </div>
+    <div class="field"><label>标题</label><input id="note-title" placeholder="今天想留下的一句话"></div>
+    <div class="field"><label>正文</label><textarea id="note-body" rows="6"></textarea></div>
+    <div class="field"><label>心情</label><input id="note-mood" placeholder="平静 / 有点累 / 兴奋"></div>
+    <div class="field"><label>标签（逗号分隔）</label><input id="note-tags" placeholder="复盘,进步"></div>
+    <div class="row" style="margin-top:16px">
+      <button class="ghost" id="note-cancel">取消</button>
+      <button class="btn" id="note-save">写入</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal hidden" id="skill-modal">
+  <div class="box">
+    <h3>新建技能</h3>
+    <div class="field"><label>技能名（小写字母/数字/连字符）</label><input id="skill-name" placeholder="note-helper"></div>
+    <div class="field"><label>description（什么时候该用）</label><input id="skill-desc" placeholder="当用户需要……时使用"></div>
+    <div class="field"><label>正文（Markdown：用途 / 步骤 / 注意）</label><textarea id="skill-body" rows="9" spellcheck="false"></textarea></div>
+    <div class="row" style="margin-top:16px">
+      <button class="ghost" id="skill-cancel">取消</button>
+      <button class="btn" id="skill-save">创建</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal hidden" id="inject-modal">
+  <div class="box" style="width:min(820px,100%)">
+    <h3>会话注入预览</h3>
+    <div class="sub" style="margin-bottom:10px">这就是 startup 会注入给模型的记忆包。只读预览，不会落盘、不会触发记忆加强。</div>
+    <div class="field"><label>模拟用户这句话（可留空）</label><input id="inject-q" placeholder="例如：帮我写个 Python 脚本"></div>
+    <div class="row">
+      <span class="sub" id="inject-meta"></span>
+      <button class="btn" id="inject-run">生成</button>
+      <button class="ghost" id="inject-close">关闭</button>
+    </div>
+    <div class="pre" id="inject-out" style="margin-top:12px;max-height:52vh">点「生成」看本次会注入哪些记忆。</div>
+  </div>
+</div>
+
+<div class="modal hidden" id="upd-modal">
+  <div class="box">
+    <h3 id="upd-title">检查更新</h3>
+    <div class="pre" id="upd-detail" style="margin:10px 0 4px"></div>
+    <div id="upd-dsh-section" style="display:none;margin-top:14px;padding:12px;border:1px solid #e2c27a;border-radius:8px;background:#fffaf0">
+      <div style="font-weight:600;margin-bottom:8px">⚠ DSH 插件副本需要修复</div>
+      <div id="upd-dsh-detail" style="font-size:13px;color:#5a4a1f;line-height:1.6"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="upd-dsh-repair" style="background:#c47f17">一键修复 DSH 副本</button>
+        <button class="btn hidden" id="upd-dsh-force" style="background:#b03030">强制更新 DSH 副本</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button class="ghost" id="upd-close">关闭</button>
+      <button class="btn hidden" id="upd-apply">立即更新</button>
+    </div>
+  </div>
+</div>
+
+<!-- 长文本编辑弹窗：替代 prompt()（prompt 单行化多行内容，且不能换行预览） -->
+<div class="modal hidden" id="edit-modal">
+  <div class="box">
+    <h3 id="edit-title">编辑内容</h3>
+    <div class="field"><textarea id="edit-text" rows="8" spellcheck="false"></textarea></div>
+    <div class="row" style="margin-top:16px">
+      <button class="ghost" id="edit-cancel">取消</button>
+      <button class="btn" id="edit-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!--@@BLOCK:2@@-->
+
+<!-- ================= 自定义面板管理（导航「面板」按钮 + 覆盖层菜单） ================= -->
+<!--@@BLOCK:3@@-->
+<!--@@BLOCK:4@@-->
+
+
+
+<!-- ls-enhance v3.36 -->
+<!--@@BLOCK:5@@-->
+<!--@@BLOCK:6@@-->
+<!--@@BLOCK:7@@-->
+<!--@@BLOCK:8@@-->
+</body></html>
