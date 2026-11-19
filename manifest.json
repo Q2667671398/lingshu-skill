@@ -1,12 +1,12 @@
 {
-  "version": "3.38",
+  "version": "3.39",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "6be2ddc4db0030e648741a315e0be4a96784cef95b5e329892d92330d7eec108",
-      "size": 189991
+      "sha256": "bd9775a0ae926cb01d8919786d583866f2629099eac14b97135120ff0ee3a65d",
+      "size": 190726
     },
     "README.md": {
-      "sha256": "7ec99390584e230135183e47ed6efa54bfdd5c89b7daad9038e1d521c94130c1",
+      "sha256": "a43f089f808da10daa06245c09376f99d0c3d4b4f55ecc03641948091f0b2c15",
       "size": 62363
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "cae36975c2c3d9bf6a5eb48b9255354499e04687d5abc3b27801018946c06418",
+      "sha256": "ed2aaa10aa6e053efb944efce6e1970cf27332347cd31d99d7bc35351edf6b54",
       "size": 33614
     },
     "assets/panel.html": {
@@ -98,7 +98,7 @@
       "size": 5219
     },
     "package.json": {
-      "sha256": "6fbc9fe0a417c82ba6ab39a3e5891e01481aaed35bc72fd9f0fb321c9009668f",
+      "sha256": "0baf238fd3f7af7c302146341036d0e21ad8a177377e1d595d490a8de659353e",
       "size": 860
     },
     "scripts/assembler.py": {
@@ -173,9 +173,13 @@
       "sha256": "f6752d29179dd0a371d56b01656e02b1d5c956fff7f7b4d64b23eaa8006441a3",
       "size": 1972
     },
+    "scripts/mem_dialogue.py": {
+      "sha256": "825de9096245a45f115ab4fdb15eb5b13fc47edb952529b948764b6dafe979b2",
+      "size": 10236
+    },
     "scripts/memory.py": {
-      "sha256": "d45542d6dda9dcde2d7b3bb545c9b73a92ca53c461afe3decbfbaae8b214b4d2",
-      "size": 230458
+      "sha256": "3495f7b79e0043aa49be8c8f91f353d72917deb02babaca9992ac4cfadcf969c",
+      "size": 220897
     },
     "scripts/panel_build.py": {
       "sha256": "49c61898f32e487071d315802a665d09026aa3aaf6b701f3fe52ab0911812e83",

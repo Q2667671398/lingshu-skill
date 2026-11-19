@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.39（2026-11-19）
+
+> 主题：**拆 memory.py 第一步**——对话摄取整块（219 行）迁到独立模块。
+
+- 新增 `scripts/mem_dialogue.py`：`_dialogue_*` 解析/分块/偏移 + `ingest_dialogues`；
+  - 可变全局（HOME/文件锁/原子写/日志）统一走 `core.*`，避免复制值后 core rebind 失效；
+  - 依赖 memory 的 `remember/load_all` 改成调用时取模块，杜绝导入期循环；
+  - `memory.py` 末尾 `from mem_dialogue import *` 保留原有调用面（cli/cron 无感）。
+- 测试同步：`test_dialogue_ingest` 的锁 spy 改为 patch `core._locked`。
+- 行数：memory.py 4741 → 4524（-217），后续按同样方式继续拆（下一步建议 embed/评分纯函数）。
+
+
 ## v3.38（2026-11-19）
 
 > 主题：**面板模块化 + 全局搜索（Ctrl/⌘+K）+ 记忆列表懒渲染**。

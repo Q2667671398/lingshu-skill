@@ -115,7 +115,7 @@ def test_ingest_offsets_hold_chunk_hashes_and_lock():
         _setup_home(root / "home", [src])
         (src / "a.txt").write_text("用户: 跨会话去重内容\n", encoding="utf-8")
         locked = []
-        original = memory._locked
+        original = core._locked
 
         @contextmanager
         def spy(path, timeout=10.0):
@@ -123,11 +123,11 @@ def test_ingest_offsets_hold_chunk_hashes_and_lock():
             with original(path, timeout):
                 yield
 
-        memory._locked = spy
+        core._locked = spy
         try:
             memory.ingest_dialogues()
         finally:
-            memory._locked = original
+            core._locked = original
         assert "dialogue_offsets.json" in locked, locked
         entry = next(iter(_offsets().values()))
         assert entry.get("chunk_hashes"), entry
