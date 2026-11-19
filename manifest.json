@@ -1,13 +1,13 @@
 {
-  "version": "3.24",
+  "version": "3.25",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "017e58f82fdd5b71bc1025749cabafd83e92ce3d6090b08a3bc44562678eb4c4",
-      "size": 174984
+      "sha256": "0aac5b1e9d4e1f3d309bb2d7578b79a3d8bc1b65db40a9d0a0cbe621b9b2e048",
+      "size": 175990
     },
     "README.md": {
-      "sha256": "ec05d6e015d033fcb5dcd290bfd382c8e265cf205ef3290f62c7e6c0c044607e",
-      "size": 60277
+      "sha256": "dc862b04a25d886da1bb95873df4bbed14d5e2afbe775276f6ee3496c18317a6",
+      "size": 60466
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,8 +18,8 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "68d3aae02afe5fba10b92f83e3825cf69dd88b6e6dc8add5852479a02d07aaf0",
-      "size": 31411
+      "sha256": "a9f1a1eea71aad97cd11075545391cb2f1d49142a96ddaf6b40a006af57a67ed",
+      "size": 31624
     },
     "assets/panel.html": {
       "sha256": "71bb31a3ee9e3b3904f76211c6829da3a6f12e13cc6969e3efd64d88d5b2ba23",
@@ -42,8 +42,8 @@
       "size": 27071
     },
     "cordis-plugin/lingshu-im/plugin.js": {
-      "sha256": "e59b4e0082b2fdf70fb567a983906ae9c6a22c64f8be79d667461791a7404ce0",
-      "size": 25206
+      "sha256": "86ba7cf59c9de1df7e17fa680de108eea8096ece7ff07711d307d95cad8c4bb3",
+      "size": 26336
     },
     "cordis-plugin/lingshu-startup/README.md": {
       "sha256": "e62016afb05dd910cd1b99fd547b1b5eead2afea43e0b90b96df2d2782c0b386",
@@ -90,11 +90,11 @@
       "size": 5083
     },
     "index.js": {
-      "sha256": "d3a88938bf0576af45b1d01bcc37b45fdf990974052bedfe9301275f30329a7b",
-      "size": 4096
+      "sha256": "36078c38a3bbd8a82a9e4ca8f8ca9c13151bddc608ba46820949ab1c81166558",
+      "size": 4591
     },
     "package.json": {
-      "sha256": "3abe7b83c85a245e7ce39793c7243a852e0b2a6ce04c21ea5b4031c175c33af4",
+      "sha256": "f8a0c66a54f2b228ef7a8088891387d0642d214a12318e72177f1dc4ab11d0a5",
       "size": 860
     },
     "scripts/bench.py": {

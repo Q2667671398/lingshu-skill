@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.25（2026-11-19）
+
+> 本轮主题：**把 IM 桥接的"配置入口"补上（#36）**——之前 autoRecall/autoCapture 写死为关，profile 里怎么配都传不进去。
+
+- **修：根包不透传子插件配置**。`index.js` 的 `apply(ctx)` 改为 `apply(ctx, config)`，把 `{startup,cron,im}` 分段传下去；也接受扁平的 `{autoRecall:true}` 当 `im` 段，profile patch 与 bundle 配置都能用。
+- **修：`lingshu-im` 读不到配置**。新增 `readBrainImConfig()`：宿主配置 > `~/.brain-memory/config.json` 的 `im` 段（含 `.home` 指针）> 默认值；默认仍是 `autoRecall=false / autoCapture=false`（跨会话隐私）。
+- **测试**：新增 `tests/test_im_config_passthrough.py`（3 项：透传静态契约、默认值仍关、有 node 时真读 config.json 验证覆盖）。
+- **文档**：README 命令速查 + SKILL.md 命令索引补 IM 配置写法。
+- 顺带确认：#27（`_DIALOGUE_MAX_DEPTH` 重复定义）在当前代码里已不存在。
+
 ## v3.24（2026-11-19）
 
 > 本轮主题：**按问题清单把 #17–#21、#25/#26 一次性做掉**（注入隔离、摄取健壮性、新功能回归测试、命令文档）。

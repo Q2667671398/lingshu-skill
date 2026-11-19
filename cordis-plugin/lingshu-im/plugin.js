@@ -58,6 +58,31 @@ const SENSITIVE = new RegExp(
   'i',
 )
 
+/** 读灵枢数据目录的 config.json 里可选的 `im` 段。
+
+为什么需要：根包挂载子插件时以前传的是 `{}`，autoRecall/autoCapture 永远只能是
+默认值（都关）。现在优先用宿主透传的配置，没有就退回 `~/.brain-memory/config.json`
+的 `im` 段——用户改一个 JSON 就能开，不必改 profile 或重装。
+*/
+export function readBrainImConfig() {
+  try {
+    let home = process.env.BRAIN_MEMORY_HOME
+    if (!home) {
+      const base = join(homedir(), '.brain-memory')
+      try {
+        const ptr = readFileSync(join(base, '.home'), 'utf8').trim()
+        if (ptr) home = ptr
+      } catch { /* 没有指针文件就用默认目录 */ }
+      home = home || base
+    }
+    const cfg = JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))
+    const im = cfg?.im
+    return im && typeof im === 'object' ? im : {}
+  } catch {
+    return {}
+  }
+}
+
 /** 合并用户配置与默认值（用户值非空/存在才覆盖） */
 function mergeConfig(user) {
   const merged = { ...DEFAULTS }
@@ -292,7 +317,9 @@ function notice(text) {
 // ---------------------------------------------------------------- 插件主体
 
 export function apply(ctx, config) {
-  const cfg = mergeConfig(config)
+  // 优先级：宿主透传的配置 > config.json 的 im 段 > 默认值（默认 autoRecall/autoCapture 都关）
+  const fileCfg = readBrainImConfig()
+  const cfg = mergeConfig({ ...fileCfg, ...(config && typeof config === 'object' ? config : {}) })
   cfg.recallBudget = boundedInt(cfg.recallBudget, 1400, 200, 6000)
   cfg.captureMinChars = boundedInt(cfg.captureMinChars, 8, 2, 400)
   cfg.captureInterval = boundedInt(cfg.captureInterval, 300, 10, 86400)

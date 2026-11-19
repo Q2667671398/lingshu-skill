@@ -40,7 +40,7 @@ export const name = 'lingshu-skill'
 // "cannot get property "skills" without inject"，导致宿主激活失败并回滚安装。
 export const inject = ['skills']
 
-export function apply(ctx) {
+export function apply(ctx, config) {
   const content = loadSkillBody()
   if (content === undefined) {
     ctx.logger?.warn?.('lingshu-skill: SKILL.md not found next to index.js, bundled skill not registered')
@@ -64,19 +64,25 @@ export function apply(ctx) {
 
   // 挂载子插件：startup = 会话启动自动注入人格/记忆；cron = 做梦/清点/用量等例行维护。
   // 各自 try/catch：一个挂载失败不能拖垮另一个和技能注册本身。
+  // 子插件配置透传（v3.25）：之前在 profile 里无论怎么配都传不进来，autoRecall/
+  // autoCapture 这类开关等于写死。现在支持
+  //   { startup: {...}, cron: {...}, im: {...} }
+  // 以及更短的 { autoRecall: true }（等同 im 段），profile patch 与 bundle 配置都能用。
+  const cfg = (config && typeof config === 'object') ? config : {}
+  const imCfg = (cfg.im && typeof cfg.im === 'object') ? cfg.im : cfg
   try {
-    startupPlugin.apply(ctx, {})
+    startupPlugin.apply(ctx, cfg.startup || {})
   } catch (e) {
     ctx.logger?.error?.('lingshu-skill: startup 子插件挂载失败，启动注入不可用；重装根包可恢复', e)
   }
   try {
-    cronPlugin.apply(ctx, {})
+    cronPlugin.apply(ctx, cfg.cron || {})
   } catch (e) {
     ctx.logger?.error?.('lingshu-skill: cron 子插件挂载失败，例行维护不可用；重装根包可恢复', e)
   }
   // dsh-im 桥接：装了 dsh-im 才生效（未装时事件永不触发，服务探测为 undefined，纯空转）。
   try {
-    imPlugin.apply(ctx, {})
+    imPlugin.apply(ctx, imCfg)
   } catch (e) {
     ctx.logger?.error?.('lingshu-skill: im 子插件挂载失败，IM 记忆召回/写回不可用；重装根包可恢复', e)
   }
