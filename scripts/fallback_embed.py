@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from pathlib import Path
 
@@ -36,8 +37,14 @@ def cfg() -> dict | None:
     一律按未启用处理（返回 None），不炸。
     """
     try:
-        # 延迟 import：core.load_config 依赖项目根，直接读文件更独立、不引入环
-        home = Path.home() / ".brain-memory"
+        # 数据目录解析：优先跟随 core.HOME（测试/--home 会改它），
+        # 其次 BRAIN_MEMORY_HOME，最后默认 ~/.brain-memory。
+        # 早期版本写死 Path.home()，导致隔离 HOME 的测试拿不到兜底配置。
+        try:
+            import core  # 延迟 import，避免循环
+            home = Path(core.HOME)
+        except Exception:
+            home = Path(os.environ.get("BRAIN_MEMORY_HOME") or (Path.home() / ".brain-memory"))
         cfg_path = home / "config.json"
         if not cfg_path.is_file():
             return None

@@ -1,5 +1,10 @@
 # 更新日志
 
+## v3.33（2026-11-19）
+
+- **修：降级向量兜底读错数据目录**。`fallback_embed.cfg()` 以前写死 `Path.home()/.brain-memory/config.json`，导致：① 用 `--home`/隔离 HOME 时拿不到兜底配置；② CI 里 `test_embed_circuit` 必挂（兜底读不到 → `embed_texts` 返回 None）。现在按 **`core.HOME` → `BRAIN_MEMORY_HOME` → 默认目录** 解析，并补 `import os`。
+- 无行为变化：正常本机数据目录不变时，解析结果与旧版一致。
+
 ## v3.32（2026-11-19）
 
 - **修：嵌入服务连不上时反复超时 + 刷日志**。Ollama 没起的时候，每次 recall 都会等满 `timeout_sec`（默认 8s）并往 `lingshu.log` 写一条 warn。现在加了**进程内熔断**：
