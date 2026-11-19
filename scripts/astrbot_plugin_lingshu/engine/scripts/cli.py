@@ -1304,6 +1304,14 @@ def _main(argv=None) -> int:
                        help="预算 token 数（缺省用 config budget_tokens）")
     p_cst.add_argument("--query", default="", help="按指定查询生成注入包（缺省为 startup 注入包）")
 
+    # 任务收尾清点：用 git 证据写一条 episode（不重复写）
+    p_ck = sub.add_parser("checkpoint", help="任务/项目收尾清点：用 git 证据写一条收尾记忆（幂等）")
+    p_ck.add_argument("--repo", default="", help="仓库路径（默认当前目录）")
+    p_ck.add_argument("--note", default="", help="一句话收尾备注（可空）")
+    p_ck.add_argument("--dry-run", action="store_true", help="只看会写什么，不写库、不记状态")
+    p_ck.add_argument("--force", action="store_true", help="即使和上次一致也写一条")
+    p_ck.add_argument("--json", action="store_true")
+
     # 附录 C P2 收尾：触发 + 落盘 + 回滚
     p_ss = sub.add_parser("session-summary",
                           help="会话摘要：触发判断 / 生成落盘 / 查看 / 回滚（每 N 轮或水位≥60%）")
@@ -2112,6 +2120,23 @@ def _main(argv=None) -> int:
         print(f"预算 {budget} tokens：{'超限 ⚠' if over else '未超限 ✅'}"
               f"（余量 {budget - rep['total_tokens']} tokens）")
         return 0
+
+    if args.cmd == "checkpoint":
+        from checkpoint import checkpoint
+        rep = checkpoint(args.repo or None, args.note,
+                         dry_run=args.dry_run, force=args.force)
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0 if rep.get("ok") else 1
+        if rep.get("skipped"):
+            print(f"未写：{rep.get('reason')}")
+            if args.dry_run and rep.get("text"):
+                print(rep["text"])
+        else:
+            print(rep["text"])
+            print(f"已记为 episode {rep.get('memory_id')}（{rep['reason']}）"
+                  + ("（dry-run，未落库）" if args.dry_run else ""))
+        return 0 if rep.get("ok") else 1
 
     if args.cmd == "session-summary":
         from session_summary import maybe_summarize, load as ss_load, rollback as ss_rollback

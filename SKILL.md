@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 3.33
+version: 3.34
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -282,6 +282,12 @@ python scripts/brain.py topic drop "加班"                  # 用户明确说�
 - [ ] 值得长留而没记的 → 补 `remember`；今日总结/沉淀 → `daily --force`
 - [ ] 顺手提炼当天对话里的 1-3 个情绪事件 → `daily --feel "情绪:强度:原因"`（可重复；这是情绪系统的主要输入源，不写就一直是空骨架）
 
+**任务/项目完成时（收尾清点）**：
+
+- [ ] 在项目仓库里跑一次 `checkpoint --note "这次做了什么"`：用 git 证据（HEAD/最后提交/工作区/版本）写一条「任务收尾」episode，幂等——同一状态不重复写。
+- 这比"零散过程记忆"更完整：下次开工先 `recall <项目名> 收尾`，能立刻看到上次收尾时的状态与待办。
+- 不是 git 仓库/没有变化时它会明确跳过，不会制造噪音。
+
 ## 高频命令索引
 
 ```bash
@@ -307,6 +313,7 @@ python scripts/brain.py summarize --input 对话.jsonl [--json]  # 五段式会�
 python scripts/brain.py session-summary build --input 对话.jsonl [--pct 65] [--force]
   # 触发(每8轮/水位≥60%/--force) → 生成 → 落盘 sessions/summaries/<id>.md（留 3 版）
 python scripts/brain.py session-summary show|rollback [--steps N]
+python scripts/brain.py checkpoint [--repo 路径] [--note "…"] [--dry-run]  # 任务收尾清点（幂等）
 python scripts/brain.py retrieve "关键词" [--k 20] [--budget 800]  # 检索片段：服务优先，失败回退本地
   # 通道记忆默认不进本机注入；要放行某个通道：config set inject_channels '["qq@bot:群号"]'
   # IM 桥接（dsh-im）：autoRecall/autoCapture 默认关；开在 ~/.brain-memory/config.json 的 im 段，

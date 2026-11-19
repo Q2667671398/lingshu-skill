@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.34（2026-11-19）
+
+> 主题：**任务/项目收尾清点**——解决"过程记得零碎、收尾状态没记住"。
+
+- **新增 `checkpoint` 命令**（`scripts/checkpoint.py`）：
+  - 用**可验证的 git 证据**生成收尾记忆：项目/分支/HEAD/最后提交/工作区是否干净/版本号；
+  - 写成一条 `source=checkpoint` 的 episode（tags 带「收尾 + 项目名」），不靠模型编；
+  - **幂等**：同一 HEAD 且工作区干净 → 明确跳过；HEAD 变了或有未提交改动才写；
+  - `--dry-run` 只看不写；`--force` 强制写；状态记在 `sessions/checkpoints.json`。
+- **SKILL.md 增加收尾纪律**：任务/项目完成时跑一次 `checkpoint --note "…"`；下次开工先 `recall <项目名> 收尾` 就能看到上次收尾状态。
+- **测试**：`tests/test_checkpoint.py` 6 项（非 git 跳过、证据与文本、首次写后不重复、提交/脏工作区触发、dry-run 不落库、CLI JSON）。
+- 说明：没有做成"插件自动触发"——DSH 插件的子进程被刻意限制在用户主目录（避免占用工作区目录），拿不到仓库路径；靠 SKILL 纪律（每会话必读）触发更可靠，且命令本身幂等，跑多次也安全。
+
 ## v3.33（2026-11-19）
 
 - **修：降级向量兜底读错数据目录**。`fallback_embed.cfg()` 以前写死 `Path.home()/.brain-memory/config.json`，导致：① 用 `--home`/隔离 HOME 时拿不到兜底配置；② CI 里 `test_embed_circuit` 必挂（兜底读不到 → `embed_texts` 返回 None）。现在按 **`core.HOME` → `BRAIN_MEMORY_HOME` → 默认目录** 解析，并补 `import os`。
