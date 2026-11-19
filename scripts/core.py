@@ -172,6 +172,11 @@ DEFAULT_CONFIG = {
     # 每条记忆注入时的正文截断上限（字符）：放宽默认值让 AI 记得"再详细点"。
     # 用户嫌注入太短时调大即可；budget_tokens 仍是总量硬约束，超了照样截行。
     "inject_max_chars": 600,
+    # 记忆正文注入模式（五-C）：
+    #   full = 直接带正文（默认，体感最"记得住"）
+    #   lazy = 只带一句要点 + id，正文按需用 recall / dereference 取（省 token）
+    "inject_mode": "full",
+    "inject_lazy_chars": 80,   # lazy 模式下每条要点最多留多少字符
     # remember 写入时的正文截断上限（字符）：单条记忆原文最长保留多少。
     "remember_max_chars": 1200,
     # 上下文水位三级防线（比例，0-1）：

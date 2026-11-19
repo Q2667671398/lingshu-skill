@@ -4036,6 +4036,18 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
     except Exception:
         _inj_all = None
 
+    _lazy = str(cfg.get("inject_mode") or "full").strip().lower() == "lazy"
+    _lazy_chars = max(20, int(_cfg_num(cfg, "inject_lazy_chars", 80, int)))
+    _used_pointer = False
+
+    def _pointer_line(m: dict, star: str = "") -> str:
+        """五-C 惰性注入：一句话要点 + id，正文留给 recall / dereference 取。"""
+        brief = display_text(m).strip().replace("\n", " ")
+        if len(brief) > _lazy_chars:
+            brief = brief[:_lazy_chars].rstrip() + "…"
+        mid = str(m.get("id") or "")
+        return f"- {star}{brief}（id:{mid}，正文用 recall 取）"
+
     def _stars_inj(imp: float) -> str:
         if _inj_all and len(_inj_all) >= 20:
             n = len(_inj_all)
@@ -4054,19 +4066,33 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
         k = 1 if pct < 0.25 else 3 if pct < 0.50 else 4 if pct < 0.90 else 5
         return "★" * k if k >= 3 else ("★" if k == 1 else "★★")
     for m, score, _ in mems:
+        star = (f"[{fmt_date(m.get('created', 0))} "
+                f"{_stars_inj(_num(m.get('importance'), 0.5))}] ")
         _body = display_text(m)
         # 单条正文按 inject_max_chars 截断：只放宽上限，一条整记忆不切半的规则不变
         if inject_max > 0 and len(_body) > inject_max:
             _body = _body[:inject_max].rstrip() + "…"
-        line = (f"- [{fmt_date(m.get('created', 0))} "
-                f"{_stars_inj(_num(m.get('importance'), 0.5))}] {_body}")
+        is_pointer = _lazy
+        if _lazy:
+            line = _pointer_line(m, star)
+        else:
+            line = f"- {star}{_body}"
+            # 预算紧张自动降级：整行放不下时改指针，而不是直接把这条丢掉
+            # （mem_cap 是"记忆段可用额度"，只跟段内已排的长度比）
+            if lines_join_len(lines + [line]) > mem_cap:
+                line = _pointer_line(m, star)
+                is_pointer = True
         # append 之后累计再判：append 前判会把"当前这行自身"的长度漏算，实际可超预算一行
         lines.append(line)
-        if used + lines_join_len(lines) > mem_cap:
+        if lines_join_len(lines) > mem_cap:
             lines.pop()   # 超预算：这行不放，留一条整记忆不切半
             break
+        if is_pointer:
+            _used_pointer = True   # 只统计真正留下来的指针，避免"降级又被挤掉"还挂提示
         kept_mems.append(m)
     _bill["sec"] = "related" if query else "recent"
+    if _used_pointer:
+        header += "\n（指针条目：正文用 `recall <关键词>` 或 `dereference <id>` 取）"
     if lines:
         dyn.append(header)
         dyn.extend(lines)
@@ -4078,6 +4104,9 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
     if not query and new_mem:
         dyn.append("\n## 刚刚发生（本会话新增）")
         for m in new_mem:
+            if _lazy:
+                dyn.append(_pointer_line(m))
+                continue
             _body = display_text(m)
             if inject_max > 0 and len(_body) > inject_max:
                 _body = _body[:inject_max].rstrip() + "…"

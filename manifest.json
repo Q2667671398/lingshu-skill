@@ -1,13 +1,13 @@
 {
-  "version": "3.26",
+  "version": "3.27",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "542620e133453249f12264cfddf6401dc8d8a9109c7195132d19057e4a1392e2",
-      "size": 177664
+      "sha256": "72486c8d8c34c962c1514f9fbf0e6ffdaf2d400c82a8c2365f895d3c6820f307",
+      "size": 178767
     },
     "README.md": {
-      "sha256": "7b9d215099e1c4d616f5e1b35a9fbe49bb1938522f74a12c4a50423510c0fb6c",
-      "size": 60760
+      "sha256": "9217f5c09c1d4ae216c1dc15b0cb03c7b0f49c2a0c63fbc9efbd01ee9aecf8ea",
+      "size": 60914
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,8 +18,8 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "9f916ad28ed85689b81a6f5ac023f2a16ba76b2185923942a405fb4b2f9d6c8a",
-      "size": 31950
+      "sha256": "581dffd3b47999ee9430e49ebc3b09e8ea7210571a0d61a82c4ec711bd7a97da",
+      "size": 32172
     },
     "assets/panel.html": {
       "sha256": "71bb31a3ee9e3b3904f76211c6829da3a6f12e13cc6969e3efd64d88d5b2ba23",
@@ -98,7 +98,7 @@
       "size": 5219
     },
     "package.json": {
-      "sha256": "e74e779e2b085c921c59ffe4353e1c5e102babf2039f49c868aceeab2e0ec379",
+      "sha256": "9923d7f70e93a123503989cb8e53a89b5ada1a9f12ba19361ff67df27c931623",
       "size": 860
     },
     "scripts/bench.py": {
@@ -122,8 +122,8 @@
       "size": 229389
     },
     "scripts/core.py": {
-      "sha256": "e8c0e800dfe6d9bc3ac56e8a9297256ebf99dee7612ccc3b98e0ae4e01cba162",
-      "size": 78574
+      "sha256": "0559804dd030b46535482b101f7687c36f6cabae823ade393dcc4ac6b3ce6dc4",
+      "size": 78890
     },
     "scripts/dream.py": {
       "sha256": "e25749c32fe6cb3b3845c9541ef663dffe8efaa0d9bd251f611e1359208800b9",
@@ -158,8 +158,8 @@
       "size": 1972
     },
     "scripts/memory.py": {
-      "sha256": "6f1a7fc6cb3220a13ecb8fe9e0d219fcb92c3c53c863777c903f2f7796734ae8",
-      "size": 229063
+      "sha256": "d45542d6dda9dcde2d7b3bb545c9b73a92ca53c461afe3decbfbaae8b214b4d2",
+      "size": 230458
     },
     "scripts/panel_cloud.py": {
       "sha256": "fff72888123d45bbf05ab329a06b2126f1c0b972c76283ecff32454bc4155c58",
