@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v3.28**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.29**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -566,6 +566,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | 注入缓存 / 只读回放 / 饱和 | `session-state [show\|clear]`（需 `session_state_cache=true`） / `replay [--days 90] [--limit 20]` / `saturation [--threshold 0.8]` |
 | 上下文账单 | `context-stats [--json] [--budget N] [--query Q]`（按段拆注入包：字符 / 估算 token / 占预算） |
 | 五段装配试排 | `context-plan [--budget N] [--json]`（stable/summary/retrieved/recent/current 按预算排一遍，看会裁什么） |
+| 会话摘要 | `summarize --input 对话.jsonl [--json] [--prev 旧摘要.md]`（五段式；模型可选，失败/不合格自动回退离线抽取） |
 | 注入模式 | `config set inject_mode lazy`（记忆只带要点 + id，正文用 `recall` 取；默认 `full`）/ `config set inject_lazy_chars 80` |
 | 群聊鉴权 | `~/.brain-memory/config.json` 的 `guard` 段：`{"shadow":false}` 才真拦；非 owner 只放行只读工具，日志在 `lingshu-guard.log` |
 | 通道注入放行 | `config set inject_channels '["qq@bot:群号"]'`（默认只注入无通道与 dialogue:* 记忆） |

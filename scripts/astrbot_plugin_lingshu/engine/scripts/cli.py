@@ -1304,6 +1304,14 @@ def _main(argv=None) -> int:
                        help="预算 token 数（缺省用 config budget_tokens）")
     p_cst.add_argument("--query", default="", help="按指定查询生成注入包（缺省为 startup 注入包）")
 
+    # 附录 C P2：会话摘要层（五段式 + 校验 + fail-open）
+    p_sum = sub.add_parser("summarize",
+                           help="五段式会话摘要：模型优先，失败/不合格回退离线抽取（fail-open）")
+    p_sum.add_argument("--input", required=True, help="对话文件（.jsonl 每行一条 / .json 数组或 messages）")
+    p_sum.add_argument("--max-chars", type=int, default=1500, help="摘要长度上限（默认 1500）")
+    p_sum.add_argument("--prev", default="", help="上一版摘要文件（可选，帮助保持连续性）")
+    p_sum.add_argument("--json", action="store_true", help="输出机器可读结果（含 source/actions/warnings）")
+
     # 附录 C P1：五段式装配计划（只试排、不改行为；查看预算会怎么裁）
     p_cpl = sub.add_parser("context-plan",
                            help="五段式装配计划：按预算试排 stable/summary/retrieved/recent/current")
@@ -2083,6 +2091,29 @@ def _main(argv=None) -> int:
         over = rep["total_tokens"] > budget
         print(f"预算 {budget} tokens：{'超限 ⚠' if over else '未超限 ✅'}"
               f"（余量 {budget - rep['total_tokens']} tokens）")
+        return 0
+
+    if args.cmd == "summarize":
+        from summarizer import load_turns, summarize
+        try:
+            turns = load_turns(args.input)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[错误] 读不了对话文件：{exc}", file=sys.stderr)
+            return 2
+        prev = ""
+        if args.prev:
+            try:
+                prev = Path(args.prev).read_text(encoding="utf-8-sig")
+            except OSError as exc:
+                print(f"[警告] 读不了上一版摘要（忽略）：{exc}", file=sys.stderr)
+        res = summarize(turns, prev_summary=prev, max_chars=args.max_chars)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0
+        print(res["text"])
+        if res["source"] == "fallback":
+            print(f"\n（来源：离线抽取式；{ '；'.join(res['warnings']) or '未配置模型或未启用' }）",
+                  file=sys.stderr)
         return 0
 
     if args.cmd == "context-plan":

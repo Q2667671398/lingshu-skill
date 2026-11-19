@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.29（2026-11-19）
+
+> 本轮主题：**附录 C P2 会话摘要层**——五段式模板 + 提交前校验 + fail-open 回退。
+
+- **新增 `scripts/summarizer.py`**：
+  - 五段固定结构：目标 / 已做 / 未决 / 约束 / **原话引用**（漂移锚，必须逐字保留）；
+  - 模型可选：配 `config.summary`（OpenAI 兼容 `base_url`/`model`/`api_key_env`/`timeout`）就走模型；
+  - 没配、超时、报错、输出不合格（缺小标题 / 超长 / 回显提示 / 代码块）→ **一律回退离线抽取式**，不阻塞、不抛异常；
+  - 离线抽取式只挑明确信号（用户纠正句、约束词、待办词），不编造。
+- **新增 `summarize` 命令**：`--input 对话.jsonl|.json`、`--max-chars`、`--prev 上一版摘要`、`--json`（返回 source/actions/warnings）。
+- **测试**：新增 `tests/test_summarizer.py` 7 项（五段齐全、校验拒绝缺段/超长/回显、disabled 回退、模型合格直出、模型失败/垃圾输出回退、prompt 带上一版、CLI JSON 往返）。
+- 默认 `summary.enabled=false`（不联网也能用：全部走离线抽取）；要接模型再配 `summary` 段。
+
 ## v3.28（2026-11-19）
 
 > 本轮主题：**附录 C P1 五段式装配器**（shadow：只试排，不改变实际注入）。

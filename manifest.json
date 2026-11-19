@@ -1,13 +1,13 @@
 {
-  "version": "3.28",
+  "version": "3.29",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "b962019b8c61331c5b9568c3199cb75bf35b9cbe24447d4a7107cb157d622002",
-      "size": 179934
+      "sha256": "b039c61a07af0dd01fb18e9d7a75c0a562d4b8b50b7a98afd3a5f70ede34b7c7",
+      "size": 181109
     },
     "README.md": {
-      "sha256": "9bb64082128574d85f6cf6d3a743ca7c3d15c411c6234a631d12c6407fe20aaf",
-      "size": 61058
+      "sha256": "889f18ae1663564034246c944840606a6812aa96b3adc233771e18a061054fe3",
+      "size": 61214
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,8 +18,8 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "37b6b7cae044a4a66bc72e590423a0aae73b06a1529081c93f8eeb5d3c9618b4",
-      "size": 32284
+      "sha256": "8c4404c95375e1c1b4e7c5401be76ed4743d1f7e4c3dca1d7ef187d91bade44a",
+      "size": 32412
     },
     "assets/panel.html": {
       "sha256": "71bb31a3ee9e3b3904f76211c6829da3a6f12e13cc6969e3efd64d88d5b2ba23",
@@ -98,7 +98,7 @@
       "size": 5219
     },
     "package.json": {
-      "sha256": "d08bb191e8b81ef715c407bb89c5c4184903762f88b6e9f91ae281f5b8c496f6",
+      "sha256": "292ad2efe05bc1210c1772efa67da4e95bb9a68e73356c10032001e1bb090c93",
       "size": 860
     },
     "scripts/assembler.py": {
@@ -122,8 +122,8 @@
       "size": 10395
     },
     "scripts/cli.py": {
-      "sha256": "153dcd850e7e2841111862e7c6f1c418f49053c3528eaa955dda8f51964caf3b",
-      "size": 231514
+      "sha256": "6ce51ccb31e16faaaff549cf2fee6ef83650a5b8e59ef324252237a60fafffee",
+      "size": 233185
     },
     "scripts/core.py": {
       "sha256": "0559804dd030b46535482b101f7687c36f6cabae823ade393dcc4ac6b3ce6dc4",
@@ -180,6 +180,10 @@
     "scripts/persona.py": {
       "sha256": "fb748d2fb7b176d9dd0d7394de69ba4560da7f4205f62256477d3a69dcbdf0f5",
       "size": 107976
+    },
+    "scripts/summarizer.py": {
+      "sha256": "ff2383f513cda423dac662135a64cec154194fe6f8f8ed1883c8304af772ebea",
+      "size": 9862
     },
     "scripts/sync_engine.py": {
       "sha256": "82202ac89f1f18aa35fa363f5d5db5bda8945be004dfcb172d4100aa699e169d",
