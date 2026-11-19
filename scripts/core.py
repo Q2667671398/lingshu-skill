@@ -198,9 +198,9 @@ DEFAULT_CONFIG = {
     # 五-D/候选1 会话级 state 快照：startup 注入包缓存（默认关）。
     # 开启后，库文件 mtime 未变 + TTL 内的重复 startup 直接复用上次注入文本，
     # 跳过整库遍历与 recall 重算（跨天恢复首轮明显更快）。
-    # 任何记忆/人格/配置写入都会改变 mtime → 缓存自动失效，正确性不靠 TTL 兜底。
+    # 记忆/人格文件与非易失配置哈希都会入缓存键；TTL 只作最后兜底。
     "session_state_cache": False,
-    "session_state_ttl": 1800,
+    "session_state_ttl": 300,
     # 候选7 跨对话上下文摄取：把别的会话/宿主导出的对话（.jsonl/.md/.txt）
     # 增量读成 episode 记忆，让灵枢在另一个会话里也能"想起"那边聊过的事。
     # 默认关（跨会话隐私）；开启需同时给 dialogue_sources 目录，绝不自动扫描全盘。
@@ -209,6 +209,8 @@ DEFAULT_CONFIG = {
     "dialogue_ingest_max_files": 50,     # 单次最多扫多少个文件
     "dialogue_ingest_max_chars": 700,    # 单条摄取记忆（一个对话块）的字符上限
     "dialogue_ingest_auto": False,       # startup 时顺带增量摄取（近实时；只 stat，没新内容不开销）
+    # 本机注入默认排除群聊/私聊通道记忆；这里只放显式允许的 channel，"*" 为全部放开。
+    "inject_channels": [],
     # 会话模式：auto = 按场景自动切换；work = 恒为工程模式（情绪隔离、理性优先）；
     # human = 恒为拟人模式（情绪照常注入）。用于解决"刚聊完情绪化话题立刻写代码"。
     "mode": "auto",

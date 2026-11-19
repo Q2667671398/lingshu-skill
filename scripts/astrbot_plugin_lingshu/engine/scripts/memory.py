@@ -1850,6 +1850,18 @@ def _channel_visible(m: dict, channel, group_id, user) -> bool:
     return own or not m_user or _consented(m_user, group_id)
 
 
+def _inject_memory_visible(m: dict, cfg: dict | None = None) -> bool:
+    """本机注入默认只带无通道与 dialogue:*；inject_channels 可显式放开指定通道。"""
+    channel = str(m.get("channel") or "")
+    if not channel or channel.startswith("dialogue:"):
+        return True
+    raw = (cfg or {}).get("inject_channels") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    allowed = {str(x) for x in raw}
+    return "*" in allowed or channel in allowed
+
+
 def dereference(memory_id: str) -> list:
     """#46 Memex 解引用：按 id 取一份摘要/蒸馏产物的证据原文。
 
@@ -3630,27 +3642,51 @@ INJECT_DYN_MARKER = "===== 会话实时状态（以下内容每次启动都可�
 
 # ---------------------------------------------------------------- 注入包会话快照（五-D/候选1）
 
-_INJECT_CACHE_FILES = ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl", "archive.jsonl",
+# 缓存命中/写入计数（进程内，用于观测与测试；inject_cache_info() 会带出来）
+_INJECT_CACHE_STATS = {"hits": 0, "stores": 0}
+
+_INJECT_CACHE_FILES = ("hippocampus.jsonl", "cortex.jsonl", "archive.jsonl",
+                       # dust.jsonl 故意不列：它不参与注入，且读路径会整体重写三个文件，
+                       # 把它算进 mtime 键会造成"每次读都失效"的假失效（v3.24）。
                        "persona.json", "working.jsonl", "topics.jsonl",
                        "daily_state.json", "lingshu.user.md")
-# 注意：config.json 故意不在键里——cmd_startup 每次 startup 都写 last_startup/wake_count，
-# mtime 必变会把缓存每轮打穿。影响注入的关键配置（mode/budget/ttl）已单独入键。
+# config.json 的 mtime 故意不入键——cmd_startup 每轮都写 last_startup/wake_count，
+# 会把缓存打穿；改为哈希全部非易失配置，通道许可等变化仍会立即失效。
+_INJECT_CACHE_CONFIG_IGNORE = {"last_startup", "wake_count"}
+
+
+def _inject_file_sig(path) -> str:
+    """缓存键用的文件指纹：内容哈希而不是 mtime。
+
+    读路径会整体重写 jsonl（衰减/晋升），内容没变 mtime 也会变——用 mtime 做键
+    会出现"每次读都失效"的假失效（v3.24 实测 flaky）。内容哈希只认真正的变化。
+    """
+    h = hashlib.sha1()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return "0"
+    return h.hexdigest()[:16]
+
 
 
 def _inject_cache_key(query: str, budget: int, cfg: dict) -> str | None:
-    """注入包缓存键：输入要素 + 关键数据文件 mtime 的哈希。
+    """注入包缓存键：输入要素 + 非易失配置 + 关键数据文件 mtime 的哈希。
 
-    任何一次记忆/人格/配置写入都会改 mtime → 键变 → 缓存失效。
-    取不到（文件不存在记 "0"）也稳定。返回 None 表示缓存不可用。
+    通道许可、阈值等配置变化会改哈希；last_startup/wake_count 不参与，
+    否则每次 startup 都会打穿缓存。返回 None 表示缓存不可用。
     """
     try:
-        parts = [str(query or ""), str(budget), str(cfg.get("mode") or ""),
-                 str(cfg.get("session_state_ttl") or 0)]
+        cfg_key = {k: v for k, v in cfg.items() if k not in _INJECT_CACHE_CONFIG_IGNORE}
+        parts = [str(query or ""), str(budget),
+                 json.dumps(cfg_key, ensure_ascii=False, sort_keys=True,
+                            separators=(",", ":"), default=str)]
         for name in _INJECT_CACHE_FILES:
             f = HOME / name
             try:
-                st = f.stat()
-                parts.append(f"{name}:{st.st_mtime_ns}:{st.st_size}")
+                parts.append(f"{name}:{_inject_file_sig(f)}")
             except OSError:
                 parts.append(f"{name}:0")
         return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
@@ -3667,11 +3703,14 @@ def _inject_cache_load(cfg: dict, key: str) -> str | None:
         data = json.loads(f.read_text(encoding="utf-8-sig"))
         if data.get("key") != key:
             return None
-        ttl = max(60, int(cfg.get("session_state_ttl") or 1800))
+        ttl = max(60, int(cfg.get("session_state_ttl") or 300))
         if now_ts() - int(data.get("ts") or 0) > ttl:
             return None
         text = data.get("text")
-        return text if isinstance(text, str) and text else None
+        if isinstance(text, str) and text:
+            _INJECT_CACHE_STATS["hits"] += 1
+            return text
+        return None
     except Exception:
         return None
 
@@ -3682,6 +3721,7 @@ def _inject_cache_save(cfg: dict, key: str, text: str) -> None:
         return
     try:
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        _INJECT_CACHE_STATS["stores"] += 1
         atomic_json(SESSIONS_DIR / "inject_cache.json",
                     {"key": key, "ts": now_ts(), "text": text})
     except Exception:
@@ -3706,11 +3746,14 @@ def inject_cache_info(cfg: dict | None = None) -> dict:
     cfg = cfg or load_config()
     f = SESSIONS_DIR / "inject_cache.json"
     out = {"enabled": bool(cfg.get("session_state_cache")),
-           "ttl": int(cfg.get("session_state_ttl") or 1800),
+           "ttl": int(cfg.get("session_state_ttl") or 300),
            "path": str(f)}
+    out["hits"] = _INJECT_CACHE_STATS["hits"]
+    out["stores"] = _INJECT_CACHE_STATS["stores"]
     try:
         data = json.loads(f.read_text(encoding="utf-8-sig"))
         out["ts"] = data.get("ts")
+        out["key"] = data.get("key")
         out["age_sec"] = now_ts() - int(data.get("ts") or 0)
         out["chars"] = len(data.get("text") or "")
     except Exception:
@@ -3783,14 +3826,21 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         pass
 
     # mistake / relationship 各取最近 3 条非 dust——一次 recent(40) 全量读盘后分拣
+    _recent40 = []
     try:
-        _recent40 = [m for m in recent(40) if not m.get("frozen")]
+        _recent40 = [m for m in recent(40)
+                     if not m.get("frozen") and _inject_memory_visible(m, cfg)]
         _mistakes = [m for m in _recent40 if m.get("kind") == "mistake"
                      and m.get("layer") != "dust"][:3]
         _rels = [m for m in _recent40 if m.get("kind") == "relationship"
                  and m.get("layer") != "dust"][:3]
-    except Exception:
+    except Exception as _exc:  # noqa: BLE001
+        _recent40 = []
         _mistakes, _rels = [], []
+        try:
+            log_event("inject", f"最近记忆分拣失败，退化为空：{_exc!r}", level="warn")
+        except Exception:
+            pass
 
     # 「我犯过的错」：成长型人格的地基（kind=mistake，独立成块注入）
     if _mistakes:
@@ -3916,7 +3966,9 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     out.append("拿不准时先算一笔：`python scripts/brain.py mind weigh \"这件事\" --benefit 7 --cost 3 --confidence 0.6`")
 
     if query:
-        mems = recall(query, k=10, strengthen=not READONLY)
+        mems = [(m, score, parts)
+                for m, score, parts in recall(query, k=10, strengthen=not READONLY)
+                if _inject_memory_visible(m, cfg)]
         header = f"\n## 与「{query[:24]}」相关的记忆"
         new_mem: list = []
     else:
@@ -3924,11 +3976,9 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         # 并从「最近的记忆」里剔除，两段互斥不重复。
         # >= 而非 >：同秒写入（startup 落盘和 remember 同一秒很常见）也要算进来。
         _last = (load_config().get("last_startup") or {}).get("ts") or 0
-        new_mem = [m for m in recent(20) if not m.get("frozen")
-                   and _num(m.get("created"), 0) >= _last][:4]
+        new_mem = [m for m in _recent40 if _num(m.get("created"), 0) >= _last][:4]
         _new_ids = {m.get("id") for m in new_mem}
-        mems = [(m, 0, {}) for m in recent(6 + len(new_mem))
-                if not m.get("frozen") and m.get("id") not in _new_ids][:6]
+        mems = [(m, 0, {}) for m in _recent40 if m.get("id") not in _new_ids][:6]
         header = "\n## 最近的记忆"
     lines, kept_mems = [], []
     # c1c 预算不够时先砍谁：低重要度 × 高衰减（retention 低）的先丢。
@@ -3998,7 +4048,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     # 提醒 AI 找机会跟用户确认"这条还作数吗"。确认过打 review_by_confirmed
     # （或直接重新 remember 覆盖）就不再提醒。软块注入，超预算整块丢弃。
     try:
-        _due = due_for_review(5)
+        _due = [m for m in due_for_review(5) if _inject_memory_visible(m, cfg)]
         if _due:
             _due_lines = []
             for m in _due:
@@ -4230,8 +4280,13 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     out.append("")
     _result = "\n".join(out)
     # 五-D/候选1：本次渲染结果落会话快照（READONLY 下 _inject_cache_save 自行跳过）
-    if cfg.get("session_state_cache") and _ck:
-        _inject_cache_save(cfg, _ck, _result)
+    # v3.24：渲染过程本身可能写盘（衰减/晋升/每日状态），开始时的键到结尾就过期了。
+    # 用「渲染后」的状态重算键再存，下一次调用一开始就能命中；改动前的键只用于读。
+    if cfg.get("session_state_cache"):
+        _save_cfg = load_config()
+        _save_key = _inject_cache_key(query, budget, _save_cfg)
+        if _save_key:
+            _inject_cache_save(_save_cfg, _save_key, _result)
     return _result
 
 
@@ -4360,6 +4415,7 @@ def list_memories(limit: int = 30, layer: str | None = None) -> list:
 
 _DIALOGUE_EXTS = (".jsonl", ".md", ".txt")
 _DIALOGUE_MAX_DEPTH = 2
+_DIALOGUE_READ_CAP = 8 * 1024 * 1024  # 单次最多读 8MB；大文件按完整行分批推进偏移
 
 
 def _dialogue_offsets_path() -> Path:
@@ -4375,6 +4431,28 @@ def _dialogue_load_offsets() -> dict:
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
+
+
+def _dialogue_decode(blob: bytes, source: str) -> str:
+    """BOM → UTF-8 严格解码 → GB18030 回退；实际编码留日志，不乱码静默入库。"""
+    if not blob:
+        return ""
+    encoding = "utf-8"
+    if blob.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    elif blob.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encoding = "utf-16"
+    else:
+        try:
+            return blob.decode("utf-8")
+        except UnicodeDecodeError:
+            encoding = "gb18030"
+    try:
+        text = blob.decode(encoding)
+    except UnicodeDecodeError:
+        text = blob.decode(encoding, errors="replace")
+    log_event("dialogue", f"对话摄取解码（{source}）：{encoding}", level="info")
+    return text
 
 
 def _dialogue_turns_from_text(text: str, ext: str) -> list:
@@ -4479,69 +4557,77 @@ def ingest_dialogues(paths=None, limit: int | None = None, dry_run: bool = False
                 "reason": "没有配置 dialogue_sources 目录"}
     max_files = max(1, min(int(limit or cfg.get("dialogue_ingest_max_files") or 50), 500))
     max_chars = max(200, min(int(cfg.get("dialogue_ingest_max_chars") or 700), 2000))
-    files = _dialogue_files(sources, max_files)
-    offsets = _dialogue_load_offsets()
-    # 已有摄取记忆的原文集合：文件被截断/重放时按原文去重（id 不会重复生成）
-    try:
-        known = {(m.get("text") or "").strip()
-                 for m in load_all() if m.get("source") == "dialogue"}
-    except Exception:
-        known = set()
     imported, skipped, chars, touched = 0, 0, 0, 0
-    for f in files:
-        key = str(f.resolve())
-        try:
-            st = f.stat()
-        except OSError:
-            continue
-        entry = offsets.get(key) or {}
-        # 用 offset==size 判断"已读干净"：尾部半行没读完时不跳过，
-        # 下次等它补上换行再继续（否则会永久漏掉最后一条）。
-        if entry.get("offset") == st.st_size and entry.get("mtime") == st.st_mtime:
-            continue   # 没变过：完全不读
-        start = int(entry.get("offset") or 0)
-        if st.st_size < start:
-            start = 0   # 文件被截断/重写：从头再来（原文去重兜底）
-        try:
-            with open(f, "rb") as fh:
-                fh.seek(start)
-                blob = fh.read()
-        except OSError:
-            continue
-        # 偏移永远落在完整行边界：尾部半行（正在写/无换行结尾）留到下次，
-        # 否则续读时会把一条完整的新记录误当成"残片"丢掉。
-        if blob and not blob.endswith(b"\n"):
-            cut = blob.rfind(b"\n")
-            if cut < 0:
+    # offsets 既记读取位置，也记已导入块哈希：去重不再全量扫记忆库；
+    # 整个读偏移→写记忆→存偏移过程持同一把锁，避免两个进程重复导入。
+    with _locked(_dialogue_offsets_path()):
+        files = _dialogue_files(sources, max_files)
+        offsets = _dialogue_load_offsets()
+        known = {h for entry in offsets.values() if isinstance(entry, dict)
+                 for h in (entry.get("chunk_hashes") or [])}
+        for f in files:
+            key = str(f.resolve())
+            try:
+                st = f.stat()
+            except OSError:
                 continue
-            blob = blob[:cut + 1]
-        text = blob.decode("utf-8", errors="replace")
-        turns = _dialogue_turns_from_text(text, f.suffix.lower())
-        for chunk in _dialogue_chunks(turns, max_chars):
-            if chunk.strip() in known:
-                skipped += 1
+            entry = offsets.get(key) or {}
+            # 用 offset==size 判断"已读干净"：尾部半行没读完时不跳过，
+            # 下次等它补上换行再继续（否则会永久漏掉最后一条）。
+            if entry.get("offset") == st.st_size and entry.get("mtime") == st.st_mtime:
+                continue   # 没变过：完全不读
+            start = int(entry.get("offset") or 0)
+            if st.st_size < start:
+                start = 0   # 文件被截断/重写：从头再来（块哈希去重兜底）
+            remaining = max(0, st.st_size - start)
+            try:
+                with open(f, "rb") as fh:
+                    fh.seek(start)
+                    blob = fh.read(min(_DIALOGUE_READ_CAP, remaining))
+            except OSError:
                 continue
-            if not dry_run:
-                try:
-                    remember(chunk, kind="episode", importance=0.45,
-                             tags=["对话摄取", f.stem], source="dialogue",
-                             channel=f"dialogue:{f.stem}")
-                except Exception as exc:
-                    log_event("dialogue", f"对话摄取写入失败（{f.name}）：{exc}", level="warn")
+            if remaining > _DIALOGUE_READ_CAP:
+                log_event("dialogue", f"对话摄取分段读取（{f.name}）："
+                                      f"偏移 {start}，本次 {len(blob)} 字节，剩余下次继续",
+                          level="info")
+            # 偏移永远落在完整行边界：尾部半行（正在写/无换行结尾）留到下次，
+            # 否则续读时会把一条完整的新记录误当成"残片"丢掉。
+            if blob and not blob.endswith(b"\n"):
+                cut = blob.rfind(b"\n")
+                if cut < 0:
                     continue
-            known.add(chunk.strip())
-            imported += 1
-            chars += len(chunk)
-        if not dry_run:
-            # offset 只推进到最后一个完整行末尾；尾部半行等下次补全
-            offsets[key] = {"offset": start + len(blob), "size": st.st_size,
-                            "mtime": st.st_mtime, "ts": now_ts()}
-            touched += 1
-    if not dry_run and touched:
-        try:
-            atomic_json(_dialogue_offsets_path(), offsets)
-        except Exception as exc:
-            log_event("dialogue", f"对话摄取偏移保存失败：{exc}", level="warn")
+                blob = blob[:cut + 1]
+            text = _dialogue_decode(blob, f.name)
+            turns = _dialogue_turns_from_text(text, f.suffix.lower())
+            file_hashes = list(entry.get("chunk_hashes") or [])
+            for chunk in _dialogue_chunks(turns, max_chars):
+                digest = hashlib.sha256(chunk.strip().encode("utf-8")).hexdigest()
+                if digest in known:
+                    skipped += 1
+                    continue
+                if not dry_run:
+                    try:
+                        remember(chunk, kind="episode", importance=0.45,
+                                 tags=["对话摄取", f.stem], source="dialogue",
+                                 channel=f"dialogue:{f.stem}")
+                    except Exception as exc:
+                        log_event("dialogue", f"对话摄取写入失败（{f.name}）：{exc}", level="warn")
+                        continue
+                known.add(digest)
+                file_hashes.append(digest)
+                imported += 1
+                chars += len(chunk)
+            if not dry_run:
+                # offset 只推进到最后一个完整行末尾；尾部半行等下次补全
+                offsets[key] = {"offset": start + len(blob), "size": st.st_size,
+                                "mtime": st.st_mtime, "ts": now_ts(),
+                                "chunk_hashes": file_hashes}
+                touched += 1
+        if not dry_run and touched:
+            try:
+                atomic_json(_dialogue_offsets_path(), offsets)
+            except Exception as exc:
+                log_event("dialogue", f"对话摄取偏移保存失败：{exc}", level="warn")
     return {"ok": True, "enabled": True, "files": len(files), "scanned": len(files),
             "imported": imported, "skipped": skipped, "chars": chars,
             "dry_run": dry_run, "sources": sources}

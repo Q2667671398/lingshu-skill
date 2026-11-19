@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 3.23
+version: 3.24
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -291,6 +291,15 @@ python scripts/brain.py recall "关键词" --k 6 [--project 项目名]   # 同�
 python scripts/brain.py check-context --used 68      # 60 清点 / 75 做梦 / 90 封存
 python scripts/brain.py capture "原文" --tag 逃生
 python scripts/brain.py dream --auto                 # 做梦整理
+python scripts/brain.py ingest-dialogues [--path 目录] [--limit 20] [--dry-run]
+  # 跨对话摄取：把别的会话导出（.jsonl/.md/.txt）增量读成 episode 记忆
+  # 默认关。开启三步：config set dialogue_ingest true →
+  #   config set dialogue_sources '["D:/exports/chats"]' → ingest-dialogues --dry-run 看一遍
+  # 近实时：config set dialogue_ingest_auto true（startup 用后台子进程跑，不阻塞首轮）
+python scripts/brain.py session-state [show|clear]     # 注入缓存状态（需 config session_state_cache=true）
+python scripts/brain.py replay [--days 90] [--limit 20]   # 只读回放：人格偏移与拐点，不写库
+python scripts/brain.py saturation [--threshold 0.8]      # traits 临界余量告警
+  # 通道记忆默认不进本机注入；要放行某个通道：config set inject_channels '["qq@bot:群号"]'
 python scripts/brain.py daily [--feel "开心:0.7:原因"]  # 每日例行（顺手记情绪事件，可重复）
 python scripts/brain.py usage --reply "回复文本"       # 核对上一轮找回的记忆是否真被用上
 python scripts/brain.py mode show|work|human|auto|explain  # 会话模式（explain 看 auto 判定依据）

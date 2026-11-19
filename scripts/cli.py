@@ -13,6 +13,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -675,6 +676,41 @@ def cmd_home(action: str = "show", dest: str = "") -> int:
 
 # ---------------------------------------------------------------- startup（会话开始钩子）
 
+def _spawn_background_ingest(cfg: dict | None = None) -> bool:
+    """把 startup 的增量摄取丢到独立子进程（v3.24）。
+
+    为什么不用线程：CLI 退出时 daemon 线程会被一起带走，摄取半途而废；
+    独立进程会跑完，而且 brain.py ingest-dialogues 自身有 8MB/文件上限、
+    chunk 哈希去重和文件锁，重复跑是安全的。
+
+    返回是否真的拉起了子进程（配置关闭 / 只读 / 找不到入口时 False，不抛异常）。
+    """
+    cfg = cfg or load_config()
+    if not (cfg.get("dialogue_ingest") and cfg.get("dialogue_ingest_auto")):
+        return False
+    if READONLY:
+        return False
+    entry = Path(__file__).resolve().with_name("brain.py")
+    if not entry.is_file():
+        return False
+    cmd = [sys.executable, str(entry), "ingest-dialogues", "--limit", "20"]
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+              "stderr": subprocess.DEVNULL, "close_fds": True}
+    if os.name == "nt":
+        # DETACHED_PROCESS：不随父进程退出；CREATE_NO_WINDOW：不弹黑框
+        kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                                   | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(cmd, **kwargs)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log_event("dialogue", f"后台摄取启动失败：{exc}", level="warn")
+        return False
+
+
+
 def cmd_startup(query: str = "", budget: int | None = None) -> int:
     """会话开始钩子：输出注入包，用返回码表达状态。
     0 = 正常注入；10 = 只读降级注入（记忆可能不新鲜）；2 = 记忆库未初始化。
@@ -726,17 +762,9 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
         # startup 标记：写入失败可见化的分界线——这条之后出现的 warn/error
         # 就是"上次会话期间的失败"，注入包顶部会亮出来。
         log_event("startup", "会话开始，注入完成", level="info")
-        # 候选7：近实时摄取——只 stat 文件，没新内容近乎零开销；
-        # 注入已在上面完成，所以本轮新摄取的记忆从下一次 recall/startup 起生效。
-        try:
-            _cfg = load_config()
-            if _cfg.get("dialogue_ingest") and _cfg.get("dialogue_ingest_auto"):
-                _rep = ingest_dialogues(limit=20)
-                if _rep.get("imported"):
-                    log_event("dialogue", f"会话开始自动摄取 {_rep['imported']} 条对话记忆",
-                              level="info")
-        except Exception as exc:
-            log_event("dialogue", f"会话开始自动摄取失败：{exc}", level="warn")
+        # 候选7：近实时摄取改后台子进程（v3.24）——首轮不被大目录/慢磁盘拖住；
+        # 用独立进程而不是线程：CLI 退出时 daemon 线程会被一起带走。
+        _spawn_background_ingest()
     return 10 if READONLY else 0
 
 

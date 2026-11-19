@@ -109,6 +109,45 @@ def test_remember_user_source_immediate_replace():
         assert len(pend) == 0, f"source=user 不应进审核：{pend}"
 
 
+def test_local_injection_hides_channel_memories_by_default():
+    """本机注入只带无通道记忆与 dialogue:*，不把群友隐私带进桌面会话。"""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        _setup_home(Path(td))
+        cfg = core.load_config()
+        cfg["embed"]["url"] = ""
+        cfg["embed"]["fallback"]["enabled"] = False
+        core.atomic_json(core.HOME / "config.json", cfg)
+        memory.remember("本机用户喜欢喝美式咖啡", kind="preference", importance=0.8)
+        memory.remember("群里小王说他下周要做手术，别外传", kind="episode", importance=0.9,
+                        channel="qq:88888", group_id="grp1", user="qq:10001")
+        memory.remember("另一场会话讨论过云南旅行", kind="episode", importance=0.6,
+                        source="dialogue", channel="dialogue:another-session")
+        text = memory.build_injection()
+        assert "小王" not in text
+        assert "美式咖啡" in text
+        assert "云南旅行" in text
+        queried = memory.build_injection("手术")
+        assert "小王" not in queried
+
+
+def test_local_injection_allows_explicitly_configured_channel():
+    """inject_channels 是显式例外：只放开点名的通道，不影响其他群。"""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        _setup_home(Path(td))
+        cfg = core.load_config()
+        cfg["embed"]["url"] = ""
+        cfg["embed"]["fallback"]["enabled"] = False
+        cfg["inject_channels"] = ["qq:88888"]
+        core.atomic_json(core.HOME / "config.json", cfg)
+        memory.remember("群里小王说他下周要做手术，别外传", kind="episode", importance=0.9,
+                        channel="qq:88888", group_id="grp1", user="qq:10001")
+        memory.remember("另一个群讨论过小李搬家", kind="episode", importance=0.9,
+                        channel="qq:99999", group_id="grp2", user="qq:10002")
+        text = memory.build_injection("手术 搬家")
+        assert "小王" in text
+        assert "小李" not in text
+
+
 def main() -> int:
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
