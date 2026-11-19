@@ -1304,6 +1304,14 @@ def _main(argv=None) -> int:
                        help="预算 token 数（缺省用 config budget_tokens）")
     p_cst.add_argument("--query", default="", help="按指定查询生成注入包（缺省为 startup 注入包）")
 
+    # 附录 C P1：五段式装配计划（只试排、不改行为；查看预算会怎么裁）
+    p_cpl = sub.add_parser("context-plan",
+                           help="五段式装配计划：按预算试排 stable/summary/retrieved/recent/current")
+    p_cpl.add_argument("--json", action="store_true", help="输出机器可读的 JSON 计划")
+    p_cpl.add_argument("--budget", type=int, default=None,
+                       help="预算 token 数（缺省用 config budget_tokens；窗口级可传 40000）")
+    p_cpl.add_argument("--query", default="", help="按指定查询生成注入包（缺省为 startup 注入包）")
+
     # 候选5：只读回放——对比最早快照与当前人格，只输出偏移与拐点，不写库
     p_rpl = sub.add_parser("replay",
                            help="只读回放：对比最早快照与当前人格，输出偏移量与拐点（运行前后全库不变）")
@@ -2075,6 +2083,35 @@ def _main(argv=None) -> int:
         over = rep["total_tokens"] > budget
         print(f"预算 {budget} tokens：{'超限 ⚠' if over else '未超限 ✅'}"
               f"（余量 {budget - rep['total_tokens']} tokens）")
+        return 0
+
+    if args.cmd == "context-plan":
+        # 五段式装配器：把注入包映射成 stable/summary/retrieved/recent/current，
+        # 按预算试排一遍，看会裁掉什么（纯计划，不改变实际注入）。
+        from assembler import plan_from_report
+        rep: dict = {}
+        budget = args.budget or int(load_config().get("budget_tokens") or 2400)
+        build_injection(args.query or "", budget, rep)
+        res = plan_from_report(rep, budget=budget)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0
+        print(f"五段装配计划（预算 {res['budget']} tokens，输出预留 {res['reserve_tokens']}，"
+              f"可用 {res['usable_tokens']}）")
+        print(f"{'段':<11}{'字符':>8}{'估算token':>10}{'上限token':>10}{'裁掉字符':>9}")
+        print("-" * 50)
+        for b in res["blocks"]:
+            cap = "-" if b["cap_tokens"] is None else b["cap_tokens"]
+            print(f"{b['name']:<12}{b['chars']:>9}{b['tokens']:>12}{str(cap):>11}"
+                  f"{b['trimmed_chars']:>10}")
+        print("-" * 50)
+        print(f"总计 {res['total_tokens']} tokens（可用 {res['usable_tokens']}）")
+        for a in res["actions"]:
+            print(f"  · {a}")
+        for w in res["warnings"]:
+            print(f"  ⚠ {w}")
+        if not res["actions"] and not res["warnings"]:
+            print("  无需裁剪：当前注入在预算内")
         return 0
 
     if args.cmd == "session-state":

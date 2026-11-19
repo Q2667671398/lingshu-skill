@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 3.27
+version: 3.28
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -302,6 +302,7 @@ python scripts/brain.py saturation [--threshold 0.8]      # traits 临界余量�
 python scripts/brain.py context-stats [--json] [--budget N]  # 注入包分段账单（字符/估算token/占预算）
 python scripts/brain.py config set inject_mode lazy          # 记忆只带“要点+id”，正文用 recall 取
 python scripts/brain.py config set inject_lazy_chars 80      # lazy 模式每条要点上限（默认 80）
+python scripts/brain.py context-plan [--budget N] [--json]   # 五段式装配试排：会裁哪段、裁多少
   # 通道记忆默认不进本机注入；要放行某个通道：config set inject_channels '["qq@bot:群号"]'
   # IM 桥接（dsh-im）：autoRecall/autoCapture 默认关；开在 ~/.brain-memory/config.json 的 im 段，
   #   或 profile patch 里给 lingshu-skill 传 {im:{"autoRecall":true}}（v3.25 起透传生效）
