@@ -621,6 +621,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/overview":
             self._json(overview())
             return
+        if path == "/api/insights":
+            # v3.36 运行洞察：一次聚合上下文账单 / 原文库 / 收尾 / 鉴权 / 嵌入。
+            # light=1 时跳过最重的上下文账单（面板定时刷新用）。
+            try:
+                import insights
+                qs = parse_qs(url.query)
+                light = (qs.get("light") or ["0"])[0] in ("1", "true", "yes")
+                self._json(insights.build(light=light))
+            except Exception as exc:  # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
         if path == "/api/self-update":
             # auto=1：面板打开时的自动检查，只读缓存、绝不联网（毫秒返回，不会卡页面）
             # refresh=1：用户手动点「检查更新」，真拉远程源并刷新缓存
