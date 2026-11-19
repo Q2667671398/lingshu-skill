@@ -723,7 +723,18 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
         print("[灵枢] 记忆库未初始化：先运行 python scripts/brain.py init"
               "（只读环境可用 --home 指到已有目录）", file=sys.stderr)
         return 1
-    print(build_injection(query, budget))
+    # P4 灰度：主会话 startup 也参与 A/B 采样记账。只有 context_ab.enabled=true 才建
+    # 账单并传 report（build_injection 汇总分段账单后，按 sample 交 context_ab.record
+    # 落一条 metrics.jsonl）。默认 enabled=false 时 report=None——与旧调用完全等价：
+    # 不 import 采样模块、不算 plan、不写盘、不建 _SectionList 记账（零开销），
+    # 注入文本与会话缓存行为都不变。
+    _ab_report = None
+    try:
+        if not READONLY and (load_config().get("context_ab") or {}).get("enabled"):
+            _ab_report = {}
+    except Exception:
+        _ab_report = None
+    print(build_injection(query, budget, report=_ab_report))
     # 水位提醒块：与 status 同一实现（memory._water_level），别两套口径。
     try:
         wl = memory._water_level()

@@ -1,5 +1,16 @@
 # 更新日志
 
+## v3.43（2026-11-20）
+
+> 主题：**五路并行收尾**（五个队友、写作用域互不重叠）。
+
+- **startup 采样**：`cmd_startup` 在 `context_ab.enabled` 时才传 report；默认路径不 import 采样模块、不算 plan、不写盘，startup stdout 与旧版逐字节一致。
+- **checkpoint 加锁**：`_save_state` 改为「锁内重读→合并→原子写」，两进程并发不再丢更新（无锁反证实测只剩 1 个 key）；读路径保持无副作用。
+- **面板 A/B**：`/api/insights` 加 `ab` 块（总数/均值/p50/p95/按模式），浮窗加「A/B 样本」行；`light=1` 也返回（读一次 metrics 可忽略）。
+- **检索服务 E2E**：新增 `tests/test_rag_e2e.py`（真 HTTP + 随机端口），覆盖短查询 LIKE 兜底、空结果≠失败、服务停掉回退本地并记 failures；确认 `retriever` URL/响应解析无 bug。
+- **growth.py 拆分**：纯计算 13 函数 + 9 常量 → `scripts/growth_parts.py`，growth.py **4800 → 4596（-204）**；AST 等价 22/22，调用面保留。
+- 测试：新增 5 个测试文件，**34 个文件全过**。
+
 ## v3.42（2026-11-19）
 
 > 主题：**P4 灰度真正接线**——`context_ab.record()` 从"有模块没人调"变成注入路径真实采样。

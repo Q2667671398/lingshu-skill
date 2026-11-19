@@ -35,16 +35,31 @@ def _state_path(home: Path | None = None) -> Path:
 
 
 def _load_state(home: Path | None = None) -> dict:
+    """只读状态：不加锁、不建目录/锁文件（面板等只读调用不能有写副作用）。"""
     try:
-        return json.loads(_state_path(home).read_text(encoding="utf-8"))
+        data = json.loads(_state_path(home).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
 def _save_state(state: dict, home: Path | None = None) -> None:
+    """写回状态：整个「重读最新 → 合并 → 落盘」持 core._locked 写锁。
+
+    checkpoint 是先 load 判断要不要写、再写记忆、最后 save，所以调用方手里的
+    state 可能已是旧快照；直接整档覆盖会把另一个进程刚写进去的仓库抹掉。
+    这里在锁内重读磁盘再 update，两个进程各写各的仓库时都能留下（不丢更新）。
+    锁文件与状态文件同目录（core._locked 用 `<状态文件>.lock`），超时/陈旧锁
+    清理沿用 core._locked 的统一语义；落盘用 core.atomic_json，锁外只读者
+    不会读到写了一半的 JSON。
+    """
     p = _state_path(home)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    import core
+    with core._locked(p):
+        disk = _load_state(home)
+        disk.update(state or {})
+        core.atomic_json(p, disk)
 
 
 def _git(repo: str, *args: str) -> str:

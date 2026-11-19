@@ -57,6 +57,25 @@ def test_light_mode_skips_context_billing():
         assert d["version"]
 
 
+def test_insights_includes_ab_block_with_zero_total():
+    """P4 A/B 聚合块：面板自动刷新走 light=1，所以 light 下也必须带 ab 块。
+
+    没有任何采样记录（默认 context_ab.enabled=false，面板刚装好就是这种状态）时
+    返回可渲染的空壳：total=0、三个口径都是 None、by_mode 为空、模式回显 legacy。
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        _home(Path(td))
+        d = insights.build(light=True)["data"]
+        assert "ab" in d, sorted(d)
+        ab = d["ab"]
+        assert ab["total"] == 0, ab
+        assert ab["mean_saved_pct"] is None and ab["p50"] is None and ab["p95"] is None
+        assert ab["by_mode"] == {}
+        assert ab["mode"] == "legacy", ab
+        # 全量 build（带上下文账单）同样要有这块
+        assert insights.build()["data"]["ab"]["total"] == 0
+
+
 def test_http_insights_requires_token_and_returns_json():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         _home(Path(td))
@@ -96,6 +115,15 @@ def test_panel_html_has_enhancement_markers():
     script = block[block.find("<script>"):block.find("</script>") + 9]
     assert "innerHTML" in script            # 只用于静态骨架
     assert "textContent" in script          # 数据一律 textContent
+
+
+def test_panel_html_has_ab_samples_line():
+    """重建后的面板产物要带「A/B 样本」行：无样本显示未采样，有样本显示均值节省。"""
+    t = (ROOT / "assets" / "panel.html").read_text(encoding="utf-8")
+    assert "A/B 样本" in t, "面板浮窗缺 A/B 样本行"
+    assert "未采样" in t, "无样本时的文案缺失"
+    assert "均值节省" in t and "当前模式" in t, "A/B 行缺均值节省/当前模式"
+    assert "d.ab" in t, "A/B 行没接 /api/insights 的 ab 数据"
 
 
 if __name__ == "__main__":

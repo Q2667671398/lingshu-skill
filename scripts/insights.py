@@ -3,7 +3,8 @@
 """面板「运行洞察」聚合（只读、全部 fail-open）。
 
 一次请求返回面板需要的小结：版本 / 上下文账单 / 原文检索库 / 收尾清点 /
-群聊鉴权 / 嵌入状态。任何一块失败只降级该块并记 warning，不影响其余。
+群聊鉴权 / 嵌入状态 / A/B 灰度样本。任何一块失败只降级该块并记 warning，
+不影响其余。
 """
 from __future__ import annotations
 
@@ -87,12 +88,34 @@ def _failures() -> dict:
     return failures.summarize(1)
 
 
+def _ab() -> dict:
+    """P4 灰度 A/B 采样小结：只读 metrics.jsonl，无样本时 total=0。
+
+    面板只关心「最近 7 天省了多少、当前跑哪个模式」，所以这里把
+    context_ab.summary() 的三段分位数裁成 p50/p95，并附上
+    config.context_mode。summary 本身不写盘，失败由 build() 统一降级。
+    """
+    import context_ab
+    s = context_ab.summary(7)
+    return {"total": int(s.get("total") or 0),
+            "mean_saved_pct": s.get("mean_saved_pct"),
+            "p50": s.get("p50_saved_pct"),
+            "p95": s.get("p95_saved_pct"),
+            "by_mode": s.get("by_mode") or {},
+            "mode": context_ab.context_mode()}
+
+
 def build(light: bool = False) -> dict:
-    """light=True 跳过最重的上下文账单（面板自动刷新时用）。"""
+    """light=True 跳过最重的上下文账单（面板自动刷新时用）。
+
+    A/B 样本块只有一次 512KB 上限的小文件读，不进 light 跳过名单：
+    面板自动刷新走 light=1，跳了它「A/B 样本」这行就永远是空的。
+    """
     warnings = []
     data = {"version": _version()}
     for name, fn in (("context", _context), ("rag", _rag), ("checkpoints", _checkpoints),
-                     ("guard", _guard), ("embed", _embed), ("failures", _failures)):
+                     ("guard", _guard), ("embed", _embed), ("failures", _failures),
+                     ("ab", _ab)):
         if name == "context" and light:
             continue
         try:

@@ -5125,6 +5125,14 @@ setTimeout(() => checkUpdate(true), 1200);
         rows.appendChild(row("近24h异常", d.failures.total + " 次" +
           (f ? (" · " + f.kind + " ×" + f.count) : "")));
       }
+      if (d.ab) {
+        var ab = d.ab, abMode = ab.mode || "legacy";
+        var abText = ab.total
+          ? (ab.total + " 次 · 均值节省 " +
+             (ab.mean_saved_pct == null ? "—" : ab.mean_saved_pct + "%"))
+          : "未采样";
+        rows.appendChild(row("A/B 样本", abText + " · 当前模式 " + abMode));
+      }
       if (res.warnings && res.warnings.length) rows.appendChild(row("降级", res.warnings.join("；")));
       if (!rows.children.length) rows.appendChild(el("div","ls-empty","暂无更多数据"));
     } catch (err) {

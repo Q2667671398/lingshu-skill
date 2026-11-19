@@ -173,12 +173,6 @@ MAX_INSTALL_FILES = 3000
 MAX_INSTALL_BYTES = 200 * 1024 * 1024
 
 NOTE_KINDS = ("journal", "log", "growth")
-# 技能名：小写字母/数字/连字符/下划线，也允许中文（中文生态里技能就叫「质检评审」这类名字）
-SLUG_RE = re.compile(r"^[a-z0-9\u4e00-\u9fff][a-z0-9-_\u4e00-\u9fff]{0,62}$")
-# Windows 保留设备名：即使过了正则也不能当技能目录名（con/com1 建目录会失败或异常）
-_WINDOWS_RESERVED = {"con", "prn", "aux", "nul",
-                     *(f"com{i}" for i in range(1, 10)),
-                     *(f"lpt{i}" for i in range(1, 10))}
 
 # 灵枢是"会自动记忆、会自动整理、能自己改说明书"的技能——装它的后果要说清楚，让用户自己决定。
 LINGSHU_RISKS = [
@@ -202,27 +196,6 @@ def _now_text() -> str:
 
 def _today() -> str:
     return time.strftime("%Y-%m-%d")
-
-
-def _split(text: str | None) -> list:
-    if not text:
-        return []
-    return [x.strip() for x in re.split(r"[、,，;；\n/|]+", text) if x.strip()]
-
-
-def _dedupe(items: list) -> list:
-    out, seen = [], set()
-    for x in items:
-        x = str(x).strip()
-        if x and x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
-
-
-def _clip(text: str, n: int) -> str:
-    text = re.sub(r"\s+", " ", (text or "").strip())
-    return text if len(text) <= n else text[:n].rstrip() + "…"
 
 
 def _read_json(path: Path) -> dict:
@@ -260,17 +233,6 @@ def _read_file_whitelisted(path_str: str) -> str:
     if not any(rp.is_relative_to(b) for b in bases):
         raise ValueError(f"--file 只能读记忆库/技能/扩展目录内的文件，已拒绝：{p}")
     return p.read_text(encoding="utf-8")
-
-
-def _kdoc(rec: dict) -> set:
-    # 字段可能是 None（手改/LLM 产出），统一转成字符串再切词，避免 " ".join 抛 TypeError
-    def _s(x):
-        return str(x) if x is not None else ""
-    return brain.terms(" ".join([
-        _s(rec.get("title")) * 2, _s(rec.get("body")),
-        " ".join(_s(p) for p in (rec.get("points") or [])),
-        " ".join(_s(t) for t in (rec.get("tags") or [])),
-    ]))
 
 
 def add_knowledge(title: str, body: str, topic: str = "", points=None, tags=None,
@@ -425,40 +387,6 @@ def knowledge_verify(kid: str, note: str = "", level: str | None = None) -> dict
         rec["updated"] = brain.now_ts()
         save_knowledge(rows)
     return rec
-
-
-# 知识淡出分层（借鉴 Mnemosyne/大肥鱼 memory_policy 的 detail→gist→dormant 三相）：
-# 分层不写入、不删原文，检索/展示时按 updated 距今实时计算相位——
-#   active  活跃：30 天内动过（更新或验证），正常检索；
-#   fading  淡出：30–180 天，检索降权，正文展示截短（细节淡出，概要与来源保留）；
-#   dormant 休眠：>180 天，默认检索跳过；关键词仍能命中但只给标题线索，
-#           看原文走 knowledge show <id>（对应"ID 可查原始证据"）。
-# 豁免（始终 active，对应 protected）：pinned 置顶、E4/E3 已验证铁律——
-# 这些条目代表"重要或反复被证实"，不该因为没人提就沉底。
-FADE_ACTIVE_DAYS = 30
-FADE_DORMANT_DAYS = 180
-_FADE_PENALTY = 0.03   # fading 相位检索降权：淡出的结论该让位给新鲜说法
-
-_FADE_MARK = {"active": "🌱", "fading": "🍂", "dormant": "💤"}
-
-
-def _protected_knowledge(rec: dict) -> bool:
-    return bool(rec.get("pinned")) or rec.get("evidence_level") in ("E3", "E4")
-
-
-def knowledge_fade_phase(rec: dict, now: float | None = None) -> str:
-    """计算一条知识的淡出相位：active / fading / dormant。只读，不写盘。"""
-    if _protected_knowledge(rec):
-        return "active"
-    ts = brain._num(rec.get("updated"), 0) or brain._num(rec.get("created"), 0)
-    if ts <= 0:
-        return "active"   # 时间不明的条目不推测新鲜程度（借鉴 memory_policy 对 unknown 的处理）
-    days = (now if now is not None else brain.now_ts()) - ts
-    if days < FADE_ACTIVE_DAYS * 86400:
-        return "active"
-    if days < FADE_DORMANT_DAYS * 86400:
-        return "fading"
-    return "dormant"
 
 
 def search_knowledge(query: str, k: int = 8) -> list:
@@ -964,28 +892,8 @@ def save_registry(reg: dict) -> None:
         brain.atomic_json(SKILL_REG, cur)
 
 
-# 中文显示名 → kebab-case 目录名。DSH 的文件系统技能发现只认 kebab-case 的 name，
-# 中文名会被静默跳过（装完像"改名"或干脆不出现），所以装/查/删都统一折算成英文 slug。
-_SKILL_NAME_ALIASES = {
-    "灵枢": "lingshu",
-    "灵枢-lite": "lingshu-lite",
-    "灵枢-tiny": "lingshu-tiny",
-}
-# 反查：kebab slug → 它对应的旧中文目录名（旧版安装会把中文名当目录名）
-_SLUG_TO_LEGACY_NAME = {v: k for k, v in _SKILL_NAME_ALIASES.items()}
 # 灵枢本体的所有可识别名字（旧中文名 + 新 kebab 名），用于风险确认与"这是我自己"判定
 _SELF_NAMES = ("灵枢", "lingshu")
-
-
-def _require_slug(name: str) -> str:
-    # 统一归一化：大小写、空格、下划线都折算成连字符，保证 new / show / rm 用同一个名字都能找到
-    name = (name or "").strip().lower().replace(" ", "-").replace("_", "-")
-    name = _SKILL_NAME_ALIASES.get(name, name)   # 中文名折算成 kebab-case（DSH 才认）
-    if not SLUG_RE.match(name):
-        raise ValueError("技能名不合法：只能用字母/数字/连字符/下划线/中文，1-63 个字符")
-    if name in _WINDOWS_RESERVED:   # con/com1 这类设备名在 Windows 上建目录会失败
-        raise ValueError(f"技能名不能用 Windows 保留设备名：{name}")
-    return name
 
 
 def _skill_path(name: str) -> Path:
@@ -1000,74 +908,6 @@ def read_skill(name: str) -> dict:
     text = path.read_text(encoding="utf-8")
     meta, body = parse_frontmatter(text)
     return {"name": name, "meta": meta, "body": body, "path": str(path), "raw": text}
-
-
-def parse_frontmatter(text: str) -> tuple:
-    """解析 YAML frontmatter。纯标准库，不引 yaml 依赖。
-
-    支持：单行 key: value、引号包裹、块标量（| 保留换行 / > 折叠为空格）、
-    以及常见简写（值里含冒号、以 # 开头）。够读 DSH / Claude / Trae 各家的 SKILL.md。
-    """
-    text = text.lstrip("\ufeff")
-    if not text.startswith("---"):
-        return {}, text
-    # 闭界必须是整行 "---"（行尾可带空白）：裸 find("\n---") 会把正文里
-    # "---xxx" 这类行误当边界，导致 head 被提前截断
-    m = re.search(r"\n---[ \t]*(?:\n|$)", text)
-    if m is None or m.start() < 3:
-        return {}, text
-    end = m.start()
-    head = text[3:end]
-    body = text[m.end():].lstrip("\n")
-
-    meta = {}
-    lines = head.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if not line.strip() or line.lstrip().startswith("#"):
-            i += 1
-            continue
-        if ":" not in line:
-            i += 1
-            continue
-        key, val = line.split(":", 1)
-        key = key.strip()
-        val = val.strip()
-        if val in ("|", ">", "|-", ">-", "|+", ">+"):
-            # 块标量：收集后续缩进行
-            block, j = [], i + 1
-            while j < len(lines):
-                nxt = lines[j]
-                if nxt.strip() and not nxt.startswith((" ", "\t")):
-                    break
-                block.append(nxt.strip())
-                j += 1
-            sep = "\n" if val.startswith("|") else " "
-            meta[key] = sep.join(x for x in block if x)
-            i = j
-            continue
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
-            val = val[1:-1]
-        meta[key] = val
-        i += 1
-    return meta, body
-
-
-def _compose(name: str, description: str, body: str, version: int, created: str, updated: str,
-             origin: str = "灵枢") -> str:
-    description = re.sub(r"\s+", " ", description).strip()
-    return (
-        "---\n"
-        f"name: {name}\n"
-        f"description: {description}\n"
-        f"origin: {origin}\n"
-        f"version: {version}\n"
-        f"created: {created}\n"
-        f"updated: {updated}\n"
-        "---\n\n"
-        + body.strip() + "\n"
-    )
 
 
 def create_skill(name: str, description: str, body: str, overwrite: bool = False,
@@ -1151,15 +991,6 @@ def edit_skill(name: str, body: str | None = None, append: str | None = None,
         # 同 create：不重建 installed_at，保留盘上原值
         save_registry(reg)
     return {"name": name, "version": version, "path": cur2["path"]}
-
-
-def _ver(v) -> object:
-    """版本号容错：自建技能是自增整数，本体是语义化版本（2.11.2）。
-    直接 int('2.11.2') 会抛 ValueError 把 skill list 整个搞崩，这里退化成原串。"""
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return str(v or "1").strip() or "1"
 
 
 def _find_installed(name: str) -> Path:
@@ -2375,8 +2206,6 @@ def _changelog_between(src_dir: Path, old_ver: str, new_ver: str) -> str:
 
 AGENTS_BLOCK_START = "<!-- lingshu:start -->"
 AGENTS_BLOCK_END = "<!-- lingshu:end -->"
-# 旧版（无区块标记）生成文件的可识别签名：命中说明整文件都是灵枢生成的，没有用户手写内容
-_LEGACY_AGENTS_SIGNATURE = "由灵枢在全局化时生成"
 
 
 def _agents_rules(name: str, description: str, meta: dict, from_dir: str | None = None) -> str:
@@ -2443,23 +2272,6 @@ def _agents_md(name: str, description: str, meta: dict, from_dir: str | None = N
         AGENTS_BLOCK_END,
     ]
     return "\n".join(lines) + "\n"
-
-
-def _looks_generated(text: str) -> bool:
-    """旧版无标记文件是否「整份都是灵枢生成的」——只有这样才能安全整体替换。
-    任何一行不属于生成结构，就说明用户手写过，必须保留。"""
-    if _LEGACY_AGENTS_SIGNATURE not in text:
-        return False
-    for line in text.splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        if (s.startswith("#") or s.startswith("**何时用**") or s.startswith("**怎么用**")
-                or s.startswith("**入口**") or s.startswith("**来源**") or s.startswith("**版本**")
-                or _LEGACY_AGENTS_SIGNATURE in s):
-            continue
-        return False
-    return True
 
 
 def _upsert_agents_block(path: Path, generated: str) -> str:
@@ -2999,15 +2811,6 @@ def self_review(force: bool = False, days: int = 3) -> dict:
 
 def _readonly() -> bool:
     return brain.READONLY
-
-
-def _fmt_ago(secs: float) -> str:
-    secs = max(0.0, secs)  # 系统时钟回拨/last 写了未来时间时会出现负数，钳为 0
-    if secs < 3600:
-        return f"{secs / 60:.0f} 分钟"
-    if secs < brain.DAY:
-        return f"{secs / 3600:.1f} 小时".replace(".0", "")
-    return f"{secs / brain.DAY:.1f} 天".replace(".0", "")
 
 
 # ---------------------------------------------------------------- 技能检索与借鉴
@@ -3916,19 +3719,6 @@ def _activity_days() -> set:
     return days
 
 
-def _streak(days: set) -> int:
-    n = 0
-    for i in range(0, 3650):
-        d = brain.fmt_date(brain.now_ts() - i * brain.DAY)
-        if d in days:
-            n += 1
-        elif i == 0:
-            continue
-        else:
-            break
-    return n
-
-
 def growth_status() -> dict:
     days = _activity_days()
     mem = brain.stats()
@@ -4793,6 +4583,12 @@ def _run(argv=None) -> int:
         return 0
 
     return 0
+
+
+# ---------------------------------------------------------------- 纯计算部分（已拆到 growth_parts.py）
+# 文本/版本/日期窗口/生成物识别等纯函数只搬了位置，星号导入保留 growth._split /
+# growth.parse_frontmatter / growth.knowledge_fade_phase 等全部旧调用面。
+from growth_parts import *  # noqa: E402,F401,F403
 
 
 if __name__ == "__main__":
