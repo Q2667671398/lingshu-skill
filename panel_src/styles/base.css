@@ -6,6 +6,12 @@
     --teal:#5fa8a0; --red:#c96b5f; --violet:#8d86c9;
     /* 语义色别名：供情绪/欲望条等内联样式引用，避免 var(--accent/--good/--bad) 取不到值变透明 */
     --accent:var(--amber); --good:var(--teal); --bad:var(--red);
+    /* 主题跟随：文本语义色（深色底上更亮的同系文字）+ 星图/节点 RGB 三元组（浅色主题在 enhance.css 覆盖为深色版本） */
+    --teal-text:#9fd2cb; --red-text:#dda49b; --amber-text:#e3b96c;
+    --node-persona:240,208,120; --node-high:224,92,79; --node-mid:217,164,65;
+    --node-low:95,168,160; --node-min:125,137,150;
+    --edge:120,140,170; --path:233,196,106; --search:95,168,160;
+    --graph-label:233,230,223; --graph-focus:242,239,230; --graph-focus-ring:255,255,255;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}

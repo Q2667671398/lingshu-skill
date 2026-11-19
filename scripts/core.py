@@ -44,6 +44,8 @@ for _s in (sys.stdout, sys.stderr):
 
 # ---------------------------------------------------------------- 基础环境
 
+import safety  # noqa: E402  —— 数据目录护栏（无依赖、不反向 import core）
+
 def _default_home() -> Path:
     """数据目录三级解析：环境变量 > 指针文件 ~/.brain-memory/.home > 默认位置。
 
@@ -84,6 +86,55 @@ HOUR = 3600
 # 数据是被更新版本写出的，盲写可能破坏未知字段——降级只读并留痕，由用户升级程序。
 SCHEMA_VERSION = 1
 
+# —— 空库熔断（v3.45）：上次见到库里有东西、这次全是空/消失 → 疑似被清空。
+# 事故复盘：记忆库被整片删掉，但灵枢照常"从零开始"跑，没人发现——
+# 直到用户问"你还记得吗"。这里把"突然变空"变成一个显式告警。
+# 只比文件字节数（O(1)），不数行：_check_meta 每次写都会跑，不能拖慢。
+WIPE_ALERT: dict | None = None
+
+# 参与"空库"判定的数据文件（全部消失/归零 = 库被清空）。
+_WIPE_WATCH = ("persona.json", "config.json", "hippocampus.jsonl",
+               "cortex.jsonl", "dust.jsonl", "knowledge.jsonl", "notes.jsonl",
+               "emotions.jsonl", "desires.json", "working.jsonl", "topics.jsonl")
+
+
+def _watch_sizes() -> tuple[dict[str, int], int]:
+    """当前数据文件的字节数快照 + 总量。"""
+    sizes: dict[str, int] = {}
+    total = 0
+    for name in _WIPE_WATCH:
+        try:
+            n = (HOME / name).stat().st_size
+        except OSError:
+            n = 0
+        sizes[name] = n
+        total += n
+    return sizes, total
+
+
+def newest_backup_hint() -> str | None:
+    """最近的可用备份包（备份目录候选里按 mtime 取最新）。找不到返回 None。"""
+    try:
+        import safety
+        dirs = safety.backup_dir_candidates(HOME)
+    except Exception:
+        dirs = [HOME / "backups"]
+    best: tuple[float, str] | None = None
+    for d in dirs:
+        try:
+            if not d.is_dir():
+                continue
+            for p in d.glob("brain-memory_*.zip*"):
+                try:
+                    m = p.stat().st_mtime
+                except OSError:
+                    continue
+                if best is None or m > best[0]:
+                    best = (m, str(p))
+        except OSError:
+            continue
+    return best[1] if best else None
+
 
 def schema_version() -> int:
     """当前支持的记忆库 schema 版本（brain.py 命名空间合并后即 brain.schema_version()）。"""
@@ -93,7 +144,7 @@ def schema_version() -> int:
 def _check_meta() -> None:
     """初始化/校验 HOME/_meta.json：老库没有就静默创建（向后兼容）；
     schema_version 高于当前支持版本则只读降级 + 日志警告。绝不抛异常。"""
-    global READONLY
+    global READONLY, WIPE_ALERT
     if READONLY:
         return  # 只读降级：不写 _meta.json，已有文件照样可读
     path = HOME / "_meta.json"
@@ -113,6 +164,26 @@ def _check_meta() -> None:
         else:
             ts = now_ts()
             meta = {"schema_version": SCHEMA_VERSION, "created": ts, "updated": ts}
+        # —— 空库熔断：和上一次见到的快照比，从"有"变成"全空"就记一笔 ——
+        prev_seen = meta.get("seen") or {}
+        try:
+            sizes, total = _watch_sizes()
+        except Exception:
+            sizes, total = {}, 0
+        prev_total = int(prev_seen.get("bytes") or 0)
+        prev_sizes = prev_seen.get("sizes") or {}
+        persona_lost = bool(prev_sizes.get("persona.json")) and not sizes.get("persona.json")
+        if (prev_total > 0 and total == 0) or persona_lost:
+            WIPE_ALERT = {
+                "prev_bytes": prev_total,
+                "prev_ts": prev_seen.get("ts"),
+                "now_bytes": total,
+                "persona_lost": persona_lost,
+                "backup": newest_backup_hint(),
+            }
+            log_event("wipe", f"疑似记忆库被清空：上次 {prev_total} 字节 / 现在 {total} 字节"
+                              f"{'，人格档案消失' if persona_lost else ''}", level="error")
+        meta["seen"] = {"ts": now_ts(), "bytes": total, "sizes": sizes}
         atomic_json(path, meta)
     except Exception:
         pass  # _meta.json 是元数据不是数据本身，读写失败都不拦正常流程
@@ -291,7 +362,23 @@ def fmt_date(ts: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
+def check_wipe() -> dict | None:
+    """跑一次元数据检查，返回「疑似被清空」告警（没有就 None）。
+
+    startup / doctor / 面板概览都用它：宁可误报一次，也不要让库被清空后
+    安安静静地假装一切正常。写盘失败不影响返回值。
+    """
+    try:
+        _check_meta()
+    except Exception:
+        pass
+    return WIPE_ALERT
+
+
 def ensure_home() -> None:
+    # 第一道闸：盘符根/用户主目录/用户库文件夹（桌面、文档、下载…）一律拒绝当记忆库。
+    # 事故里的清空就是发生在这些目录上——库放进去等于把自己绑在同一颗炸弹上。
+    safety.assert_safe_home(HOME, action="初始化")
     if READONLY:
         return  # 只读降级：不建目录、不补默认文件，已有文件照样可读
     HOME.mkdir(parents=True, exist_ok=True)

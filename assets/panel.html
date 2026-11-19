@@ -1,4 +1,4 @@
-﻿﻿﻿﻿<!doctype html>
+﻿﻿<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,6 +11,12 @@
     --teal:#5fa8a0; --red:#c96b5f; --violet:#8d86c9;
     /* 语义色别名：供情绪/欲望条等内联样式引用，避免 var(--accent/--good/--bad) 取不到值变透明 */
     --accent:var(--amber); --good:var(--teal); --bad:var(--red);
+    /* 主题跟随：文本语义色（深色底上更亮的同系文字）+ 星图/节点 RGB 三元组（浅色主题在 enhance.css 覆盖为深色版本） */
+    --teal-text:#9fd2cb; --red-text:#dda49b; --amber-text:#e3b96c;
+    --node-persona:240,208,120; --node-high:224,92,79; --node-mid:217,164,65;
+    --node-low:95,168,160; --node-min:125,137,150;
+    --edge:120,140,170; --path:233,196,106; --search:95,168,160;
+    --graph-label:233,230,223; --graph-focus:242,239,230; --graph-focus-ring:255,255,255;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
@@ -678,11 +684,11 @@
             <h2 style="margin-bottom:4px">记忆联想 · 3D 空间</h2>
             <div class="sub" id="graph-hint">以<b>人格星核</b>为中心自动放射连接全部记忆；共享实体/标签的记忆自动连线。点节点聚焦，邻居被点亮；<b>左键拖=旋转 · 右键拖=平移 · 滚轮=缩放 · Esc=退出聚焦</b>。</div>
             <div class="row" style="margin-top:6px;gap:12px;flex-wrap:wrap">
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:12px;height:12px;border-radius:50%;background:#f0d078;box-shadow:0 0 8px #f0d078;display:inline-block"></i>人格星核</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#e05c4f;display:inline-block"></i>很重要</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#d9a441;display:inline-block"></i>较重要</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#5fa8a0;display:inline-block"></i>一般</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#7d8896;display:inline-block"></i>不重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:12px;height:12px;border-radius:50%;background:rgb(var(--node-persona));box-shadow:0 0 8px rgb(var(--node-persona));display:inline-block"></i>人格星核</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-high));display:inline-block"></i>很重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-mid));display:inline-block"></i>较重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-low));display:inline-block"></i>一般</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-min));display:inline-block"></i>不重要</span>
               <span class="sub" style="color:var(--faint)">颜色=重要程度 · 越近被想起越亮</span>
             </div>
           </div>
@@ -714,7 +720,7 @@
       <div class="card" style="margin-top:14px">
         <div class="row"><h2 style="margin:0">关联明细</h2><span class="sub" id="graph-stat" style="margin-left:auto"></span></div>
         <div id="graph-neighbors" class="sub" style="margin-top:10px">点一个节点，看它连着什么。</div>
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06)">
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
           <div class="row" style="gap:8px;flex-wrap:wrap">
             <input id="path-a" placeholder="节点 A：id 或 gist 关键词" style="flex:1;min-width:140px">
             <span class="sub">→</span>
@@ -1507,15 +1513,37 @@ const GRAPH = { data: null, pos: [], yaw: 0.6, pitch: -0.35, dist: 360,
                 selected: null, hover: null, loaded: false, nbrs: null, anim: null, pathEdges: null };
 const LAYER_COLOR = { cortex: "#d9a441", hippo: "#5fa8a0", dust: "#5d646e", archive: "#8f92b8" };
 // 颜色 = 重要程度（与图例一致）：红=很重要 / 金=较重要 / 青=一般 / 灰=不重要；人格星核专属暖金
-const PERSONA_COLOR = "#f0d078";
-function nodeColor(n){
-  if (n.layer === "persona" || n.kind === "persona") return PERSONA_COLOR;
+// 主题跟随：取 --node-* RGB 三元组（浅色主题在 enhance.css 里覆盖为深色版本）
+function nodeColor(n, P){
+  if (n.layer === "persona" || n.kind === "persona") return "rgb(" + P.persona + ")";
   const imp = n.importance == null ? 0.5 : n.importance;
-  if (imp >= 0.8) return "#e05c4f";
-  if (imp >= 0.6) return "#d9a441";
-  if (imp >= 0.35) return "#5fa8a0";
-  // 低重要度也用可辨识的灰蓝：太深的灰(#5d646e)在暗背景上像半透明/隐形
-  return "#7d8896";
+  if (imp >= 0.8) return "rgb(" + P.high + ")";
+  if (imp >= 0.6) return "rgb(" + P.mid + ")";
+  if (imp >= 0.35) return "rgb(" + P.low + ")";
+  // 低重要度也用可辨识的灰蓝：太深的灰在暗背景上像半透明/隐形
+  return "rgb(" + P.min + ")";
+}
+// 星图调色板：从 CSS 变量读一次，data-theme 变化时自动重取
+function graphPalette(){
+  const t = document.documentElement.getAttribute("data-theme") || "dark";
+  if (graphPalette._theme === t && graphPalette._cache) return graphPalette._cache;
+  const cs = getComputedStyle(document.documentElement);
+  const g = n => { const v = (cs.getPropertyValue(n) || "").trim(); return v || null; };
+  const P = {
+    persona: g("--node-persona") || "240,208,120",
+    high: g("--node-high") || "224,92,79",
+    mid: g("--node-mid") || "217,164,65",
+    low: g("--node-low") || "95,168,160",
+    min: g("--node-min") || "125,137,150",
+    edge: g("--edge") || "120,140,170",
+    path: g("--path") || "233,196,106",
+    search: g("--search") || "95,168,160",
+    label: g("--graph-label") || "233,230,223",
+    focus: g("--graph-focus") || "242,239,230",
+    focusRing: g("--graph-focus-ring") || "255,255,255"
+  };
+  graphPalette._theme = t; graphPalette._cache = P;
+  return P;
 }
 
 function hashStr(s){
@@ -1707,6 +1735,7 @@ function renderGraph(){
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+  const P = graphPalette();
   const cx = W / 2, cy = H / 2;
   const nodes = GRAPH.data.nodes, edges = GRAPH.data.edges;
   // 层筛选：选定层之外全部隐藏（边两端都可见才画）；人格星核是放射中心，始终显示
@@ -1745,12 +1774,12 @@ function renderGraph(){
     // 路径边必须看清走向，用实线盖过自动联想的虚线
     ctx.setLineDash(e.auto && !onPath ? [3, 5] : []);
     ctx.strokeStyle = onPath
-      ? "rgba(233,196,106,.9)"
+      ? "rgba(" + P.path + ",.9)"
       : touchSel || touchHover
-        ? "rgba(233,196,106,.85)"
+        ? "rgba(" + P.path + ",.85)"
         : e.auto
-        ? "rgba(120,140,170," + (edgeHot ? 0.04 + Math.min(0.28, e.weight * 0.07) : 0.025 + Math.min(0.12, e.weight * 0.03)) + ")"
-        : "rgba(120,140,170," + (edgeHot ? 0.05 + Math.min(0.4, e.weight * 0.1) : 0.03 + Math.min(0.18, e.weight * 0.04)) + ")";
+        ? "rgba(" + P.edge + "," + (edgeHot ? 0.04 + Math.min(0.28, e.weight * 0.07) : 0.025 + Math.min(0.12, e.weight * 0.03)) + ")"
+        : "rgba(" + P.edge + "," + (edgeHot ? 0.05 + Math.min(0.4, e.weight * 0.1) : 0.03 + Math.min(0.18, e.weight * 0.04)) + ")";
     ctx.beginPath(); ctx.moveTo(cx + pa.x, cy + pa.y); ctx.lineTo(cx + pb.x, cy + pb.y); ctx.stroke();
     ctx.setLineDash([]);
   });
@@ -1761,7 +1790,7 @@ function renderGraph(){
     if (!shown.has(i)) return;   // 层筛选/背面/太小的节点不画（否则筛选只隐藏了边，节点还全在）
     const n = nodes[i], p = proj[i];
     const r = (3 + (n.importance || 0.5) * 11) * Math.max(0.4, p.s);
-    const base = nodeColor(n);
+    const base = nodeColor(n, P);
     const dim = sel != null && !hot.has(i);
     const focusHit = GRAPH.hover === i || GRAPH.selected === i;
     // 焦点/展示中的节点永远实心不透底（否则能透过节点看见后面的连线，像透明玻璃珠）；
@@ -1770,25 +1799,25 @@ function renderGraph(){
     // 焦点选中：外圈呼吸光环（注意力）
     if (GRAPH.selected === i){
       ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, r + 6, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(233,196,106,.5)"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = "rgba(" + P.path + ",.5)"; ctx.lineWidth = 1.5; ctx.stroke();
     }
     // 搜索命中：青色描边标记
     if (GRAPH.searchHits && GRAPH.searchHits.includes(i)){
       ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, r + 3.5, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(95,168,160,.9)"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = "rgba(" + P.search + ",.9)"; ctx.lineWidth = 1.5; ctx.stroke();
     }
     ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, focusHit ? r + 2 : r, 0, Math.PI * 2);
     // 发光：重要节点和焦点节点带柔光晕（类星图质感）
     if (focusHit || (n.importance || 0) > 0.75){ ctx.shadowColor = base; ctx.shadowBlur = focusHit ? 16 : 9; }
-    ctx.fillStyle = focusHit ? "#f2efe6" : base;
+    ctx.fillStyle = focusHit ? "rgb(" + P.focus + ")" : base;
     ctx.fill();
     ctx.shadowBlur = 0;
-    if (focusHit){ ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke(); }
+    if (focusHit){ ctx.lineWidth = 2; ctx.strokeStyle = "rgb(" + P.focusRing + ")"; ctx.stroke(); }
     const labelable = (GRAPH.selected === i || (sel != null && hot.has(i) && i !== sel) || (GRAPH.selected == null && n.importance >= 0.8));
     if (p.s > 0.45 && labelable && shown.has(i)){
       ctx.globalAlpha = dim ? 0.35 : ctx.globalAlpha;
       ctx.font = (GRAPH.selected === i ? "bold 11px" : "10px") + " system-ui,sans-serif";
-      ctx.fillStyle = GRAPH.selected === i ? "rgba(240,208,120,.98)" : "rgba(233,230,223,.95)";
+      ctx.fillStyle = GRAPH.selected === i ? "rgba(" + P.path + ",.98)" : "rgba(" + P.label + ",.95)";
       ctx.fillText((n.gist || "").slice(0, GRAPH.selected === i ? 16 : 12), cx + p.x + r + 4, cy + p.y + 4);
     }
     ctx.globalAlpha = 1;
@@ -2427,8 +2456,8 @@ function renderSkills(out){
           <span class="badge ${r.custom ? "archive" : "hippo"}">${esc(r.label)}</span>
           <code class="sub ellip" style="flex:1">${esc(r.path)}</code>
           ${r.exists
-            ? `<span class="badge" style="background:rgba(95,168,160,.12);color:#9fd2cb">${r.count} 个技能</span>`
-            : `<span class="badge" style="background:rgba(201,107,95,.12);color:#dda49b">目录不存在</span>`}
+            ? `<span class="badge" style="background:rgba(95,168,160,.12);color:var(--teal-text)">${r.count} 个技能</span>`
+            : `<span class="badge" style="background:rgba(201,107,95,.12);color:var(--red-text)">目录不存在</span>`}
           ${r.custom ? `<button class="iconbtn" title="移除此自定义目录" data-rootrm="${esc(r.path)}" style="margin-left:auto">✕</button>` : ""}
         </div>
       </div>
@@ -2688,7 +2717,7 @@ function renderLayerBar(){
     ["cortex", "长期记忆", "var(--amber)"],
     ["hippo", "短期记忆", "var(--teal)"],
     ["dust", "淡忘区", "var(--faint)"],
-    ["archive", "归档层", "#8f92b8"]
+    ["archive", "归档层", "var(--violet)"]
   ];
   const total = defs.reduce((s, [k]) => s + (Number(lc[k]) || 0), 0);
   if (!total) { bar.innerHTML = `<span class="sub">记忆库还是空的，先写一条吧。</span>`; return; }
@@ -3732,7 +3761,7 @@ async function renderStore(){
       const badge = x.source === "builtin" ? "内置" : x.source === "cloud" ? "云端" : x.source === "cloud-error" ? "提示" : "自定义";
       const ver = x.version && x.version !== "?" ? ` <span class="badge">${esc(x.version)}</span>` : "";
       const host = x.source === "cloud-error" ? "" :
-        `<span class="badge" style="background:rgba(95,168,160,.12);color:#9fd2cb">${esc(x.host || "?")}</span>`;
+        `<span class="badge" style="background:rgba(95,168,160,.12);color:var(--teal-text)">${esc(x.host || "?")}</span>`;
       let act = "";
       if (x.source === "cloud-error") {
         act = "";
@@ -4546,7 +4575,7 @@ $("upd-apply").addEventListener("click", async () => {
     const msg = e.message || "更新失败";
     // 失败提示要留给用户看清（toast 只活 2.4s），同时常驻写进弹窗详情区
     toast(msg, true);
-    $("upd-detail").innerHTML = "<b style='color:#dda49b'>✗ 更新失败</b><br><br>" +
+    $("upd-detail").innerHTML = "<b style='color:var(--red-text)'>✗ 更新失败</b><br><br>" +
       esc(msg) + "<br><br><i>更新采用原子化部署，失败已自动回滚，现有版本与数据不受影响。" +
       "可关闭本窗口后点右上角「检查更新」重试。</i>";
     $("upd-modal").classList.remove("hidden");
@@ -4647,7 +4676,7 @@ setTimeout(() => checkUpdate(true), 1200);
           btns += `<button class="btn mini" data-pm-act="upload" data-id="${esc(p.name)}">上传到市场</button>`;
         if (p.name !== "default")
           btns += `<button class="btn mini" data-pm-act="delete" data-id="${esc(p.name)}"
-            style="background:rgba(201,107,95,.14);color:#dda49b">删除</button>`;
+            style="background:rgba(201,107,95,.14);color:var(--red-text)">删除</button>`;
         return `<div class="pm-item">
           <div class="grow"><div class="nm">${esc(p.title)}<small>v${esc(p.version)} · ${esc(p.name)}</small>
             ${act}${src}${err}</div>
@@ -4978,10 +5007,42 @@ setTimeout(() => checkUpdate(true), 1200);
 <style id="ls-enhance-style">
   :root[data-theme="light"]{
     --bg:#f6f4ef; --surface:#fffdf8; --surface2:#f0ede5; --line:#ddd6c8;
-    --text:#23201a; --muted:#6b6459; --faint:#9a9284;
+    --text:#23201a; --muted:#554f44; --faint:#6f6858;
     --amber:#a9741c; --amber-soft:rgba(169,116,28,.12);
     --teal:#2f7d72; --red:#a8453a; --violet:#5b52a3;
+    --teal-text:#2f7d72; --red-text:#a8453a; --amber-text:#8a5d13;
+    --node-persona:201,162,39; --node-high:192,57,43; --node-mid:169,116,28;
+    --node-low:47,125,114; --node-min:91,102,115;
+    --edge:96,112,132; --path:169,116,28; --search:47,125,114;
+    --graph-label:45,40,32; --graph-focus:35,32,26; --graph-focus-ring:255,253,248;
   }
+  /* 浅色主题覆盖层：base.css 里有大量为深色底硬编码的颜色，这里统一翻成浅色版本 */
+  :root[data-theme="light"] aside{background:linear-gradient(180deg,#f1ebdf,#e6e0d1)}
+  :root[data-theme="light"] nav button:hover{background:rgba(0,0,0,.055)}
+  :root[data-theme="light"] .mood{background:rgba(47,125,114,.1);border:1px solid rgba(47,125,114,.3);color:var(--teal-text)}
+  :root[data-theme="light"] .mood-badge{background:rgba(255,255,255,.55);border:1px solid var(--line)}
+  :root[data-theme="light"] .bar{background:#ddd5c4}
+  :root[data-theme="light"] .chip{background:var(--surface2);color:var(--muted)}
+  :root[data-theme="light"] .chip.good{border-color:rgba(47,125,114,.3);color:var(--teal-text);background:rgba(47,125,114,.08)}
+  :root[data-theme="light"] .chip.bad{border-color:rgba(168,69,58,.3);color:var(--red-text);background:rgba(168,69,58,.08)}
+  :root[data-theme="light"] .mem:hover{border-color:#b8ab92}
+  :root[data-theme="light"] .mem p{color:var(--text)}
+  :root[data-theme="light"] .layer-bar-track{background:#ddd5c4}
+  :root[data-theme="light"] .ring{background:conic-gradient(var(--amber) calc(var(--p) * 1%), #ddd5c4 0)}
+  :root[data-theme="light"] .badge{background:var(--surface2);color:var(--muted)}
+  :root[data-theme="light"] .badge.cortex{background:rgba(169,116,28,.14);color:var(--amber-text)}
+  :root[data-theme="light"] .badge.hippo{background:rgba(47,125,114,.12);color:var(--teal-text)}
+  :root[data-theme="light"] .badge.dust{background:#ddd5c4;color:var(--faint)}
+  :root[data-theme="light"] .badge.archive{background:rgba(91,82,163,.1);color:var(--violet)}
+  :root[data-theme="light"] .iconbtn:hover{background:var(--surface2);color:var(--text)}
+  :root[data-theme="light"] .list li{border-bottom-color:rgba(0,0,0,.06);color:var(--text)}
+  :root[data-theme="light"] .hist td{border-bottom-color:rgba(0,0,0,.06)}
+  :root[data-theme="light"] .statline{border-bottom-color:rgba(0,0,0,.06)}
+  :root[data-theme="light"] button.ghost:hover{border-color:#b8ab92}
+  :root[data-theme="light"] button.danger{background:rgba(168,69,58,.1);border-color:rgba(168,69,58,.3);color:var(--red-text)}
+  :root[data-theme="light"] .pm-tag.err{border-color:rgba(168,69,58,.4);color:var(--red-text)}
+  :root[data-theme="light"] .pre{background:#efe9dc;color:#3f3a33}
+  :root[data-theme="light"] #toast{border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.12)}
   :root[data-density="compact"] body{font-size:13px;line-height:1.5}
   :root[data-density="compact"] .card{padding:10px 12px}
   :root[data-density="compact"] nav button{padding:5px 8px}

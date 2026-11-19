@@ -542,7 +542,7 @@ python scripts/brain.py evolve list --limit 20
 记忆是裸文件，最怕的是"重装/清盘/写坏就没了"。把它当存折一样定期打包：
 
 ```bash
-python scripts/brain.py backup                      # 默认 D:/brain-memory-backups（没有 D 盘就桌面）
+python scripts/brain.py backup                      # 默认跨卷：别的盘 brain-memory-backups，兜底 <记忆库>/backups（v3.45 起；更早版本写 D:/ 或 ~/Documents）
 python scripts/brain.py backup --out "D:\我的备份"  # 指定位置
 python scripts/brain.py backup --keep 10            # 只留最近 10 份，旧的自动删
 ```

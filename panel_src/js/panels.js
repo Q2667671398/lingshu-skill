@@ -57,7 +57,7 @@
           btns += `<button class="btn mini" data-pm-act="upload" data-id="${esc(p.name)}">上传到市场</button>`;
         if (p.name !== "default")
           btns += `<button class="btn mini" data-pm-act="delete" data-id="${esc(p.name)}"
-            style="background:rgba(201,107,95,.14);color:#dda49b">删除</button>`;
+            style="background:rgba(201,107,95,.14);color:var(--red-text)">删除</button>`;
         return `<div class="pm-item">
           <div class="grow"><div class="nm">${esc(p.title)}<small>v${esc(p.version)} · ${esc(p.name)}</small>
             ${act}${src}${err}</div>

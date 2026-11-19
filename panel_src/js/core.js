@@ -433,15 +433,37 @@ const GRAPH = { data: null, pos: [], yaw: 0.6, pitch: -0.35, dist: 360,
                 selected: null, hover: null, loaded: false, nbrs: null, anim: null, pathEdges: null };
 const LAYER_COLOR = { cortex: "#d9a441", hippo: "#5fa8a0", dust: "#5d646e", archive: "#8f92b8" };
 // 颜色 = 重要程度（与图例一致）：红=很重要 / 金=较重要 / 青=一般 / 灰=不重要；人格星核专属暖金
-const PERSONA_COLOR = "#f0d078";
-function nodeColor(n){
-  if (n.layer === "persona" || n.kind === "persona") return PERSONA_COLOR;
+// 主题跟随：取 --node-* RGB 三元组（浅色主题在 enhance.css 里覆盖为深色版本）
+function nodeColor(n, P){
+  if (n.layer === "persona" || n.kind === "persona") return "rgb(" + P.persona + ")";
   const imp = n.importance == null ? 0.5 : n.importance;
-  if (imp >= 0.8) return "#e05c4f";
-  if (imp >= 0.6) return "#d9a441";
-  if (imp >= 0.35) return "#5fa8a0";
-  // 低重要度也用可辨识的灰蓝：太深的灰(#5d646e)在暗背景上像半透明/隐形
-  return "#7d8896";
+  if (imp >= 0.8) return "rgb(" + P.high + ")";
+  if (imp >= 0.6) return "rgb(" + P.mid + ")";
+  if (imp >= 0.35) return "rgb(" + P.low + ")";
+  // 低重要度也用可辨识的灰蓝：太深的灰在暗背景上像半透明/隐形
+  return "rgb(" + P.min + ")";
+}
+// 星图调色板：从 CSS 变量读一次，data-theme 变化时自动重取
+function graphPalette(){
+  const t = document.documentElement.getAttribute("data-theme") || "dark";
+  if (graphPalette._theme === t && graphPalette._cache) return graphPalette._cache;
+  const cs = getComputedStyle(document.documentElement);
+  const g = n => { const v = (cs.getPropertyValue(n) || "").trim(); return v || null; };
+  const P = {
+    persona: g("--node-persona") || "240,208,120",
+    high: g("--node-high") || "224,92,79",
+    mid: g("--node-mid") || "217,164,65",
+    low: g("--node-low") || "95,168,160",
+    min: g("--node-min") || "125,137,150",
+    edge: g("--edge") || "120,140,170",
+    path: g("--path") || "233,196,106",
+    search: g("--search") || "95,168,160",
+    label: g("--graph-label") || "233,230,223",
+    focus: g("--graph-focus") || "242,239,230",
+    focusRing: g("--graph-focus-ring") || "255,255,255"
+  };
+  graphPalette._theme = t; graphPalette._cache = P;
+  return P;
 }
 
 function hashStr(s){
@@ -633,6 +655,7 @@ function renderGraph(){
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+  const P = graphPalette();
   const cx = W / 2, cy = H / 2;
   const nodes = GRAPH.data.nodes, edges = GRAPH.data.edges;
   // 层筛选：选定层之外全部隐藏（边两端都可见才画）；人格星核是放射中心，始终显示
@@ -671,12 +694,12 @@ function renderGraph(){
     // 路径边必须看清走向，用实线盖过自动联想的虚线
     ctx.setLineDash(e.auto && !onPath ? [3, 5] : []);
     ctx.strokeStyle = onPath
-      ? "rgba(233,196,106,.9)"
+      ? "rgba(" + P.path + ",.9)"
       : touchSel || touchHover
-        ? "rgba(233,196,106,.85)"
+        ? "rgba(" + P.path + ",.85)"
         : e.auto
-        ? "rgba(120,140,170," + (edgeHot ? 0.04 + Math.min(0.28, e.weight * 0.07) : 0.025 + Math.min(0.12, e.weight * 0.03)) + ")"
-        : "rgba(120,140,170," + (edgeHot ? 0.05 + Math.min(0.4, e.weight * 0.1) : 0.03 + Math.min(0.18, e.weight * 0.04)) + ")";
+        ? "rgba(" + P.edge + "," + (edgeHot ? 0.04 + Math.min(0.28, e.weight * 0.07) : 0.025 + Math.min(0.12, e.weight * 0.03)) + ")"
+        : "rgba(" + P.edge + "," + (edgeHot ? 0.05 + Math.min(0.4, e.weight * 0.1) : 0.03 + Math.min(0.18, e.weight * 0.04)) + ")";
     ctx.beginPath(); ctx.moveTo(cx + pa.x, cy + pa.y); ctx.lineTo(cx + pb.x, cy + pb.y); ctx.stroke();
     ctx.setLineDash([]);
   });
@@ -687,7 +710,7 @@ function renderGraph(){
     if (!shown.has(i)) return;   // 层筛选/背面/太小的节点不画（否则筛选只隐藏了边，节点还全在）
     const n = nodes[i], p = proj[i];
     const r = (3 + (n.importance || 0.5) * 11) * Math.max(0.4, p.s);
-    const base = nodeColor(n);
+    const base = nodeColor(n, P);
     const dim = sel != null && !hot.has(i);
     const focusHit = GRAPH.hover === i || GRAPH.selected === i;
     // 焦点/展示中的节点永远实心不透底（否则能透过节点看见后面的连线，像透明玻璃珠）；
@@ -696,25 +719,25 @@ function renderGraph(){
     // 焦点选中：外圈呼吸光环（注意力）
     if (GRAPH.selected === i){
       ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, r + 6, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(233,196,106,.5)"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = "rgba(" + P.path + ",.5)"; ctx.lineWidth = 1.5; ctx.stroke();
     }
     // 搜索命中：青色描边标记
     if (GRAPH.searchHits && GRAPH.searchHits.includes(i)){
       ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, r + 3.5, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(95,168,160,.9)"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = "rgba(" + P.search + ",.9)"; ctx.lineWidth = 1.5; ctx.stroke();
     }
     ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, focusHit ? r + 2 : r, 0, Math.PI * 2);
     // 发光：重要节点和焦点节点带柔光晕（类星图质感）
     if (focusHit || (n.importance || 0) > 0.75){ ctx.shadowColor = base; ctx.shadowBlur = focusHit ? 16 : 9; }
-    ctx.fillStyle = focusHit ? "#f2efe6" : base;
+    ctx.fillStyle = focusHit ? "rgb(" + P.focus + ")" : base;
     ctx.fill();
     ctx.shadowBlur = 0;
-    if (focusHit){ ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke(); }
+    if (focusHit){ ctx.lineWidth = 2; ctx.strokeStyle = "rgb(" + P.focusRing + ")"; ctx.stroke(); }
     const labelable = (GRAPH.selected === i || (sel != null && hot.has(i) && i !== sel) || (GRAPH.selected == null && n.importance >= 0.8));
     if (p.s > 0.45 && labelable && shown.has(i)){
       ctx.globalAlpha = dim ? 0.35 : ctx.globalAlpha;
       ctx.font = (GRAPH.selected === i ? "bold 11px" : "10px") + " system-ui,sans-serif";
-      ctx.fillStyle = GRAPH.selected === i ? "rgba(240,208,120,.98)" : "rgba(233,230,223,.95)";
+      ctx.fillStyle = GRAPH.selected === i ? "rgba(" + P.path + ",.98)" : "rgba(" + P.label + ",.95)";
       ctx.fillText((n.gist || "").slice(0, GRAPH.selected === i ? 16 : 12), cx + p.x + r + 4, cy + p.y + 4);
     }
     ctx.globalAlpha = 1;
@@ -1353,8 +1376,8 @@ function renderSkills(out){
           <span class="badge ${r.custom ? "archive" : "hippo"}">${esc(r.label)}</span>
           <code class="sub ellip" style="flex:1">${esc(r.path)}</code>
           ${r.exists
-            ? `<span class="badge" style="background:rgba(95,168,160,.12);color:#9fd2cb">${r.count} 个技能</span>`
-            : `<span class="badge" style="background:rgba(201,107,95,.12);color:#dda49b">目录不存在</span>`}
+            ? `<span class="badge" style="background:rgba(95,168,160,.12);color:var(--teal-text)">${r.count} 个技能</span>`
+            : `<span class="badge" style="background:rgba(201,107,95,.12);color:var(--red-text)">目录不存在</span>`}
           ${r.custom ? `<button class="iconbtn" title="移除此自定义目录" data-rootrm="${esc(r.path)}" style="margin-left:auto">✕</button>` : ""}
         </div>
       </div>
@@ -1614,7 +1637,7 @@ function renderLayerBar(){
     ["cortex", "长期记忆", "var(--amber)"],
     ["hippo", "短期记忆", "var(--teal)"],
     ["dust", "淡忘区", "var(--faint)"],
-    ["archive", "归档层", "#8f92b8"]
+    ["archive", "归档层", "var(--violet)"]
   ];
   const total = defs.reduce((s, [k]) => s + (Number(lc[k]) || 0), 0);
   if (!total) { bar.innerHTML = `<span class="sub">记忆库还是空的，先写一条吧。</span>`; return; }
@@ -2658,7 +2681,7 @@ async function renderStore(){
       const badge = x.source === "builtin" ? "内置" : x.source === "cloud" ? "云端" : x.source === "cloud-error" ? "提示" : "自定义";
       const ver = x.version && x.version !== "?" ? ` <span class="badge">${esc(x.version)}</span>` : "";
       const host = x.source === "cloud-error" ? "" :
-        `<span class="badge" style="background:rgba(95,168,160,.12);color:#9fd2cb">${esc(x.host || "?")}</span>`;
+        `<span class="badge" style="background:rgba(95,168,160,.12);color:var(--teal-text)">${esc(x.host || "?")}</span>`;
       let act = "";
       if (x.source === "cloud-error") {
         act = "";
@@ -3472,7 +3495,7 @@ $("upd-apply").addEventListener("click", async () => {
     const msg = e.message || "更新失败";
     // 失败提示要留给用户看清（toast 只活 2.4s），同时常驻写进弹窗详情区
     toast(msg, true);
-    $("upd-detail").innerHTML = "<b style='color:#dda49b'>✗ 更新失败</b><br><br>" +
+    $("upd-detail").innerHTML = "<b style='color:var(--red-text)'>✗ 更新失败</b><br><br>" +
       esc(msg) + "<br><br><i>更新采用原子化部署，失败已自动回滚，现有版本与数据不受影响。" +
       "可关闭本窗口后点右上角「检查更新」重试。</i>";
     $("upd-modal").classList.remove("hidden");

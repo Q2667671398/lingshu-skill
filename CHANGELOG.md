@@ -1,5 +1,32 @@
 # 更新日志
 
+## v3.45（2026-11-20）
+
+> 主题：**数据目录护栏 + 空库熔断 + 备份跨卷** —— 一次真实全丢事故的复盘产物。
+
+事故：用户 `C:\Users\<name>` 下的桌面/文档/下载等库文件夹被未知进程整片清空，
+`~/.brain-memory` 一起没了；而当时的备份默认落在 `~/Documents/brain-memory-backups`，
+**备份和本体在同目录同卷，被同一次事故一起端掉**。事后只能靠更早一块独立盘上的
+旧备份把人格救回来。三个改动分别对应这三次失误：
+
+- **`scripts/safety.py`（新）**：数据目录护栏。
+  `dangerous_reason()` / `assert_safe_home()` 拒绝把盘符根、用户主目录本体、
+  用户库文件夹（Desktop/Documents/Downloads/Pictures/Videos/Music/OneDrive）
+  及系统目录当记忆库；`ensure_home()` 与 `home move` 的目标都会先过这道闸。
+  逃生阀 `BRAIN_MEMORY_ALLOW_UNSAFE_HOME=1`（放行但打醒目警告）。
+- **备份选址跨卷**：`_default_backup_dir()` 改为
+  `BRAIN_MEMORY_BACKUP_DIR` > **别的卷上的 `brain-memory-backups`** > `<HOME>/backups`，
+  刻意不再用 `~/Documents`、`~/Desktop`。同卷备份只是同一个炸弹上的第二个引信。
+- **restore --exact 只清自己的东西**：删除改为按 `is_managed_relpath()` 白名单，
+  记忆库里用户自己放的文件（草稿/导出/照片）一律保留并汇报——
+  “清空受管文件”不该变成“清空这个目录”。
+- **空库熔断**：`_meta.json` 记一份数据文件字节数快照；`check_wipe()` 发现
+  “上次有内容、这次全空/人格档案消失”时，`startup` 直接打 **⚠ 记忆库疑似被清空**
+  横幅，并给出最近备份包路径与现成的 `restore` 命令——不让库被清空后
+  安静地假装一切正常。
+- 文档：新增 [`docs/recovery.md`](docs/recovery.md) 事故处置单（停手 → 找备份 → 恢复 → 查因）。
+- 测试：`tests/test_safety_home_guard.py` 15 项（危险路径判定、白名单、跨卷选址、熔断误报/真报）。
+
 ## v3.44（2026-11-20）
 
 > 主题：**附录 B P1 导入/工作区 + 75%/90% 影子自动执行**。

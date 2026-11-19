@@ -23,28 +23,30 @@ from datetime import datetime
 from pathlib import Path
 
 from core import *
+import safety  # noqa: E402  —— 数据目录护栏
 
 # ---------------------------------------------------------------- backup / restore
 
 def _default_backup_dir() -> Path:
-    """备份默认位置：文档 > 桌面 > HOME/backups。
-    BRAIN_MEMORY_BACKUP_DIR 可显式指定；指定后测试/自定义 HOME 不会意外写到别处。
-    不再默认写盘符根（D:\\brain-memory-backups）——那会在用户盘根目录凭空建目录。"""
+    """备份默认位置：显式环境变量 > **跨卷目录** > 记忆库内部 backups。
+
+    旧默认是 `~/Documents/brain-memory-backups`，后来真出了事：用户的
+    Documents 被整片清空，备份跟着一起没了，等于没备份。所以现在刻意避开
+    桌面/文档这类用户内容目录，优先挑一块与记忆库**不同卷**的盘——
+    同卷备份只是同一个炸弹上的第二个引信。
+
+    BRAIN_MEMORY_BACKUP_DIR 显式指定时只认它；建不出来就明确报警并退回默认选址。
+    """
     env_dir = os.environ.get("BRAIN_MEMORY_BACKUP_DIR", "").strip()
     if env_dir:
-        candidates = [Path(env_dir).expanduser()]
-    else:
-        candidates = []
-        if sys.platform == "win32":
-            candidates.append(Path.home() / "Documents" / "brain-memory-backups")
-        candidates.append(Path.home() / "Desktop" / "brain-memory-backups")
-        candidates.append(HOME / "backups")
-    for c in candidates:
+        d = Path(env_dir).expanduser()
         try:
-            c.mkdir(parents=True, exist_ok=True)
-            return c
-        except Exception:
-            continue
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except Exception as exc:
+            print(f"[警告] BRAIN_MEMORY_BACKUP_DIR 不可用：{d}（{exc}），改用默认选址",
+                  file=sys.stderr)
+    return safety.pick_backup_dir(HOME)
 
 
 def _is_sensitive_file(f: Path) -> bool:
@@ -424,7 +426,10 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
                 with zf.open(info) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
             if exact:
-                # 先清空受管文件（保留 backups/ 与本次临时目录），再整包落回
+                # 先清空**灵枢自己管的**文件（保留 backups/ 与本次临时目录），再整包落回。
+                # 只删白名单内的路径：记忆库里用户自己放进去的东西（草稿、导出包、
+                # 参考笔记）一律保留并汇报——"清空受管文件"不该变成"清空这个目录"。
+                kept: list[str] = []
                 for f in sorted(HOME.rglob("*"), reverse=True):
                     if f.is_dir():
                         continue
@@ -432,11 +437,18 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
                         continue
                     if f.suffix == ".lock" or f.name == ".write-probe":
                         continue
+                    rel = f.relative_to(HOME)
+                    if not safety.is_managed_relpath(rel):
+                        kept.append(rel.as_posix())
+                        continue
                     with _locked(f):
                         try:
                             f.unlink()
                         except OSError:
                             pass
+                if kept:
+                    head = "、".join(kept[:5]) + (" …" if len(kept) > 5 else "")
+                    print(f"保留 {len(kept)} 个非灵枢文件（restore 只清自己的东西）：{head}")
             # 原子替换：每个目标文件 os.replace（已存在覆盖，不存在新建）
             # 逐文件持锁：恢复期间面板/CLI 对同一文件的并发写入被挡在锁外
             for extracted in tmp_dir.rglob("*"):
@@ -625,6 +637,12 @@ def cmd_home(action: str = "show", dest: str = "") -> int:
             print("用法：home move <目标目录>", file=sys.stderr)
             return 1
         dst = Path(dest).expanduser()
+        # 目标也不能是盘符根/主目录/用户库文件夹——迁移过去就等于把库搬进雷区
+        try:
+            safety.assert_safe_home(dst, action="迁移到")
+        except safety.UnsafeHomeError as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            return 1
         if not HOME.exists():
             print(f"[错误] 源记忆库不存在：{HOME}", file=sys.stderr)
             return 1
@@ -717,6 +735,25 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
     """
     if READONLY:
         print("[灵枢] 只读注入降级：记忆库当前不可写，注入基于已有文件。", file=sys.stderr)
+    # —— 空库熔断：上次见到的库和这次差太多，先把话说在前面 ——
+    try:
+        _alert = check_wipe()
+    except Exception:
+        _alert = None
+    if _alert:
+        print("── ⚠ 记忆库疑似被清空 ──")
+        if _alert.get("persona_lost"):
+            print("人格档案 persona.json 不见了。")
+        print(f"上次读到库里约 {_alert.get('prev_bytes', 0)} 字节，现在只有 "
+              f"{_alert.get('now_bytes', 0)} 字节。")
+        print("可能原因：被清理工具/误操作删除、数据目录被换掉、或刚做完 restore。")
+        _bk = _alert.get("backup")
+        if _bk:
+            print(f"最近的备份：{_bk}")
+            print(f'恢复：python scripts/brain.py restore "{_bk}" --yes')
+        else:
+            print("没找到任何备份包 —— 现在起别往这块盘写东西，先做文件恢复。")
+        print()
     p_path = HOME / "persona.json"
     mem_paths = [HOME / "hippocampus.jsonl", HOME / "cortex.jsonl"]
     if not p_path.exists() and not any(m.exists() for m in mem_paths):
@@ -4446,6 +4483,11 @@ def main(argv=None) -> int:
         return 2
     try:
         return _main(argv)
+    except safety.UnsafeHomeError as exc:
+        # 护栏拒绝：干净报错，不甩堆栈（这是预期行为，不是崩溃）
+        log_event("run", f"护栏拒绝：{exc}", level="warn")
+        print(f"[拒绝] {exc}", file=sys.stderr)
+        return 2
     except (ValueError, KeyError, LookupError, FileExistsError, PermissionError) as exc:
         # 业务错误：简短中文提示，无堆栈，退出码 1
         log_event("run", f"CLI 出错：{exc}", level="error")

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿<!doctype html>
+﻿﻿<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -424,11 +424,11 @@
             <h2 style="margin-bottom:4px">记忆联想 · 3D 空间</h2>
             <div class="sub" id="graph-hint">以<b>人格星核</b>为中心自动放射连接全部记忆；共享实体/标签的记忆自动连线。点节点聚焦，邻居被点亮；<b>左键拖=旋转 · 右键拖=平移 · 滚轮=缩放 · Esc=退出聚焦</b>。</div>
             <div class="row" style="margin-top:6px;gap:12px;flex-wrap:wrap">
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:12px;height:12px;border-radius:50%;background:#f0d078;box-shadow:0 0 8px #f0d078;display:inline-block"></i>人格星核</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#e05c4f;display:inline-block"></i>很重要</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#d9a441;display:inline-block"></i>较重要</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#5fa8a0;display:inline-block"></i>一般</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#7d8896;display:inline-block"></i>不重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:12px;height:12px;border-radius:50%;background:rgb(var(--node-persona));box-shadow:0 0 8px rgb(var(--node-persona));display:inline-block"></i>人格星核</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-high));display:inline-block"></i>很重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-mid));display:inline-block"></i>较重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-low));display:inline-block"></i>一般</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-min));display:inline-block"></i>不重要</span>
               <span class="sub" style="color:var(--faint)">颜色=重要程度 · 越近被想起越亮</span>
             </div>
           </div>
@@ -460,7 +460,7 @@
       <div class="card" style="margin-top:14px">
         <div class="row"><h2 style="margin:0">关联明细</h2><span class="sub" id="graph-stat" style="margin-left:auto"></span></div>
         <div id="graph-neighbors" class="sub" style="margin-top:10px">点一个节点，看它连着什么。</div>
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06)">
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
           <div class="row" style="gap:8px;flex-wrap:wrap">
             <input id="path-a" placeholder="节点 A：id 或 gist 关键词" style="flex:1;min-width:140px">
             <span class="sub">→</span>
