@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.44（2026-11-20）
+
+> 主题：**附录 B P1 导入/工作区 + 75%/90% 影子自动执行**。
+
+- **DSH 会话导入**（`scripts/session_import.py`）：zstd 多帧解码（Node 22+ 内置 zstd；实测 DSH 会话是 84–6580 帧拼接，一次性 API 只解第一帧，已移植帧扫描逐帧解压），解析 user/assistant 文本（跳过 reasoning/tool/system），platform=dsh、workspace=会话 cwd，幂等批量入库；CLI `--sessions-dir/--limit/--workspace/--dry-run/--json`。无 Node/zstd 时明确报错，不静默。真机 7 场会话 203 条、5.7s、Python 峰值内存 0.66MB（流式）。
+- **检索过滤**（`session_rag`）：`search(..., workspace=None, platform=None)` 参数化过滤；`stats()` 增 `by_platform/by_workspace`；旧调用不变。
+- **水位自动执行（影子 + 显式同意）**：`water` 段默认全关；`shadow=true` 只记账；真执行需 `autoXxx && autoXxxConsent` 且 `shadow=false`；75% 可触发 `dream --auto`，**90% 永不自动 capture**（插件拿不到原文，自动拼等于假封存），只记账 + 提醒一次。台账 `water-auto.jsonl` 512KB 轮转。
+- 测试：`test_session_import.py` 6 项、`test_water_auto.py` 6 项；全量 **36 个文件全过**。
+
 ## v3.43（2026-11-20）
 
 > 主题：**五路并行收尾**（五个队友、写作用域互不重叠）。

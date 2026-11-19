@@ -1,12 +1,12 @@
 {
-  "version": "3.43",
+  "version": "3.44",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "7d7ada945d8bf70af9a53a553c28c6c65f44c408d2a0f28b0464ac32eef22b45",
-      "size": 195610
+      "sha256": "28acb7b4c8866401afcd3e6caa88c2905dff5279c5674e384f8f19e273136971",
+      "size": 196856
     },
     "README.md": {
-      "sha256": "1bf47f63b0edddd7f1fbd0d8d0415f975405039ce17de5a21af3f8fbc713d9a3",
+      "sha256": "f6f86cd49a459b9478d6eb6a25a922b2c34ed798cd40233549ce42d99706f94e",
       "size": 62363
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "29f4ccddfda1cad6571c294993806438a26cabb1cb3c125a067952b74884aec0",
+      "sha256": "c63123d1276fb3a1b7e875fb7295eadb160a8c7b4dab81033550dc5e13e51aa4",
       "size": 33614
     },
     "assets/panel.html": {
@@ -38,8 +38,8 @@
       "size": 2205
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "0c6d1a0334fb7000f1897f2549bd1eba59fa66f1e09fccf2ff126c8bf85a8ca0",
-      "size": 27071
+      "sha256": "16e7f45fc11c0f2a23bd73f0bfc0b9f490e6ab39d98072ed23b50eb127a16da5",
+      "size": 37055
     },
     "cordis-plugin/lingshu-guard/plugin.js": {
       "sha256": "dc261707470b7878f484100eff885c8e0e7bf0b6b8574092e1784cc41fd2ea40",
@@ -98,7 +98,7 @@
       "size": 5219
     },
     "package.json": {
-      "sha256": "ff46b3714529eb7d22376bf21b2c7551ca174f74191b119cf23a05e20214d492",
+      "sha256": "facb0031380ca354a4a73a46fb198528cae7d57a5c2f0b6e389cf4ff084fbc99",
       "size": 860
     },
     "scripts/assembler.py": {
@@ -221,9 +221,13 @@
       "sha256": "85a35f8f660767cff1c068e722b51e3b5623c4dffe4822527eee96f9220240d3",
       "size": 7383
     },
+    "scripts/session_import.py": {
+      "sha256": "31c68069800e6ca8c91aad7869e7e174adc0b1e027ac0a4f7361a2c3a5363b3f",
+      "size": 29370
+    },
     "scripts/session_rag.py": {
-      "sha256": "fd2a73682f263376fbbfba66b7e40305c0962e75f681cdd63beb02642bcc5def",
-      "size": 7999
+      "sha256": "a62e7cdf0e32c87c0031d0bc289b7864d6981c255af8055dcf02c70a153e7d61",
+      "size": 9655
     },
     "scripts/session_summary.py": {
       "sha256": "7f86a47cfb75b5340f748176f3cd2ca2242bd568351f241df6b9bbd6da3e66c0",

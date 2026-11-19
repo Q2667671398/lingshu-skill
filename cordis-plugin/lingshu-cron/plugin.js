@@ -15,9 +15,16 @@
 // 注入类（review / check-context）默认也开启，但只在有内容时注入一次，
 // 且可整体关闭（injectReview / waterGuard = false）——
 // 保证不影响"人格/记忆/灵魂 + AI 自主自动化"的主功能。
+//
+// 水位自动执行（v3.44，影子模式 + 显式同意，隐私默认安全）：
+// 75% 做梦 / 90% 封存过去靠"模型自觉"，现在可由 config.json 的 water 段自动执行，
+// 但默认全关：autoDream/autoCapture 及其 consent 都缺省 false，shadow 缺省 true；
+// shadow=true 只记"本来会做什么"，真执行必须 autoXxx && autoXxxConsent 同真且
+// shadow=false。90% 的 capture 永不自动执行（插件拿不到会话原文，绝不自己拼），
+// 只记一条待人工确认的逃生建议并在会话里提醒一次。详见下方 WATER 段注释。
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, rmSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -157,6 +164,118 @@ function dueByDays(task, state) {
   return last !== todayStr()
 }
 
+// ---------------------------------------------------------------- 水位自动执行（影子模式 + 显式同意）
+//
+// 配置在 ~/.brain-memory/config.json 的 water 段（不是本插件的 config——改完
+// 下一个水位档位即刻生效，不用重启宿主）：
+//   "water": {"autoDream": false, "autoDreamConsent": false,
+//             "autoCapture": false, "autoCaptureConsent": false, "shadow": true}
+// 语义（缺省全关，隐私默认安全）：
+//   * autoXxx 与 autoXxxConsent 都缺省 false；shadow 缺省 true；
+//   * shadow=true 时只记"本来会做什么"，绝不真执行；
+//   * 真执行必须 autoXxx && autoXxxConsent 同时为真，且 shadow=false；
+//   * 配置缺 water 段/字段类型不对（非布尔）一律回退上面这套默认值——
+//     宁可不生效，也不从脏配置里"猜"一个 true 出来。
+// 动作：
+//   * 首次跨 75%：满足执行条件就后台跑 dream --auto（沿用 runBrain 的 fire-and-forget，
+//     绝不 await）；否则只写一行影子台账（autoDream 全关时连台账都不写）；
+//   * 首次跨 90%：capture 永不自动执行——capture 要的是会话原文，插件在 pre-step
+//     只拿得到消息与水位、拿不到"原文"，绝不自己拼凑；改为记一条"待人工确认的
+//     逃生建议"并注入提醒一次，只有用户在会话里明确要求才真 capture。
+// 台账：~/.brain-memory/water-auto.jsonl，每行 {ts, level, action, executed, reason}；
+// 超 512KB 轮转为 water-auto.jsonl.1（只留一份旧档，思路同 failures.py）。
+
+const WATER_AUTO_LOG = 'water-auto.jsonl'
+const WATER_AUTO_MAX_BYTES = 512 * 1024
+
+const DEFAULT_WATER = {
+  autoDream: false,
+  autoDreamConsent: false,
+  autoCapture: false,
+  autoCaptureConsent: false,
+  shadow: true,
+}
+
+/** 记忆目录：BRAIN_MEMORY_HOME > ~/.brain-memory/.home 指针 > ~/.brain-memory（与 guard 同口径）。 */
+function memoryHome() {
+  const env = (process.env.BRAIN_MEMORY_HOME || '').trim()
+  if (env) return env
+  const base = join(homedir(), '.brain-memory')
+  try {
+    const ptr = readFileSync(join(base, '.home'), 'utf8').trim()
+    if (ptr) return ptr
+  } catch {} // 没有指针文件就用默认目录
+  return base
+}
+
+/** 只认真正的布尔值：字符串 "true" / 数字 1 这类手写脏值一律回退默认（隐私开关宁可不生效）。 */
+function boolOr(value, dflt) {
+  return typeof value === 'boolean' ? value : dflt
+}
+
+/** 合并默认值与 config.json 的 water 段；water 缺失/非对象/字段非法都回退默认。 */
+function resolveWaterConfig(raw) {
+  const w = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw.water : null
+  const water = w && typeof w === 'object' && !Array.isArray(w) ? w : {}
+  const out = { ...DEFAULT_WATER }
+  for (const key of Object.keys(DEFAULT_WATER)) out[key] = boolOr(water[key], DEFAULT_WATER[key])
+  return out
+}
+
+// config.json 很小，但 pre-step 每步都会问一次：按 mtime 缓存，文件没变不重读。
+// 用户改完配置、mtime 变化后下一次判定即生效（冻结配置会让撤回同意变难）。
+let waterConfigCache = { path: '', mtime: -1, value: DEFAULT_WATER }
+
+function loadWaterAutoConfig() {
+  try {
+    const file = join(memoryHome(), 'config.json')
+    let mtime = -1
+    try { mtime = statSync(file).mtimeMs } catch { mtime = -1 }
+    if (waterConfigCache.path === file && waterConfigCache.mtime === mtime) return waterConfigCache.value
+    let raw = null
+    if (mtime >= 0) {
+      try { raw = JSON.parse(readFileSync(file, 'utf8')) } catch { raw = null } // 坏 JSON 视作没配
+    }
+    const value = resolveWaterConfig(raw)
+    waterConfigCache = { path: file, mtime, value }
+    return value
+  } catch {
+    return { ...DEFAULT_WATER }
+  }
+}
+
+/** 追加一行自动执行台账；超 512KB 先轮转成 water-auto.jsonl.1。台账 IO 失败绝不抛。 */
+function recordWaterAuto(level, action, executed, reason) {
+  try {
+    const file = join(memoryHome(), WATER_AUTO_LOG)
+    mkdirSync(dirname(file), { recursive: true })
+    try {
+      if (existsSync(file) && statSync(file).size > WATER_AUTO_MAX_BYTES) {
+        const old = `${file}.1`
+        try { rmSync(old, { force: true }) } catch {}
+        renameSync(file, old) // 只留一份旧档：失败可见化（failures.py）同款轮转
+      }
+    } catch {} // 轮转失败不拦记账：顶多当前文件继续长大
+    appendFileSync(file, JSON.stringify({
+      ts: new Date().toISOString(),
+      level,                       // 75 | 90
+      action,                      // 'dream --auto' | 'capture'
+      executed: executed === true, // true = 已投递后台执行（fire-and-forget 不回传成败）
+      reason: String(reason || ''), // executed / busy / shadow / no-consent / no-verbatim
+    }) + '\n', 'utf8')
+  } catch {} // 台账本身不能成为故障源
+}
+
+/** 90% 的"待人工确认的逃生建议"：说明为什么不由插件 capture，并给出人工确认后的命令。 */
+function escapeSuggestion(pct, source) {
+  const from = source === 'usage' ? '宿主 usage' : '消息字符估算'
+  return `【灵枢·水位 90% 逃生建议】上下文估算约 ${pct}%（来源：${from}）。`
+    + '封存 capture 需要会话原文，插件拿不到正文、也绝不替你拼凑，所以这里只提醒、不自动执行。'
+    + '请先问用户是否现在封存；用户明确要求后，由你把原文原样贴进命令再跑：'
+    + ' python scripts/brain.py capture "<把原文粘进来>" --tag 逃生 --kind episode'
+    + '（每次会话只提醒这一次；autoCapture 开关只代表"允许考虑自动封存"，但 capture 永不自动调用。）'
+}
+
 // ---------------------------------------------------------------- 子进程（照抄 lingshu-startup 的 spawn 方案）
 
 function runBrain(pythonExe, pythonCmdFallback, brainPy, argv, timeoutMs) {
@@ -241,6 +360,7 @@ export function apply(ctx, config) {
   const convo = new Map()   // agent -> { text, seen }（即记即存缓冲 + 已处理消息游标，extract 成功后清空）
   const lastReply = new Map() // agent -> 最后一条 assistant 文本（给 usage --reply 用）
   const waterState = new Map() // agent -> { max } 水位守卫已提醒的最高档（60/75/90 各提醒一次）
+  const waterAutoState = new Map() // agent -> { max } 水位自动执行已处理到的最高档（75/90 各动作一次）
   let state = loadState(statePath())
 
   // 启动时清理崩溃残留的 extract 明文临时文件（超过 1 天的直接删）
@@ -301,9 +421,10 @@ export function apply(ctx, config) {
     return found
   }
 
-  /** fire-and-forget：绝不 await、失败允许下轮补跑一次（当日仅一次，再败等明天） */
+  /** fire-and-forget：绝不 await、失败允许下轮补跑一次（当日仅一次，再败等明天）。
+   *  返回 false 表示同名任务正在进行、本次没有投递（供水位自动执行如实记账）。 */
   function fire(task) {
-    if (running.has(task.id)) return
+    if (running.has(task.id)) return false
     running.add(task.id)
     ;(async () => {
       try {
@@ -333,6 +454,49 @@ export function apply(ctx, config) {
         running.delete(task.id)
       }
     })()
+    return true
+  }
+
+  /**
+   * 水位自动执行判定（首次跨档才做一次）。纯同步返回要注入的提醒文本（null = 不注入）；
+   * 真执行一律走 fire() 的后台通道，绝不 await。
+   *   - 75%：autoDream && autoDreamConsent && shadow=false → fire `dream --auto`；
+   *          否则若 autoDream 开着，只记影子台账（executed=false，reason=shadow/no-consent）；
+   *          autoDream 关着就什么都不记（缺省全关 = 零副作用）。
+   *   - 90%：capture 永不自动执行——插件拿不到会话原文，绝不自己拼；
+   *          只记 executed=false（reason=no-verbatim）并返回一次"待人工确认的逃生建议"。
+   * 两个 auto 开关都关时整段不判定、不写盘。
+   */
+  function runWaterAuto(agent, pct, source, wcfg) {
+    if (!agent || pct == null) return null
+    const armed = wcfg.autoDream === true || wcfg.autoCapture === true
+    if (!armed) return null // 默认全关：不判定、不写盘
+    const level = pct >= 90 ? 90 : pct >= 75 ? 75 : 0
+    if (!level) return null
+    const st = waterAutoState.get(agent) || { max: 0 }
+    const prev = Number(st.max) || 0
+    if (level <= prev) return null // 档位只推进一次（首次跨 75/90 各做一次）
+    let noticeText = null
+    // 75%：该做梦了。直接从低位跳到 90% 时也补做这一档（prev < 75）。
+    // 复用 turn-stopping 那条任务名 'dream'：全局同一时刻只许一份 dream 在跑
+    // （与轮次驱动的 dream 撞车时返回 busy，如实记 executed=false）。
+    if (level >= 75 && prev < 75 && wcfg.autoDream === true) {
+      const consent = wcfg.autoDreamConsent === true
+      if (consent && wcfg.shadow === false) {
+        const fired = fire({ id: 'dream', argv: ['dream', '--auto'] })
+        recordWaterAuto(75, 'dream --auto', fired, fired ? 'executed' : 'busy')
+      } else {
+        // 影子模式或没给同意：只记"本来会做什么"，不动手
+        recordWaterAuto(75, 'dream --auto', false, consent ? 'shadow' : 'no-consent')
+      }
+    }
+    // 90%：该封存了，但 capture 需要原文 —— 插件永不自动拼，交人工确认。
+    if (level >= 90 && wcfg.autoCapture === true) {
+      recordWaterAuto(90, 'capture', false, 'no-verbatim')
+      noticeText = escapeSuggestion(pct, source)
+    }
+    waterAutoState.set(agent, { max: level })
+    return noticeText
   }
 
   /**
@@ -529,7 +693,25 @@ export function apply(ctx, config) {
       if (!brainPy) return decision
       const pythonExe = findPythonExe(cfg.python)
 
-      // 1) review 提醒：每轮都查（走缓存），有 pending 才注
+      // 0) 水位估算：注入与自动执行共用同一口径（宿主 usage 优先，否则
+      //    「消息字符 + system/工具固定开销」）。只在需要时才算：waterGuard 关闭
+      //    且 water 自动执行全关时，默认零开销。
+      const waterAutoCfg = loadWaterAutoConfig()
+      const waterArmed = waterAutoCfg.autoDream === true || waterAutoCfg.autoCapture === true
+      const est = (cfg.waterGuard || waterArmed) ? estimateWater(agent, decision) : null
+      const pct = est && Number.isFinite(est.pct) ? est.pct : null
+
+      // 1) 水位自动执行（v3.44，默认全关）：放在 review 之前判定——review 有待确认时
+      //    会提前 return，不能让它挡掉「75% 该做梦 / 90% 该逃生」的自动动作。
+      //    真执行走 fire() 的后台通道，绝不 await。
+      try {
+        const autoNotice = runWaterAuto(agent, pct, est?.source || '', waterAutoCfg)
+        if (autoNotice) {
+          decision = { ...decision, messages: [...decision.messages, notice(autoNotice)] }
+        }
+      } catch {} // 自动执行判定异常不能拖住 pre-step
+
+      // 2) review 提醒：每轮都查（走缓存），有 pending 才注
       if (cfg.injectReview) {
         if (Date.now() - reviewCacheAt > cfg.reviewCacheMs) {
           const raw = await runBrain(pythonExe, cfg.python, brainPy, ['review', '--json'], 15000)
@@ -555,12 +737,10 @@ export function apply(ctx, config) {
         }
       }
 
-      // 2) 水位守卫（v3.01 设计 / v3.23 修估算口径）：估算真实水位（宿主 usage 优先，
-      //    否则「消息字符 + system/工具固定开销」），首次跨过 60/75/90 各注入一条带真实数字的提醒。
+      // 3) 水位守卫（v3.01 设计 / v3.23 修估算口径）：用上面算好的 est/pct，
+      //    首次跨过 60/75/90 各注入一条带真实数字的提醒。
       //    另加软自检：每 waterCheckTurns 轮若还没跨阈值，也戳一下，防止估算偏低时永远不响。
       if (cfg.waterGuard) {
-        const est = estimateWater(agent, decision)
-        const pct = est && Number.isFinite(est.pct) ? est.pct : null
         const st = waterState.get(agent) || { max: 0, softAt: -1 }
         if (pct != null) {
           const step = pct >= 90 ? 90 : pct >= 75 ? 75 : pct >= 60 ? 60 : 0

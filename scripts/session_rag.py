@@ -5,11 +5,12 @@
 零依赖：sqlite3 + FTS5 trigram（中文子串可查）。职责很窄：
     init    建库建表
     ingest  把对话 JSONL 增量写进原文库（按内容哈希幂等）
-    search  FTS 检索（返回 id/session/role/ts/text）
+    search  FTS 检索（返回 id/session/role/ts/text；可按 platform/workspace 过滤）
     serve   本地 HTTP：POST /v1/search（附录 B 契约），GET /health
 
-刻意不做：向量、模型挑选、多平台导入（那些是 P1+）。
-它的作用是让 `retriever` 的 session-rag 分支有个真服务可连，先跑通端到端。
+刻意不做：向量、模型挑选。多平台导入由 `session_import.py` 负责（P1），
+本模块只提供写入/检索/统计的窄接口，让 `retriever` 的 session-rag 分支
+有个真服务可连。
 """
 from __future__ import annotations
 
@@ -118,29 +119,51 @@ def ingest_jsonl(file, *, session: str = "", platform: str = "", workspace: str 
                            workspace=workspace, path=path)
 
 
-def search(query: str, k: int = 10, *, path=None) -> list[dict]:
+def _scope_clauses(*, workspace=None, platform=None,
+                   prefix: str = "") -> tuple[str, list]:
+    """构造 platform/workspace 过滤的 SQL 片段（参数化；None/空串 = 不过滤）。"""
+    clauses: list[str] = []
+    params: list = []
+    if platform not in (None, ""):
+        clauses.append(f"{prefix}platform = ?")
+        params.append(str(platform))
+    if workspace not in (None, ""):
+        clauses.append(f"{prefix}workspace = ?")
+        params.append(str(workspace))
+    if not clauses:
+        return "", params
+    return " AND " + " AND ".join(clauses), params
+
+
+def search(query: str, k: int = 10, *, path=None, workspace=None,
+           platform=None) -> list[dict]:
+    """FTS/LIKE 检索；workspace/platform 为可选精确过滤，缺省不过滤（保持旧行为）。"""
     q = str(query or "").strip()
     if not q:
         return []
+    limit = max(1, int(k))
     with connect(path) as conn:
         conn.executescript(SCHEMA)
         # FTS5 trigram 只对 ≥3 字符的词元建索引：中文两字词（"云南"）MATCH 不到，
         # 短查询走 LIKE 兜底（200k 条内可接受；更长的词仍走 FTS 排序）。
         if len(q) < 3:
+            scope, scope_params = _scope_clauses(workspace=workspace, platform=platform)
             rows = conn.execute(
                 "SELECT id, session, platform, workspace, role, ts, text, 0.0 AS score"
-                " FROM messages WHERE text LIKE ? ORDER BY ts DESC LIMIT ?",
-                (f"%{q}%", max(1, int(k)))).fetchall()
+                f" FROM messages WHERE text LIKE ?{scope} ORDER BY ts DESC LIMIT ?",
+                [f"%{q}%", *scope_params, limit]).fetchall()
             return [{"id": r["id"], "session": r["session"], "platform": r["platform"],
                      "workspace": r["workspace"], "role": r["role"], "ts": r["ts"],
                      "text": r["text"], "score": float(r["score"] or 0.0)} for r in rows]
         try:
+            scope, scope_params = _scope_clauses(workspace=workspace, platform=platform,
+                                                 prefix="m.")
             rows = conn.execute(
                 "SELECT m.id, m.session, m.platform, m.workspace, m.role, m.ts, m.text,"
                 " bm25(messages_fts) AS score"
                 " FROM messages_fts JOIN messages m ON m.rowid = messages_fts.rowid"
-                " WHERE messages_fts MATCH ? ORDER BY score LIMIT ?",
-                (q, max(1, int(k)))).fetchall()
+                f" WHERE messages_fts MATCH ?{scope} ORDER BY score LIMIT ?",
+                [q, *scope_params, limit]).fetchall()
         except sqlite3.OperationalError as exc:
             try:
                 import failures
@@ -155,11 +178,17 @@ def search(query: str, k: int = 10, *, path=None) -> list[dict]:
 
 
 def stats(path=None) -> dict:
+    """库概览：总数 + 按 platform/workspace 分组计数（P1 多平台/多工作区可见性）。"""
     with connect(path) as conn:
         conn.executescript(SCHEMA)
         n = conn.execute("SELECT count(*) AS n FROM messages").fetchone()["n"]
         sess = conn.execute("SELECT count(DISTINCT session) AS n FROM messages").fetchone()["n"]
-    return {"messages": n, "sessions": sess, "path": str(path or db_path())}
+        by_platform = {str(r["platform"] or ""): r["n"] for r in conn.execute(
+            "SELECT platform, count(*) AS n FROM messages GROUP BY platform ORDER BY n DESC")}
+        by_workspace = {str(r["workspace"] or ""): r["n"] for r in conn.execute(
+            "SELECT workspace, count(*) AS n FROM messages GROUP BY workspace ORDER BY n DESC")}
+    return {"messages": n, "sessions": sess, "path": str(path or db_path()),
+            "by_platform": by_platform, "by_workspace": by_workspace}
 
 
 def serve(host: str = "127.0.0.1", port: int = 8791, *, path=None) -> None:
