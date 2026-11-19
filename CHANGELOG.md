@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.32（2026-11-19）
+
+- **修：嵌入服务连不上时反复超时 + 刷日志**。Ollama 没起的时候，每次 recall 都会等满 `timeout_sec`（默认 8s）并往 `lingshu.log` 写一条 warn。现在加了**进程内熔断**：
+  - 远端失败 → 冷却 `embed.fail_cooldown_sec`（默认 **300 秒**）内直接走降级向量，不再碰远端、不再重复告警；
+  - 冷却到期自动允许重试；远端成功一次即清零冷却。
+  - 告警文案改为「N 秒内不再重试，先走降级向量」，方便区分「服务挂了」和「本来就没配」。
+- **测试**：新增 `tests/test_embed_circuit.py` 3 项（失败进冷却且不重试、到期可重试、成功清冷却）。
+- 提示：本机装了 Ollama 但没跑、也没拉 `nomic-embed-text`；想用真嵌入就 `ollama serve` + `ollama pull nomic-embed-text`，不想用可以把 `embed.url` 置空（同样走兜底且零日志噪音）。
+
 ## v3.31（2026-11-19）
 
 - **修：`test_session_summary` 在 CI 上必挂**。`dict(**os.environ, BRAIN_MEMORY_HOME=...)` 在宿主已设同名环境变量时抛 `TypeError: multiple values`（GitHub Actions 的 `BRAIN_MEMORY_HOME` 正好会设）；改成先拷贝再赋值，并补 `import os`。本机因为没设该变量所以一直是绿的——属于「只在 CI 暴露」的测试写法问题。

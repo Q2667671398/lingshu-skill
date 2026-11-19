@@ -252,6 +252,9 @@ DEFAULT_CONFIG = {
         "timeout_sec": 8,           # 单次调用超时
         "max_chars": 3000,          # 超过就截断（长记忆全文 embed 慢）
         "batch_size": 8,            # 异步批量写 embedding 时的条数
+        # 连不上嵌入服务时，冷却 N 秒内不再重试：否则每次 recall 都要等满 timeout
+        # 并往 lingshu.log 刷一条 warn（Ollama 没起时最明显）。
+        "fail_cooldown_sec": 300,
         # —— 纯 Python 降级向量兜底（零依赖 hash trick，见 fallback_embed.py）——
         # Ollama 不可用/未配置时自动接管，给语义召回一个纯 stdlib 的 Dense 通道
         "fallback": {
@@ -1687,6 +1690,8 @@ def fallback_encode_cached(text: str, dims: int) -> list | None:
 
 _FB_EMBED_CACHE: dict = {}
 _FB_EMBED_CACHE_MAX = 2000
+# 远端 embedding 失败后的冷却截止（进程内）：连不上就别每次都等满 timeout、刷日志
+_EMBED_DOWN_UNTIL = 0.0
 
 
 def embed_texts(texts: list) -> list | None:
@@ -1695,9 +1700,13 @@ def embed_texts(texts: list) -> list | None:
     返回与 texts 等长的 list[list[float]]；未配置/超时/异常/返回结构不符
     一律静默返回 None——调用方按"无 Dense 能力"降级，不做半吊子混合。
     """
+    global _EMBED_DOWN_UNTIL
     cfg = _embed_cfg()
     if not texts:
         return None
+    # 冷却期：上次连不上远端，这次直接走兜底，不再等满 timeout 也不重复告警
+    if cfg and time.time() < _EMBED_DOWN_UNTIL:
+        cfg = None
     # 未配置真嵌入服务时，先看降级向量兜底能不能接管（embed.fallback 默认开）；
     # 兜底也关了才真正返回 None（调用方按"无 Dense 能力"降级）。
     if not cfg:
@@ -1732,9 +1741,17 @@ def embed_texts(texts: list) -> list | None:
             if not isinstance(vec, list) or not vec:
                 return None
             out.append([float(x) for x in vec])
+        _EMBED_DOWN_UNTIL = 0.0
         return out
     except Exception as exc:
-        log_event("embed", f"embedding 调用失败，尝试降级向量兜底：{exc}", level="warn")
+        _cd = 300.0
+        try:
+            _cd = max(30.0, float((cfg or {}).get("fail_cooldown_sec") or 300))
+        except Exception:
+            pass
+        _EMBED_DOWN_UNTIL = time.time() + _cd
+        log_event("embed", f"embedding 调用失败，{int(_cd)} 秒内不再重试，先走降级向量：{exc}",
+                  level="warn")
     # 降级兜底：真嵌入不可用（未配置/不可达）时用纯 stdlib hash 嵌入接管
     # （config embed.fallback.enabled 默认开）。批量语义：返回等长列表。
     try:
