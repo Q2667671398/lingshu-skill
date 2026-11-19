@@ -155,3 +155,43 @@ def plan_from_report(report: dict, budget: int = 40000, **kwargs) -> dict:
     out["source"] = "injection-report"
     out["source_chars"] = report.get("total_chars")
     return out
+
+
+def compare(report: dict, budget: int | None = None) -> dict:
+    """纯计算：同一份注入包在 legacy / budgeted 两种装配下的字符数对比。
+
+    legacy  = 现在的整段注入（memory.build_injection 的报告 total_chars）；
+    budgeted = 五段式按预算裁剪后（plan_from_report）各段字符数之和。
+
+    返回 {legacy_chars, budgeted_chars, saved_pct, degraded}：
+      saved_pct  省下的字符比例（百分数，保留两位小数；legacy 为 0 时记 0.0）
+      degraded   被裁过的段名，按 SECTIONS 顺序（没裁就是空列表）
+
+    约定：不读盘、不写盘、不改入参、不调模型；budget 缺省用 report 自带预算。
+    只被灰度观测用，不参与真正的装配决策。
+    """
+    rep = report if isinstance(report, dict) else {}
+    b = budget if budget is not None else (rep.get("budget") or 40000)
+    try:
+        b = int(b)
+    except (TypeError, ValueError):
+        b = 40000
+    if b <= 0:
+        b = 1
+    budgeted_plan = plan_from_report(rep, budget=b)
+    blocks = budgeted_plan.get("blocks") or []
+    legacy_chars = rep.get("total_chars")
+    if not isinstance(legacy_chars, int) or legacy_chars < 0:
+        legacy_chars = sum(int((s or {}).get("chars") or 0)
+                           for s in (rep.get("sections") or []))
+    budgeted_chars = sum(int((bl or {}).get("chars") or 0) for bl in blocks)
+    saved_pct = (round((legacy_chars - budgeted_chars) * 100.0 / legacy_chars, 2)
+                 if legacy_chars > 0 else 0.0)
+    degraded = [str(bl.get("name")) for bl in blocks
+                if int((bl or {}).get("trimmed_chars") or 0) > 0]
+    return {
+        "legacy_chars": int(legacy_chars),
+        "budgeted_chars": int(budgeted_chars),
+        "saved_pct": saved_pct,
+        "degraded": degraded,
+    }

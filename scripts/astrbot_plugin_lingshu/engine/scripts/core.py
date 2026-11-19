@@ -189,6 +189,12 @@ DEFAULT_CONFIG = {
     },
     # 检索接入（附录 C P3）：session-rag 服务；留空回退灵枢本地召回
     "session_rag": {"url": "", "timeout": 3, "budget_tokens": 800, "select_model": False},
+    # 上下文装配模式（附录 C P4 灰度）：legacy = 现有整段注入（默认，行为完全不变）；
+    # budgeted = 五段式预算裁剪（assembler.plan_from_report；灰度期只试排、不改实际注入）。
+    "context_mode": "legacy",
+    # P4 A/B 采样记账（scripts/context_ab.py）：enabled=false 时完全不计算、不落盘；
+    # sample = 采样率（0-1，默认 0.1）；log=false 时只算对比、不写 metrics.jsonl。
+    "context_ab": {"enabled": False, "sample": 0.1, "log": True},
     # remember 写入时的正文截断上限（字符）：单条记忆原文最长保留多少。
     "remember_max_chars": 1200,
     # 上下文水位三级防线（比例，0-1）：
@@ -987,8 +993,61 @@ def _held(lock: Path) -> bool:
     return (str(lock), threading.get_ident()) in _HELD_LOCKS
 
 
+# Windows 瞬时占用类错误：杀软/搜索索引器会在文件刚写完的瞬间短暂持有句柄，
+# 读操作被拒通常是瞬时的（短退避重试即过），不能当成"文件不存在"或直接放弃。
+# 5=拒绝访问 32=共享冲突 33=锁冲突 145=目录非空（清理/替换竞态时的表象）。
+_TRANSIENT_IO_WINERRORS = frozenset({5, 32, 33, 145})
+_READ_RETRY_ATTEMPTS = 3      # 读重试次数：3 次短退避，最坏约 0.15s，不拖慢正常读
+_READ_RETRY_DELAY = 0.05      # 首次退避（秒），之后翻倍、封顶 0.5s
+
+
+def _is_transient_io_error(exc: BaseException) -> bool:
+    """是否属于 Windows 瞬时占用类错误（值得重试）；其余错误不重试。"""
+    if isinstance(exc, PermissionError):
+        return True
+    if isinstance(exc, OSError):
+        return getattr(exc, "winerror", None) in _TRANSIENT_IO_WINERRORS
+    return False
+
+
+def _read_jsonl_text(path: Path, attempts: int | None = None,
+                     delay: float | None = None) -> str | None:
+    """读 JSONL 原文：判存在性与读取都带瞬时占用重试。
+
+    返回 None 只代表"文件确实不存在"；"读不到"（瞬时占用重试耗尽）抛异常。
+    旧实现 `if not path.exists(): return []` 会把 Windows 上 stat 被拒的瞬时错误
+    当成文件不存在 → 上层静默读到空库；这里两者必须分开，绝不降级成空列表。
+    """
+    attempts = _READ_RETRY_ATTEMPTS if attempts is None else max(1, int(attempts))
+    delay = _READ_RETRY_DELAY if delay is None else max(0.0, float(delay))
+    last_exc: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            if not path.exists():
+                return None
+            # utf-8-sig：兼容 Windows 编辑器 / 脚本写出的带 BOM 文件，BOM 不该把首行变成"坏行"
+            return path.read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            if not _is_transient_io_error(exc):
+                raise  # 非瞬时错误（文件被删/读取异常等）：原样抛，不掩盖
+            last_exc = exc
+            if attempt + 1 >= attempts:
+                break
+            time.sleep(delay)
+            delay = min(delay * 2, 0.5)
+    # 重试耗尽：仍然是"读不到"，明确抛出并记日志；返回 [] 等于把故障伪装成空库。
+    assert last_exc is not None
+    try:
+        log_event("io", f"读 {path.name} 失败：瞬时占用重试 {attempts} 次仍无果"
+                        f"（{last_exc}），不当作空库", level="error", path=path.name)
+    except Exception:
+        pass  # 日志失败不能盖住真正的读错误
+    raise last_exc
+
+
 def read_jsonl(path: Path) -> list:
-    if not path.exists():
+    raw = _read_jsonl_text(path)
+    if raw is None:
         return []
     out, bad_blocks = [], []
     # 只读环境（E-06）：修不了坏块也无法写 .corrupt，同一坏块每次读取都会重报。
@@ -996,8 +1055,6 @@ def read_jsonl(path: Path) -> list:
     _corrupt_reported: set = getattr(read_jsonl, "_corrupt_reported", None)
     if _corrupt_reported is None:
         _corrupt_reported = read_jsonl._corrupt_reported = set()
-    # utf-8-sig：兼容 Windows 编辑器 / 脚本写出的带 BOM 文件，BOM 不该把首行变成"坏行"
-    raw = path.read_text(encoding="utf-8-sig")
     lines = raw.splitlines()
     i, n = 0, len(lines)
     while i < n:

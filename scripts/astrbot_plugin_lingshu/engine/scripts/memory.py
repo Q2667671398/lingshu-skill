@@ -657,7 +657,16 @@ def mark_reviewed(mem_id: str) -> dict:
     found["review_by_confirmed"] = now_ts()
     if ttl > 0:
         found["review_by"] = int(now_ts() + ttl * DAY)
-    _patch_memory_fields(found)
+    # 落盘成败必须可见：_patch_memory_fields 返回 False = 定向补丁没写成功
+    # （锁内按 id 复读时目标已不在任何层，或磁盘瞬时读不到）。旧实现忽略返回值，
+    # 于是返回"成功形状"的 dict，调用方会打印"已确认复核"而盘上仍是到期态。
+    # 抛 LookupError 而非返回 {"ok": False}：cli.py review-confirm 现有
+    # `except (LookupError, PermissionError)` 能接住并以退出码 1 报错，
+    # 不把失败伪装成成功；真正的写盘异常（PermissionError/OSError）继续原样上抛。
+    if not core._patch_memory_fields(found):
+        raise LookupError(
+            f"复核确认未落盘：目标记忆 {mid} 在写入时已找不到"
+            "（可能已被删除/归档，或磁盘暂时读不到，请稍后重试）。")
     log_event("memory", f"事实复核确认：{mid}")
     return found
 

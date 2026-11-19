@@ -1311,6 +1311,12 @@ def _main(argv=None) -> int:
     p_fail.add_argument("--recent", type=int, default=0, help="改看最近 N 条原始记录")
     p_fail.add_argument("--json", action="store_true")
 
+    # P4 灰度：上下文装配 A/B 采样记账的只读聚合（默认 context_ab.enabled=false，无样本也正常退出 0）
+    p_ab = sub.add_parser("ab-stats",
+                          help="上下文装配 A/B：近 N 天节省比例聚合（样本数 / 均值 / p50 / p95 / 按 mode）")
+    p_ab.add_argument("--days", type=float, default=7, help="回看天数（默认 7）")
+    p_ab.add_argument("--json", action="store_true", help="输出机器可读 JSON（只读聚合）")
+
     # 附录 B P0：跨会话原文检索服务（SQLite + FTS5 trigram）
     p_rag = sub.add_parser("rag", help="检索服务：init/ingest/search/stats/serve（SQLite + FTS5 trigram）")
     p_rag.add_argument("action", choices=["init", "ingest", "search", "stats", "serve"])
@@ -1332,7 +1338,7 @@ def _main(argv=None) -> int:
 
     # 附录 C P2 收尾：触发 + 落盘 + 回滚
     p_ss = sub.add_parser("session-summary",
-                          help="会话摘要：触发判断 / 生成落盘 / 查看 / 回滚（每 N 轮或水位≥60%）")
+                          help="会话摘要：触发判断 / 生成落盘 / 查看 / 回滚（每 N 轮或水位≥60%%）")
     p_ss.add_argument("action", nargs="?", default="build", choices=["build", "show", "rollback"])
     p_ss.add_argument("--input", default="", help="对话文件（.jsonl/.json），build 用")
     p_ss.add_argument("--pct", type=float, default=None, help="当前水位百分比（如 65）")
@@ -2137,6 +2143,29 @@ def _main(argv=None) -> int:
         over = rep["total_tokens"] > budget
         print(f"预算 {budget} tokens：{'超限 ⚠' if over else '未超限 ✅'}"
               f"（余量 {budget - rep['total_tokens']} tokens）")
+        return 0
+
+    if args.cmd == "ab-stats":
+        # P4 灰度骨架：只读聚合 metrics.jsonl 的 context_ab 采样行；不写盘、不碰每日 metrics 行。
+        import context_ab
+        rep = context_ab.summary(args.days)
+        rep["context_mode"] = context_ab.context_mode()
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0
+        print(f"上下文装配 A/B（近 {rep['window_days']:g} 天，当前模式 {rep['context_mode']}）："
+              f"{rep['total']} 个样本")
+        if not rep["total"]:
+            print("（没有样本：config.context_ab.enabled=true 且命中采样率才会记账；"
+                  "默认关闭，不影响正常注入）")
+            return 0
+        print(f"  节省比例：均值 {rep['mean_saved_pct']}% · p50 {rep['p50_saved_pct']}% · "
+              f"p95 {rep['p95_saved_pct']}%")
+        print(f"  token：legacy 均值 {rep['mean_legacy_tokens']} → "
+              f"budgeted 均值 {rep['mean_budgeted_tokens']}")
+        for _mode, st in rep["by_mode"].items():
+            print(f"  - {_mode}：{st['count']} 个 · 均值 {st['mean_saved_pct']}% · "
+                  f"p50 {st['p50_saved_pct']}% · p95 {st['p95_saved_pct']}%")
         return 0
 
     if args.cmd == "failures":

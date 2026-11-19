@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.41（2026-11-19）
+
+> 主题：**修两个真 bug + P4 灰度骨架**。
+
+- **read_jsonl 瞬时读失败**：新增 `_read_jsonl_text()`，存在性判断与读取都在重试范围内（仅 PermissionError/WinError 5/32/33/145，3 次指数退避）；真不存在仍返回 `[]`，重试耗尽**明确抛出**而不是静默空库；JSON 坏行宽容策略不变。
+- **mark_reviewed 落盘失败**：检查 `_patch_memory_fields()` 返回值，失败抛 `LookupError`（cli 既有 `except LookupError` 分支会友好报错并返回 1），不再返回成功形状；成功路径不变。
+- **P4 灰度骨架**：config 新增 `context_mode`（默认 `legacy`）与 `context_ab`（默认关闭）；`assembler.compare()` 纯计算新旧预算差；`scripts/context_ab.py` 采样记账到 `metrics.jsonl`（512KB 轮转、默认 enabled=false 时零写盘）；CLI `ab-stats [--days 7] [--json]`。
+- **顺手修**：`brain.py --help` 因 session-summary help 里裸 `%` 崩（argparse 格式化），改 `60%%`；AST 扫全文件 argparse 字符串，裸 `%` 仅此 1 处。
+- 测试：`test_read_write_robustness.py` 7 项、`test_context_ab.py` 7 项；全量 29 文件**连跑 5 轮 0 失败**。
+
 ## v3.40（2026-11-19）
 
 > 主题：**模块化第二/三步 + 测试隔离清扫**（三个并行任务）。
