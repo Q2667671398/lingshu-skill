@@ -4223,6 +4223,25 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
         report.update({"sections": sections, "total_chars": total_chars,
                        "total_tokens": total_tokens, "budget": budget,
                        "chars_per_token": ratio})
+        # P4 灰度记账接线（本轮只记账、不切换装配）：report 刚汇总完，用它的分段账单
+        # 试排一次五段式计划，按采样率落一条 metrics.jsonl。默认 enabled=false 时
+        # 只做一次开关判断就返回——连 plan 都不算，零写盘；enabled 才 import/试排，
+        # 失败一律吞掉并记 failures，绝不把观测代码变成装配故障源。
+        # mode 记 config.context_mode（灰度目标模式，ab-stats 按它分组）：真实装配
+        # 仍是 legacy，哪怕 context_mode=budgeted 注入文本也不会变，只换记账标签。
+        try:
+            import context_ab as _ab
+            import assembler as _asm
+            if not READONLY and _ab._ab_cfg(cfg).get("enabled"):
+                _ab_budget = report.get("budget") or budget
+                _ab_plan = _asm.plan_from_report(report, budget=_ab_budget)
+                _ab.record(_ab.context_mode(cfg), report, _ab_plan, cfg=cfg)
+        except Exception as _ab_exc:  # noqa: BLE001
+            try:
+                import failures
+                failures.record("context_ab", f"{type(_ab_exc).__name__}: {_ab_exc}")
+            except Exception:
+                pass
     # 五-D/候选1：本次渲染结果落会话快照（READONLY 下 _inject_cache_save 自行跳过）
     # v3.24：渲染过程本身可能写盘（衰减/晋升/每日状态），开始时的键到结尾就过期了。
     # 用「渲染后」的状态重算键再存，下一次调用一开始就能命中；改动前的键只用于读。

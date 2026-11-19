@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.42（2026-11-19）
+
+> 主题：**P4 灰度真正接线**——`context_ab.record()` 从"有模块没人调"变成注入路径真实采样。
+
+- `scripts/memory.py::build_injection(report=...)` 汇总 report 后接一次 `context_ab.record()`：
+  - 默认 `context_ab.enabled=false` 时**不算 plan、不写盘**（连 `plan_from_report` 都不调用，有 spy 断言）；
+  - `READONLY` 下不记观测账本；
+  - 整段 fail-open，异常记 `failures` 后吞掉，不影响注入。
+- **本轮只记账、不切换装配**：`context_mode=budgeted` 只改记账标签，注入文本仍走 legacy（测试用固定输入逐字节对比三次注入一致）。
+- 测试：`tests/test_context_ab_wiring.py` 5 项（默认零写盘、sample=1 记录字段、budgeted 只换标签、异常吞掉+记账、注入文本不变）；全量 30 文件全过。
+- 已知边界：`startup`/`inject` 走 `build_injection()` 不传 report，暂不采样；要让主会话也采样需在 `cmd_startup` 传 report（下一步）。
+
 ## v3.41（2026-11-19）
 
 > 主题：**修两个真 bug + P4 灰度骨架**。
