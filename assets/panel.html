@@ -5118,6 +5118,11 @@ setTimeout(() => checkUpdate(true), 1200);
         var e = d.guard.events[d.guard.events.length - 1];
         rows.appendChild(row("最近鉴权", (e.action || "") + " · " + (e.tool || "") + " · " + (e.sender || "")));
       }
+      if (d.failures && d.failures.total) {
+        var f = d.failures.top && d.failures.top[0];
+        rows.appendChild(row("近24h异常", d.failures.total + " 次" +
+          (f ? (" · " + f.kind + " ×" + f.count) : "")));
+      }
       if (res.warnings && res.warnings.length) rows.appendChild(row("降级", res.warnings.join("；")));
       if (!rows.children.length) rows.appendChild(el("div","ls-empty","暂无更多数据"));
     } catch (err) {

@@ -191,7 +191,13 @@ def openai_chat(prompt: str, cfg: dict, timeout: float | None = None) -> str | N
             data = json.loads(r.read().decode("utf-8", "replace"))
         content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content")
         return str(content or "").strip() or None
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        try:
+            import failures
+            failures.record("summary.model", f"{type(exc).__name__}: {exc}",
+                            ctx={"base_url": base, "model": model})
+        except Exception:
+            pass
         return None
 
 

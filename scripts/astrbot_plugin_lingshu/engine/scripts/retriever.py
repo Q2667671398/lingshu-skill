@@ -73,7 +73,13 @@ def http_search(query: str, k: int = 20, *, cfg: dict | None = None, call=None,
             data = json.loads(r.read(2 * 1024 * 1024).decode("utf-8", "replace"))
         rows = data.get("results") if isinstance(data, dict) else data
         return _normalize(rows)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        try:
+            import failures
+            failures.record("retriever.session_rag", f"{type(exc).__name__}: {exc}",
+                            ctx={"url": url})
+        except Exception:
+            pass
         return None
 
 

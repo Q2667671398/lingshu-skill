@@ -59,6 +59,9 @@ def test_log_rotation_chain_capped_at_3():
 def test_read_logs_merges_rotated():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         _setup_home(Path(td))
+        # 显式锁定日志路径：_setup_home 只保证 HOME 切换，LOG_FILE 若还指着上一个
+        # 已删除的临时目录，这个用例会变成"偶发丢行"（v3.37 测试隔离修复）。
+        core.LOG_FILE = Path(td) / "lingshu.log"
         core.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         # 新文件 1 条，.1 两条（旧的）
         core.LOG_FILE.write_text(json.dumps({"kind": "t", "level": "info", "msg": "new"}, ensure_ascii=False) + "\n",

@@ -141,7 +141,13 @@ def search(query: str, k: int = 10, *, path=None) -> list[dict]:
                 " FROM messages_fts JOIN messages m ON m.rowid = messages_fts.rowid"
                 " WHERE messages_fts MATCH ? ORDER BY score LIMIT ?",
                 (q, max(1, int(k)))).fetchall()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            try:
+                import failures
+                failures.record("session_rag.search", f"{type(exc).__name__}: {exc}",
+                                ctx={"q": q})
+            except Exception:
+                pass
             return []
     return [{"id": r["id"], "session": r["session"], "platform": r["platform"],
              "workspace": r["workspace"], "role": r["role"], "ts": r["ts"],

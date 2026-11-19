@@ -82,12 +82,17 @@ def _embed() -> dict:
             "cooldown_sec": left}
 
 
+def _failures() -> dict:
+    import failures
+    return failures.summarize(1)
+
+
 def build(light: bool = False) -> dict:
     """light=True 跳过最重的上下文账单（面板自动刷新时用）。"""
     warnings = []
     data = {"version": _version()}
     for name, fn in (("context", _context), ("rag", _rag), ("checkpoints", _checkpoints),
-                     ("guard", _guard), ("embed", _embed)):
+                     ("guard", _guard), ("embed", _embed), ("failures", _failures)):
         if name == "context" and light:
             continue
         try:
@@ -95,4 +100,9 @@ def build(light: bool = False) -> dict:
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"{name}: {type(exc).__name__}: {exc}")
             data[name] = None
+            try:
+                import failures
+                failures.record("insights." + name, f"{type(exc).__name__}: {exc}")
+            except Exception:
+                pass
     return {"ok": True, "ts": int(time.time()), "data": data, "warnings": warnings}

@@ -1304,6 +1304,13 @@ def _main(argv=None) -> int:
                        help="预算 token 数（缺省用 config budget_tokens）")
     p_cst.add_argument("--query", default="", help="按指定查询生成注入包（缺省为 startup 注入包）")
 
+    # 失败可见化：被 fail-open 吞掉的异常账本
+    p_fail = sub.add_parser("failures", help="失败可见化：最近被吞掉的异常按类聚合（每 512KB 自动轮转）")
+    p_fail.add_argument("--days", type=float, default=7, help="回看天数（默认 7）")
+    p_fail.add_argument("--top", type=int, default=10, help="最多列多少类（默认 10）")
+    p_fail.add_argument("--recent", type=int, default=0, help="改看最近 N 条原始记录")
+    p_fail.add_argument("--json", action="store_true")
+
     # 附录 B P0：跨会话原文检索服务（SQLite + FTS5 trigram）
     p_rag = sub.add_parser("rag", help="检索服务：init/ingest/search/stats/serve（SQLite + FTS5 trigram）")
     p_rag.add_argument("action", choices=["init", "ingest", "search", "stats", "serve"])
@@ -2130,6 +2137,28 @@ def _main(argv=None) -> int:
         over = rep["total_tokens"] > budget
         print(f"预算 {budget} tokens：{'超限 ⚠' if over else '未超限 ✅'}"
               f"（余量 {budget - rep['total_tokens']} tokens）")
+        return 0
+
+    if args.cmd == "failures":
+        import failures
+        rep = ({"recent": failures.recent(args.recent)} if args.recent
+               else failures.summarize(args.days, args.top))
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0
+        if args.recent:
+            for r in rep["recent"]:
+                print(f"[{time.strftime('%m-%d %H:%M', time.localtime(r.get('ts', 0)))}] "
+                      f"{r.get('kind')} · {r.get('msg')}")
+            return 0
+        print(f"近 {rep['window_days']:g} 天被吞掉的异常：{rep['total']} 次"
+              + (f"（{', '.join(f'{k}={v}' for k, v in rep['by_kind'].items())}）"
+                 if rep["by_kind"] else ""))
+        for g in rep["top"]:
+            when = time.strftime('%m-%d %H:%M', time.localtime(g["last_ts"]))
+            print(f"- {g['kind']} ×{g['count']}（最近 {when}）：{g['sample'][:100]}")
+        if not rep["top"]:
+            print("（没有记录：要么真的没出错，要么还没接 failures.record）")
         return 0
 
     if args.cmd == "rag":

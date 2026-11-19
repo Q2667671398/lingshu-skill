@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v3.36**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.37**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -583,6 +583,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | 会话模式 | `mode show\|work\|human\|auto\|explain "一句话话题"`（工程会话自动隔离情绪；explain 看 auto 判定依据） |
 | 记忆关联 | `assoc link <idA> <idB> --relation 因果 --why "..."\|unlink <idA> <idB>\|of <id>\|auto [--dry-run]\|graph --limit 300` |
 | 运行日志 | `logs [--limit 20] [--level warn\|error] [--all]`（锁冲突/异常/解析报错，面板「日志」页同款） |
+| 失败账本 | `failures [--days 7] [--top 10] [--recent N] [--json]`（被 fail-open 吞掉的异常按类聚合；面板洞察里也显示近 24h 次数） |
 | 审核闸 | `review [--json]` / `review confirm <id>` / `review discard <id>`（记忆 m_* 与知识 k_* 通用） |
 | 用户规则 | `user-rules show\|add <规则>\|clear`（写在数据目录 lingshu.user.md，更新永不覆盖，每会话自动注入） |
 | 自查 | `audit [--json]`（待审计数 + 冲突记忆 + 该做什么） |

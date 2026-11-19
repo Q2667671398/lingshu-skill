@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.37（2026-11-19）
+
+> 主题：**失败可见化**——autid 里 `except Exception` 835 处、`except: pass` 294 处，fail-open 是设计，但"吞了多少"要能看见。
+
+- **新增 `scripts/failures.py`**：`record()` 把被吞掉的异常追加到 `~/.brain-memory/failures.jsonl`（超 512KB 自动轮转为 `.1`），`summarize(days)` 按「kind + 归一化消息（数字/hex/路径压成占位符）」聚合出次数、最近时间和样本；本身 fail-open，绝不再抛。
+- **接入点（首批）**：`retriever` 的 session-rag 请求失败、`summarizer` 的模型调用失败、`session_rag` 的 FTS 查询异常、`insights` 各块降级——都改成"吞掉同时记账"。
+- **新增 `failures` 命令**：`--days/--top/--recent/--json`；面板「运行洞察」加「近24h异常」一行，`/api/insights` 多返回 `failures` 块。
+- **测试**：`tests/test_failures.py` 5 项（记录与归一化聚合、时间窗、轮转、insights 集成、CLI JSON）。
+- 说明：这是第一步——只覆盖新模块的关键吞错点；存量 294 处按模块逐步接，不要一次全改（会淹没在噪音里）。
+
 ## v3.36（2026-11-19）
 
 > 主题：**面板增强**——加一个不改动既有结构的「运行洞察」浮窗，补主题/密度/刷新自定义。
