@@ -1304,6 +1304,17 @@ def _main(argv=None) -> int:
                        help="预算 token 数（缺省用 config budget_tokens）")
     p_cst.add_argument("--query", default="", help="按指定查询生成注入包（缺省为 startup 注入包）")
 
+    # 附录 B P0：跨会话原文检索服务（SQLite + FTS5 trigram）
+    p_rag = sub.add_parser("rag", help="检索服务：init/ingest/search/stats/serve（SQLite + FTS5 trigram）")
+    p_rag.add_argument("action", choices=["init", "ingest", "search", "stats", "serve"])
+    p_rag.add_argument("arg", nargs="?", default="", help="ingest 的文件 / search 的关键词")
+    p_rag.add_argument("--session", default="", help="ingest 时的会话名（默认文件名）")
+    p_rag.add_argument("--platform", default="", help="平台标记（dsh/openwebui/…）")
+    p_rag.add_argument("--workspace", default="", help="工作区路径或名字")
+    p_rag.add_argument("--k", type=int, default=10, help="search 返回条数")
+    p_rag.add_argument("--port", type=int, default=8791, help="serve 端口（仅 127.0.0.1）")
+    p_rag.add_argument("--json", action="store_true")
+
     # 任务收尾清点：用 git 证据写一条 episode（不重复写）
     p_ck = sub.add_parser("checkpoint", help="任务/项目收尾清点：用 git 证据写一条收尾记忆（幂等）")
     p_ck.add_argument("--repo", default="", help="仓库路径（默认当前目录）")
@@ -2119,6 +2130,35 @@ def _main(argv=None) -> int:
         over = rep["total_tokens"] > budget
         print(f"预算 {budget} tokens：{'超限 ⚠' if over else '未超限 ✅'}"
               f"（余量 {budget - rep['total_tokens']} tokens）")
+        return 0
+
+    if args.cmd == "rag":
+        import session_rag
+        if args.action == "init":
+            rep = session_rag.init_db()
+        elif args.action == "ingest":
+            if not args.arg:
+                print("[错误] ingest 需要一个 .jsonl 文件", file=sys.stderr)
+                return 2
+            rep = session_rag.ingest_jsonl(args.arg, session=args.session,
+                                           platform=args.platform, workspace=args.workspace)
+        elif args.action == "search":
+            rows = session_rag.search(args.arg, args.k)
+            if args.json:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+                return 0 if rows else 1
+            print(f"检索「{args.arg}」→ {len(rows)} 条")
+            for r in rows:
+                print(f"- [{r['session']}/{r['role']}] {r['text'][:120]}")
+            return 0 if rows else 1
+        elif args.action == "serve":
+            print(f"检索服务：http://127.0.0.1:{args.port}（POST /v1/search，GET /health）")
+            session_rag.serve(port=args.port)
+            return 0
+        else:
+            rep = session_rag.stats()
+        print(json.dumps(rep, ensure_ascii=False, indent=2) if args.json
+              else f"OK {rep}")
         return 0
 
     if args.cmd == "checkpoint":

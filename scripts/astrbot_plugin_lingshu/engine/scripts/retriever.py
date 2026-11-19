@@ -69,7 +69,8 @@ def http_search(query: str, k: int = 20, *, cfg: dict | None = None, call=None,
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout or float(c.get("timeout") or 3)) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
+            # 响应上限 2MB：服务异常/恶意代理返回超大 body 时不能把内存打满
+            data = json.loads(r.read(2 * 1024 * 1024).decode("utf-8", "replace"))
         rows = data.get("results") if isinstance(data, dict) else data
         return _normalize(rows)
     except Exception:

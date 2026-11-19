@@ -73,13 +73,22 @@ def normalize_turns(raw) -> list[dict]:
 
 
 def load_turns(path) -> list[dict]:
-    """读 .jsonl（每行一条）或 .json（数组 / {messages:[...]}）。"""
+    """读 .jsonl（每行一条）或 .json（数组 / {messages:[...]}）。
+
+    上限保护：导出文件可能几百 MB（整个账号的聊天记录），全量读进内存会炸。
+    这里只读前 64MB / 20 万行，超出截断并继续——摘要本来也不需要全量。
+    """
     from pathlib import Path
     p = Path(path)
-    text = p.read_text(encoding="utf-8-sig", errors="replace")
+    MAX_BYTES = 64 * 1024 * 1024
+    MAX_LINES = 200_000
+    raw = p.read_bytes()
+    if len(raw) > MAX_BYTES:
+        raw = raw[:MAX_BYTES]
+    text = raw.decode("utf-8-sig", errors="replace")
     if p.suffix.lower() == ".jsonl":
         rows = []
-        for line in text.splitlines():
+        for line in text.splitlines()[:MAX_LINES]:
             line = line.strip()
             if not line:
                 continue

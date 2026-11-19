@@ -1,5 +1,19 @@
 # 更新日志
 
+## v3.35（2026-11-19）
+
+> 主题：**附录 B 的检索服务本体（P0 最小实现）** + 审计里查到的两处健壮性修复。
+
+- **新增 `scripts/session_rag.py`**（零依赖：sqlite3 + FTS5 trigram）：
+  - `rag init|ingest|search|stats|serve` 五个动作；
+  - 按内容哈希幂等入库；`ingest` 支持 `.jsonl`（每行一条）；
+  - 中文子串可查；**两字中文词走 LIKE 兜底**——FTS5 trigram 只索引 ≥3 字符词元，"云南"这类两字查询 MATCH 不到（审计实测发现并修）；
+  - `serve`：`127.0.0.1:8791` 上提供 `POST /v1/search` + `GET /health`（附录 B 契约，供 `retriever` 的 `session_rag.url` 用）；
+  - 测试：`tests/test_session_rag.py` 5 项。
+- **健壮性修复（审计）**：
+  - `summarizer.load_turns` 加读取上限（64MB / 20 万行）——账号级导出几百 MB，全量读进内存会炸；
+  - `retriever.http_search` 响应上限 2MB——异常服务/代理返回超大 body 时不能把内存打满。
+
 ## v3.34（2026-11-19）
 
 > 主题：**任务/项目收尾清点**——解决"过程记得零碎、收尾状态没记住"。
