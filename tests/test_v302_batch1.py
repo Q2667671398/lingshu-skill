@@ -15,6 +15,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ 公共测试工具（瞬时 IO 重试）
+from io_retry_util import run_with_io_retry  # noqa: E402
+
 import brain  # noqa: E402,F401  # 入口合并：把 core/memory/... 命名空间互相同步
 import cli  # noqa: E402
 import core  # noqa: E402
@@ -187,7 +190,7 @@ if __name__ == "__main__":
     failed = 0
     for fn in fns:
         try:
-            fn()
+            run_with_io_retry(fn)
             print(f"  ✓ {fn.__name__}")
         except Exception as exc:
             failed += 1

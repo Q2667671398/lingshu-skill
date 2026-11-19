@@ -1628,25 +1628,12 @@ def _sync_state() -> None:
 # 配置来源：环境变量 LINGSHU_EMBED_URL / LINGSHU_RERANK_URL 优先，config.json 的
 # embed.url / rerank.url 兜底；任一为空白即整体禁用，调用方拿到 None 走原逻辑。
 # 网络调用全部用标准库 urllib，任何超时/异常一律静默返回 None，绝不阻断主链路。
-
-def _embed_cfg() -> dict | None:
-    """读 embed 配置；url 空白（未配置）返回 None。"""
-    url = os.environ.get("LINGSHU_EMBED_URL", "").strip()
-    try:
-        cfg = load_config().get("embed") or {}
-    except Exception:
-        cfg = {}
-    if not url:
-        url = str(cfg.get("url") or "").strip()
-    if not url:
-        return None
-    return {
-        "url": url,
-        "model": str(cfg.get("model") or "nomic-embed-text"),
-        "timeout_sec": float(cfg.get("timeout_sec") or 8),
-        "max_chars": int(cfg.get("max_chars") or 3000),
-        "batch_size": int(cfg.get("batch_size") or 8),
-    }
+#
+# embedding 主体（_embed_cfg / fallback_encode_cached / embed_texts）已拆到
+# mem_embed.py，本模块末尾 `from mem_embed import *` 保留全部调用面。
+# 熔断状态仍留在 core：它是进程内可变全局，insights 面板与测试按
+# core._EMBED_DOWN_UNTIL 直接读写，mem_embed 里也经 core.* 访问同一份值。
+_EMBED_DOWN_UNTIL = 0.0
 
 
 def _rerank_cfg() -> dict | None:
@@ -1666,108 +1653,6 @@ def _rerank_cfg() -> dict | None:
         "timeout_sec": float(cfg.get("timeout_sec") or 8),
         "top_n": int(cfg.get("top_n") or 20),
     }
-
-
-def fallback_encode_cached(text: str, dims: int) -> list | None:
-    """fallback_embed.encode 的进程内 LRU 缓存（查询/旧记忆在线编码时避免重复 hash）。
-    任何异常返回 None，不炸。"""
-    global _FB_EMBED_CACHE
-    try:
-        key = (dims, str(text or ""))
-        hit = _FB_EMBED_CACHE.get(key)
-        if hit is not None:
-            return hit
-        import fallback_embed
-        v = fallback_embed.encode(text, dims)
-        if v is not None:
-            if len(_FB_EMBED_CACHE) >= _FB_EMBED_CACHE_MAX:
-                _FB_EMBED_CACHE.clear()   # 简单粗暴防膨胀；缓存命中是纯优化，丢了不伤正确性
-            _FB_EMBED_CACHE[key] = v
-        return v
-    except Exception:
-        return None
-
-
-_FB_EMBED_CACHE: dict = {}
-_FB_EMBED_CACHE_MAX = 2000
-# 远端 embedding 失败后的冷却截止（进程内）：连不上就别每次都等满 timeout、刷日志
-_EMBED_DOWN_UNTIL = 0.0
-
-
-def embed_texts(texts: list) -> list | None:
-    """批量生成 embedding（Ollama /api/embeddings）。
-
-    返回与 texts 等长的 list[list[float]]；未配置/超时/异常/返回结构不符
-    一律静默返回 None——调用方按"无 Dense 能力"降级，不做半吊子混合。
-    """
-    global _EMBED_DOWN_UNTIL
-    cfg = _embed_cfg()
-    if not texts:
-        return None
-    # 冷却期：上次连不上远端，这次直接走兜底，不再等满 timeout 也不重复告警
-    if cfg and time.time() < _EMBED_DOWN_UNTIL:
-        cfg = None
-    # 未配置真嵌入服务时，先看降级向量兜底能不能接管（embed.fallback 默认开）；
-    # 兜底也关了才真正返回 None（调用方按"无 Dense 能力"降级）。
-    if not cfg:
-        try:
-            import fallback_embed
-            fb = fallback_embed.cfg()
-        except Exception:
-            fb = None
-        if not fb:
-            return None
-        out = []
-        for t in texts:
-            v = fallback_encode_cached(str(t or "")[:3000], fb["dims"])
-            if v is None:
-                return None    # 批量里有空文本等坏输入：整体按"无向量"处理
-            out.append(v)
-        return out
-    import urllib.request  # 标准库，延迟 import：不用 Dense 时不付加载成本
-    out = []
-    try:
-        for t in texts:
-            body = json.dumps({
-                "model": cfg["model"],
-                "prompt": str(t or "")[: cfg["max_chars"]],
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                cfg["url"], data=body,
-                headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=cfg["timeout_sec"]) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            vec = data.get("embedding")
-            if not isinstance(vec, list) or not vec:
-                return None
-            out.append([float(x) for x in vec])
-        _EMBED_DOWN_UNTIL = 0.0
-        return out
-    except Exception as exc:
-        _cd = 300.0
-        try:
-            _cd = max(30.0, float((cfg or {}).get("fail_cooldown_sec") or 300))
-        except Exception:
-            pass
-        _EMBED_DOWN_UNTIL = time.time() + _cd
-        log_event("embed", f"embedding 调用失败，{int(_cd)} 秒内不再重试，先走降级向量：{exc}",
-                  level="warn")
-    # 降级兜底：真嵌入不可用（未配置/不可达）时用纯 stdlib hash 嵌入接管
-    # （config embed.fallback.enabled 默认开）。批量语义：返回等长列表。
-    try:
-        import fallback_embed  # 同目录模块，零依赖
-        fb = fallback_embed.cfg()
-        if fb:
-            out = []
-            for t in texts:
-                v = fallback_encode_cached(str(t or "")[:3000], fb["dims"])
-                if v is None:
-                    return None    # 批量里有空文本等坏输入：整体按"无向量"处理
-                out.append(v)
-            return out
-    except Exception:
-        pass
-    return None
 
 
 def rerank_docs(query: str, docs: list, top_n: int | None = None) -> list | None:
@@ -1809,5 +1694,11 @@ def rerank_docs(query: str, docs: list, top_n: int | None = None) -> list | None
         log_event("rerank", f"reranker 调用失败，退回加权合并：{exc}", level="warn")
         return None
 
+
+# ---------------------------------------------------------------- 拆分模块 re-export
+# embedding 实现已拆到 mem_embed.py：star-import 回来，保持 core.embed_texts /
+# core._embed_cfg / `from core import *` 的调用面完全不变（下划线名字靠
+# mem_embed.__all__ 显式导出，否则 star-import 不会带过去）。
+from mem_embed import *  # noqa: E402,F401,F403
 
 __all__ = [k for k in dict(globals()) if not k.startswith("__")]

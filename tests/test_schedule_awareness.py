@@ -111,6 +111,6 @@ if __name__ == '__main__':
     test_safe_label()
     test_human_cron()
     test_format_schedule_filtering()
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         test_load_cron_jobs_readonly(Path(d))
     print('ALL PASS')

@@ -19,6 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ 公共测试工具（瞬时 IO 重试）
+from io_retry_util import run_with_io_retry  # noqa: E402
+
 import brain  # noqa: E402,F401
 import checkpoint as ck  # noqa: E402
 import core  # noqa: E402
@@ -142,7 +145,7 @@ if __name__ == "__main__":
     failed = 0
     for fn in fns:
         try:
-            fn()
+            run_with_io_retry(fn)
             print(f"PASS {fn.__name__}")
         except AssertionError as exc:
             failed += 1

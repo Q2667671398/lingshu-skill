@@ -1,12 +1,12 @@
 {
-  "version": "3.39",
+  "version": "3.40",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "bd9775a0ae926cb01d8919786d583866f2629099eac14b97135120ff0ee3a65d",
-      "size": 190726
+      "sha256": "555c76bd118823d9c961c5607e56702e2efca72dce306e3af982fbafb34c6392",
+      "size": 192252
     },
     "README.md": {
-      "sha256": "a43f089f808da10daa06245c09376f99d0c3d4b4f55ecc03641948091f0b2c15",
+      "sha256": "17cc7481e345ee4b3d50dca72d49653a73f80db0371347e6ffaf7301a791ccf2",
       "size": 62363
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "ed2aaa10aa6e053efb944efce6e1970cf27332347cd31d99d7bc35351edf6b54",
+      "sha256": "b2bf0e6dc81c07955e21f1c96a15617202bf47c63829e133df8a308e7a885c28",
       "size": 33614
     },
     "assets/panel.html": {
@@ -98,7 +98,7 @@
       "size": 5219
     },
     "package.json": {
-      "sha256": "0baf238fd3f7af7c302146341036d0e21ad8a177377e1d595d490a8de659353e",
+      "sha256": "2f73bcc0567de6bdb871658ccc779d9d948c7ec19b7b12b2ea8355c04bcded7a",
       "size": 860
     },
     "scripts/assembler.py": {
@@ -130,8 +130,8 @@
       "size": 243011
     },
     "scripts/core.py": {
-      "sha256": "578c876318dee918ba8e6487b3c3dae795c1ab731f912f434dd767b8df1fe29e",
-      "size": 80331
+      "sha256": "10755532854482080e55e889768af66b6654a45b7b6b0a010bec87460acf9c92",
+      "size": 76409
     },
     "scripts/dream.py": {
       "sha256": "e25749c32fe6cb3b3845c9541ef663dffe8efaa0d9bd251f611e1359208800b9",
@@ -177,9 +177,17 @@
       "sha256": "825de9096245a45f115ab4fdb15eb5b13fc47edb952529b948764b6dafe979b2",
       "size": 10236
     },
+    "scripts/mem_embed.py": {
+      "sha256": "9ac5caa55e7ce26fa1d572c35b55f8e13e921a56165218ce354cb4a9b745f81d",
+      "size": 6355
+    },
+    "scripts/mem_score.py": {
+      "sha256": "95dcecba5f4db7c0c16ebc415434e1cb58cc7dd8b8213360b4df36e2a90faf6e",
+      "size": 9208
+    },
     "scripts/memory.py": {
-      "sha256": "3495f7b79e0043aa49be8c8f91f353d72917deb02babaca9992ac4cfadcf969c",
-      "size": 220897
+      "sha256": "e482015866b23b237a091be8613bd05d37052ccab7c44ce35c3ea9e0e09befbd",
+      "size": 213437
     },
     "scripts/panel_build.py": {
       "sha256": "49c61898f32e487071d315802a665d09026aa3aaf6b701f3fe52ab0911812e83",

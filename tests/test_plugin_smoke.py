@@ -188,7 +188,7 @@ def main() -> int:
     # inject_memory 在本实现中无装饰器（由宿主 4.13 钩子约定调用），这里仅保证注册表可访问
 
     # 5) 完整实例化：模拟 4.13 宿主生命周期（__init__ → initialize → terminate）
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
         # 把 StarTools.get_data_dir 重定向到 tempfile 目录（config 已显式给 data_home，
         # 此处主要覆盖 data_home 缺省时的回落路径正确性）

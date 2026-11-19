@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -20,6 +22,7 @@ import dream as dm
 
 FAILS = []
 TMP = Path(tempfile.mkdtemp(prefix="ls-dream-test-"))
+atexit.register(shutil.rmtree, TMP, ignore_errors=True)   # 别每跑一次就留一个临时库
 core.HOME = TMP
 core._sync_state()
 dm.HOME = TMP

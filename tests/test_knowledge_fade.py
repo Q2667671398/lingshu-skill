@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """v2.78 knowledge 淡出分层：相位计算与检索降权的纯逻辑测试。"""
+import atexit
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -10,13 +13,17 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import growth  # noqa: E402
 import core  # noqa: E402
 
-# 只读场景：临时 HOME 指向临时目录，不碰真实库
-import tempfile
-tmp = tempfile.mkdtemp()
+# 只读场景：临时 HOME 指向临时目录，不碰真实库。
+# 注意：必须先改 core 状态再 _sync_state()——只赋值 core.HOME 的话，派生路径
+# （LOG_FILE/WORKING_FILE/growth 的 knowledge 路径等）仍指着真实 ~/.brain-memory，
+# 这是历史上测试偶发失败的老坑之一。
+tmp = tempfile.mkdtemp(prefix="ls-kfade-")
 core.HOME = Path(tmp)
-growth.HOME = Path(tmp)
 core.READONLY = True
+core._sync_state()          # 统一 rebind 派生路径 + 把 READONLY 回灌各子模块
+growth.HOME = Path(tmp)     # 显式锁定（_sync_state 已覆盖，保留便于阅读）
 growth.READONLY = True
+atexit.register(shutil.rmtree, tmp, ignore_errors=True)
 
 NOW = time.time()
 FAILS = []

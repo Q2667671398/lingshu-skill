@@ -15,6 +15,7 @@ import json
 import math
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +27,33 @@ import core  # noqa: E402
 import memory  # noqa: E402
 import persona  # noqa: E402
 
+# Windows 上 360/索引器会在文件刚写完时短暂持独占句柄：读取被拒是瞬时的，重试即过。
+# 生产写路径有 core._replace_retry 兜底，读路径没有；这是测试执行器层的兜底，
+# 只重试"瞬时占用"类 OSError，断言失败绝不被重试掩盖。
+_TRANSIENT_WINERRORS = {5, 32, 33, 145}   # 拒绝访问/共享冲突/锁冲突/目录非空
+
+
+def _is_transient_io(exc: BaseException) -> bool:
+    if isinstance(exc, PermissionError):
+        return True
+    if isinstance(exc, OSError):
+        return getattr(exc, "winerror", None) in _TRANSIENT_WINERRORS
+    return False
+
+
+def _run_with_io_retry(fn, attempts: int = 3):
+    for i in range(attempts):
+        try:
+            return fn()
+        except AssertionError:
+            raise
+        except OSError as exc:
+            if not _is_transient_io(exc) or i + 1 >= attempts:
+                raise
+            print(f"  ~ {getattr(fn, '__name__', fn)}: 瞬时文件占用（{exc}），重试 {i + 1}/{attempts - 1}")
+            time.sleep(0.3 * (i + 1))
+
+
 SECTION_NAMES = ("persona", "rules", "skills", "mistakes", "relationships",
                  "topics", "recent", "related", "dynamic", "water", "other")
 
@@ -35,6 +63,16 @@ def _setup_home(tmp: Path, extra: dict | None = None) -> dict:
     core._recompute_paths()
     core._sync_state()
     core.ensure_home()
+    # 显式锁定：派生路径必须全部跟随 HOME。历史上只改 core.HOME 没 rebind
+    # LOG_FILE/SESSIONS_DIR 等会读写上一个临时目录（已删）→ 偶发失败。
+    # 这里把"没锁死"从偶发变成确定性失败，避免回归时又变成 flaky。
+    for _name in ("LOG_FILE", "WORKING_FILE", "TOPIC_FILE", "VERBATIM_DIR", "ASSOC_FILE",
+                  "PERSONA_SNAP_DIR", "DAILY_FILE", "RETRIEVAL_FILE", "USAGE_FILE",
+                  "CONSENT_FILE", "SESSIONS_DIR"):
+        _p = Path(getattr(core, _name))
+        assert _p.parent == tmp or _p == tmp, f"{_name} 未跟随 HOME 切换：{_p}（HOME={tmp}）"
+    for _mod in (memory, persona):
+        assert Path(_mod.HOME) == tmp, f"{_mod.__name__}.HOME 未跟随：{_mod.HOME}"
     cfg = core.load_config()
     cfg["embed"]["url"] = ""
     cfg["embed"]["fallback"]["enabled"] = False
@@ -223,7 +261,7 @@ if __name__ == "__main__":
     failed = 0
     for fn in fns:
         try:
-            fn()
+            _run_with_io_retry(fn)
             print(f"PASS {fn.__name__}")
         except AssertionError as exc:
             failed += 1

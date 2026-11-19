@@ -10,12 +10,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ 公共测试工具（瞬时 IO 重试）
+from io_retry_util import run_with_io_retry  # noqa: E402
 
 import summarizer  # noqa: E402
 
@@ -100,13 +104,21 @@ def test_cli_json_roundtrip():
     import subprocess
     py = sys.executable
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        # 子进程显式隔离 HOME：summarizer.summarize() 会经 core.load_config() 读真实
+        # ~/.brain-memory/config.json 的 summary 段；用户真机若配了模型，这一步会走网络，
+        # 让"离线兜底"用例变成又慢又不确定的网络测试。
+        home = Path(td) / "home"
+        home.mkdir()
+        env = dict(os.environ)
+        env["BRAIN_MEMORY_HOME"] = str(home)
         inp = Path(td) / "turns.jsonl"
         inp.write_text("\n".join(json.dumps({"role": t["role"], "content": t["text"]},
                                             ensure_ascii=False) for t in TURNS),
                        encoding="utf-8")
         r = subprocess.run([py, str(ROOT / "scripts" / "brain.py"), "summarize",
                             "--input", str(inp), "--json"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["source"] in ("fallback", "model")
@@ -118,7 +130,7 @@ if __name__ == "__main__":
     failed = 0
     for fn in fns:
         try:
-            fn()
+            run_with_io_retry(fn)
             print(f"PASS {fn.__name__}")
         except AssertionError as exc:
             failed += 1

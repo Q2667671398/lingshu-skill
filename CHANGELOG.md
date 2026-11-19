@@ -1,5 +1,16 @@
 # 更新日志
 
+## v3.40（2026-11-19）
+
+> 主题：**模块化第二/三步 + 测试隔离清扫**（三个并行任务）。
+
+- **拆 memory.py 第二步**：评分/保留度纯函数 → `scripts/mem_score.py`（terms/jaccard/idf/relevance/_num/heuristic_importance/retention/activation/activation_forget + `_cosine_sim`）。memory.py **4525 → 4358（-167）**，末尾 re-export 保持调用面无感；新旧实现逐项对照（186 个公开名零差异）。
+- **拆 core.py**：embedding/降级向量 → `scripts/mem_embed.py`（`_embed_cfg`/`embed_texts`/`fallback_encode_cached`）。core.py **1813 → 1704（-109）**；熔断状态仍留在 core（`_EMBED_DOWN_UNTIL`），语义原样（失败冷却 300s、成功清零）。
+- **测试隔离**：新增 `tests/io_retry_util.py`（只对 PermissionError/WinError 5/32/33/145 做有限重试，断言失败不重试），25 个测试文件接入；裸 `TemporaryDirectory` 补 `ignore_cleanup_errors`；隔离断言（LOG_FILE/WORKING_FILE/…必须落在临时 HOME）。**全量连跑 5 轮 0 失败**。
+- **测试写法修正**：`doctor` 用例只对 version-matrix 负责；`selfupdate_egg` 在 manifest stale 时显式 SKIP（干净检出仍完整执行）。
+- **发现的真 bug（未修，已记录）**：① `core.read_jsonl` 对瞬时 PermissionError 无重试、`exists()` 吞 stat 错误会静默读空；② `memory.mark_reviewed` 忽略落盘返回值、写失败仍返回成功形状。
+- 测试：`test_mem_score.py` 6 项、`test_mem_embed.py` 6 项。
+
 ## v3.39（2026-11-19）
 
 > 主题：**拆 memory.py 第一步**——对话摄取整块（219 行）迁到独立模块。
