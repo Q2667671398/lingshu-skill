@@ -3761,14 +3761,38 @@ def inject_cache_info(cfg: dict | None = None) -> dict:
     return out
 
 
-def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
+def build_injection(query: str = "", budget_tokens: int | None = None,
+                    report: dict | None = None) -> str:
     ensure_home()
     cfg = load_config()
+    # P0 上下文账单：report 传入 dict 时按段记账（字符数 / 估算 token / 占预算比例）；
+    # report 为 None 时走原路径，返回类型与行为跟旧版完全一致。
+    # 记账方式：_SectionList 在 append/extend 时记下"当前段名"（_bill["sec"]），
+    # 最后按 "\n".join 的行序把每个连接换行记进该行所属段——因此各段 chars
+    # 求和恒等于最终注入文本长度，末尾 assert 自检。
+    _bill = {"sec": "other"}
+
+    class _SectionList(list):
+        """带段名记账的 list：append 时记当前段，extend 可带入每行原有段名。"""
+
+        def __init__(self):
+            super().__init__()
+            self.secs: list = []
+
+        def append(self, item, sec: str | None = None) -> None:  # type: ignore[override]
+            self.secs.append(sec or _bill["sec"])
+            super().append(item)
+
+        def extend(self, items, secs=None) -> None:  # type: ignore[override]
+            for _i, _it in enumerate(items):
+                self.append(_it, secs[_i] if secs is not None else None)
     # budget 0/负数按 1 兜底：`budget_tokens or ...` 会把 0 静默吞掉，负数则算出负 char_budget
     budget = budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else _cfg_num(cfg, "budget_tokens", 2400, int)
     # 五-D/候选1：开关打开时，库没变 + TTL 内直接复用上次注入文本，
     # 跳过整库遍历与 recall 重算（跨天恢复首轮明显更快）。默认关闭。
-    if cfg.get("session_state_cache"):
+    # 账单模式（report 非 None）不读缓存：缓存只有整段文本、没有分段信息，
+    # 读缓存填不出可信账单；顺带避免一次观测改写下次 startup 的缓存命中。
+    if report is None and cfg.get("session_state_cache"):
         _ck = _inject_cache_key(query, budget, cfg)
         if _ck:
             _cached = _inject_cache_load(cfg, _ck)
@@ -3782,11 +3806,17 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     session_mode = resolve_mode(query)
 
     brief = persona_brief(p, mood=(session_mode != "work"))
-    out = ["===== 长期记忆注入（灵枢）=====",
-           "算力给我思考，人格给我灵魂，记忆给我生命。",
-           "## 我是谁", brief]
+    # 注入包两段容器：report 模式用记账 list（每行记所属段名），否则普通 list。
+    out = _SectionList() if report is not None else []
+    dyn = _SectionList() if report is not None else []
+    # 包头两句是骨架文案归 other；「我是谁」+ 人格简介归 persona。
+    _bill["sec"] = "other"
+    out.append("===== 长期记忆注入（灵枢）=====")
+    out.append("算力给我思考，人格给我灵魂，记忆给我生命。")
+    _bill["sec"] = "persona"
+    out.append("## 我是谁")
+    out.append(brief)
     # 实时状态单独攒：先输出稳定前缀，末尾再接这些"每次都会变"的块（五-A）
-    dyn: list = []
     used = len(brief) + 60
 
     # c1c 注入预算动态分配：硬块（人格简介/工作记忆/onboarding/每日例行/水位守则
@@ -3815,6 +3845,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         return 0
 
     # A 失败可见化：上次会话有写入失败就在包顶亮出来，降级不再静默
+    _bill["sec"] = "dynamic"
     try:
         _sf = _startup_failures()
         if _sf.get("count"):
@@ -3843,6 +3874,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             pass
 
     # 「我犯过的错」：成长型人格的地基（kind=mistake，独立成块注入）
+    _bill["sec"] = "mistakes"
     if _mistakes:
         used += _soft_block("\n## 我犯过的错（遇到类似情境先想起这些）",
                             [f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}" for m in _mistakes],
@@ -3850,6 +3882,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
 
     # 「我的人际关系」：kind=relationship 独立成块注入——记得谁是谁、欠了谁、
     # 被谁帮过，关系才有连续性（群聊场景跨群共享同一份画像）。
+    _bill["sec"] = "relationships"
     if _rels:
         used += _soft_block("\n## 我的人际关系（提到这些人时先想起这些）",
                             [f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}" for m in _rels],
@@ -3857,11 +3890,13 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
 
     # 时段语境：一句话给当下时间定性，让语气/行为与真实时间对齐（克制，不煽情）。
     # 这是全包变化最快的内容（分钟级），必须放在实时区，别毁掉前缀缓存。
+    _bill["sec"] = "dynamic"
     try:
         dyn.append(f"\n## 现在是什么时候\n{_time_context()}")
     except Exception:
         pass
 
+    _bill["sec"] = "rules"
     if model_tier() == "small":
         out.append("\n## 小模型模式（当前模型档位 = small）")
         out.append("你的上下文和推理都有限，下面这些高风险自动能力**不要主动做**：")
@@ -3871,6 +3906,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         out.append("- 只保留硬约束：会话开始 `startup`、值得记的 `remember`、被问起 `recall`、")
         out.append("  快满了 `check-context` / `capture` 保命。其余的能省则省。")
 
+    _bill["sec"] = "dynamic"
     if session_mode == "work":
         # 工程模式：情绪隔离。刚聊完情绪化话题立刻写代码时，旧情绪不许进工作会话。
         out.append("\n## 工程模式（情绪隔离，mode=work）")
@@ -3913,6 +3949,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                    "或 `work clear` 丢掉。")
 
     # 话题栈：拟人闲聊的主动对话依据（v2.71）
+    _bill["sec"] = "topics"
     topics = load_topics()
     if topics:
         _topic_lines = []
@@ -3930,6 +3967,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
                             "用户展开多说 → `--good`（多聊）。用户明确说不想聊 → `topic drop \"...\"`。")
         used += _soft_block("\n## 话题栈（我们最近聊过什么）", _topic_lines, 0.12, sink=dyn)
 
+    _bill["sec"] = "persona"
     ob = p.get("onboarding") or {}
     if not ob.get("completed"):
         out.append("\n## 初识还没完成（优先做这件事）")
@@ -4028,6 +4066,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
             lines.pop()   # 超预算：这行不放，留一条整记忆不切半
             break
         kept_mems.append(m)
+    _bill["sec"] = "related" if query else "recent"
     if lines:
         dyn.append(header)
         dyn.extend(lines)
@@ -4047,6 +4086,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     # v3.02 #10：到期事实复核提醒——带保质期的记忆过期后注入标「待复核」，
     # 提醒 AI 找机会跟用户确认"这条还作数吗"。确认过打 review_by_confirmed
     # （或直接重新 remember 覆盖）就不再提醒。软块注入，超预算整块丢弃。
+    _bill["sec"] = "recent"
     try:
         _due = [m for m in due_for_review(5) if _inject_memory_visible(m, cfg)]
         if _due:
@@ -4064,6 +4104,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     # 上一次梦的结论（c1d 可读三行化）：不再把梦报告原文 6 行整段灌进来，
     # 而是抽成三行——合并了什么 / 哪些被淡忘（可 revive）/ 哪些被防线拦下待复核。
     # 数据零新增存储：全部来自 dreams/ 目录现成的报告文件。
+    _bill["sec"] = "other"
     dream_files = sorted((HOME / "dreams").glob("*.md")) if (HOME / "dreams").exists() else []
     if dream_files:
         try:
@@ -4101,6 +4142,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
 
     # #36 教训注入：active 且未 retired 的教训最多 5 条按 confidence 注入；
     # 有 query 时词面命中的排最前，提示「已有教训」——先看坑在哪，再走下一步。
+    _bill["sec"] = "mistakes"
     try:
         _lesson_seg = _lessons_injection(query)
         if _lesson_seg:
@@ -4109,6 +4151,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         pass
 
     # 待整理的梦（超过 48h 未整理视为孤儿任务，下次做梦会自动归档）
+    _bill["sec"] = "dynamic"
     pending = HOME / "dreams" / "pending.json"
     if pending.exists():
         try:
@@ -4146,11 +4189,13 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     _mode_tail = {"work": "工程模式：骨架压缩，代码/报错/路径等细节照原样留痕，别急着淡忘。",
                   "human": "拟人模式：摘要压缩，细节可放心淡化，人设与情绪要点保住即可。"}.get(
                       session_mode if session_mode in ("work", "human") else "human", "")
+    _bill["sec"] = "water"
     out.append(f"[水位守则] 会话中即记即存；{rv} 补记清点，{dr} 做梦压缩，{es} 封存保底。"
                + _mode_tail +
                "用 python scripts/brain.py check-context --used <当前百分比> 逐档检查。")
     # 上次做梦的交接摘要（重放→压缩产物）：让新会话直接接上旧话题，
     # 而不是把「未决事项」一直压在上下文里占水位。
+    _bill["sec"] = "dynamic"
     try:
         import dream as _dream_mod
         _ho = _dream_mod.latest_handoff()
@@ -4219,6 +4264,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     except Exception:
         pass
     # 用户附加规则：写在数据目录 lingshu.user.md（更新技能不碰数据目录，永不覆盖），每会话自动带上
+    _bill["sec"] = "rules"
     user_lines = read_user_rules()
     if user_lines:
         out.append("\n## 用户附加规则（来自 ~/.brain-memory/lingshu.user.md，更新技能永不覆盖）")
@@ -4234,6 +4280,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     except Exception:
         pass
     # 技能库：告诉 AI 哪里有现成技能、怎么直接用（跨宿主共享，不用先安装）
+    _bill["sec"] = "skills"
     try:
         import growth
         avail = [r for r in growth.skill_roots() if r.get("exists") and r.get("count")]
@@ -4248,6 +4295,7 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
         pass
     # 人格一致性自检（language-guard 借鉴）：注入包尾部一行人格摘要，防长会话人格走样。
     # 只在人格已初始化时注入；一行以内，不占预算。
+    _bill["sec"] = "persona"
     try:
         import persona as _pmod
         _pself = _pmod.load_persona()
@@ -4274,15 +4322,45 @@ def build_injection(query: str = "", budget_tokens: int | None = None) -> str:
     except Exception:
         pass
     # 五-A：稳定前缀在前、实时状态在后。分界线本身也是常量，便于 inject-drift 自检定位。
+    _bill["sec"] = "other"
     out.append("\n" + INJECT_DYN_MARKER)
-    out.extend(dyn)
+    if report is not None:
+        out.extend(dyn, secs=dyn.secs)
+    else:
+        out.extend(dyn)
     out.append("===== 注入结束：请自然地使用这些记忆，不要逐条复述 =====")
     out.append("")
     _result = "\n".join(out)
+    if report is not None:
+        # P0 上下文账单汇总：段名顺序固定（缺内容的段记 0，仍列出便于对照）。
+        # chars 含该行在 "\n".join 时补的连接换行（首行除外），所以各段之和 == len(_result)。
+        order = ("persona", "rules", "skills", "mistakes", "relationships",
+                 "topics", "recent", "related", "dynamic", "water", "other")
+        chars = {k: 0 for k in order}
+        for i, part in enumerate(out):
+            sec = out.secs[i] if i < len(out.secs) else "other"
+            chars[sec] = chars.get(sec, 0) + len(part) + (1 if i else 0)
+        ratio = _cfg_num(cfg, "context_chars_per_token", 2, float)
+        if not ratio or ratio <= 0:
+            ratio = 2.0
+        sections, total_chars, total_tokens = [], 0, 0
+        for name in order:
+            c = chars.get(name, 0)
+            t = int(math.ceil(c / ratio))
+            sections.append({"name": name, "chars": c, "tokens": t,
+                             "budget_frac": round(t / budget, 4) if budget else 0.0})
+            total_chars += c
+            total_tokens += t
+        # 自检：各段 chars 求和必须严格等于最终文本长度，否则账单不可信。
+        assert total_chars == len(_result), (total_chars, len(_result))
+        report.update({"sections": sections, "total_chars": total_chars,
+                       "total_tokens": total_tokens, "budget": budget,
+                       "chars_per_token": ratio})
     # 五-D/候选1：本次渲染结果落会话快照（READONLY 下 _inject_cache_save 自行跳过）
     # v3.24：渲染过程本身可能写盘（衰减/晋升/每日状态），开始时的键到结尾就过期了。
     # 用「渲染后」的状态重算键再存，下一次调用一开始就能命中；改动前的键只用于读。
-    if cfg.get("session_state_cache"):
+    # 账单模式（report 非 None）不落缓存：观测命令不该改写下次 startup 的快照。
+    if report is None and cfg.get("session_state_cache"):
         _save_cfg = load_config()
         _save_key = _inject_cache_key(query, budget, _save_cfg)
         if _save_key:

@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.26（2026-11-19）
+
+> 本轮主题：两个 P0——**群聊鉴权**（#38/§九）与**上下文 token 账单**（附录 C P0）。
+
+- **新增 `lingshu-guard` 插件**：`ctx.tools.guard()` 同步拦截（注册在 `agent.ctx`，随 agent 销毁），按发言人鉴权——无 IM 绑定放行；owner 全放行；其他人只放行只读白名单（read/glob/grep/web_search/list_agents/skill/todo_write/ask_user_question），其余拒绝并给出中文原因。身份复用 `dshIm.describeConversationSync` + `dsh-im/session-pre-bind` 缓存，编码与 lingshu-im 一致；拿不到身份时 fail-closed。配置在 `~/.brain-memory/config.json` 的 `guard` 段（`enabled`/`shadow`/`owners`/`readOnlyAllow`/`logPath`），日志 JSONL 写 `lingshu-guard.log`。**出厂 `shadow=true`（只记录不拦）**，要真拦设 `{"guard":{"shadow":false}}`；本机已设为真拦。
+- **新增 `context-stats` 命令**：`build_injection(..., report={})` 在渲染时按 11 段记录字符/估算 token/占预算（`persona/rules/skills/mistakes/relationships/topics/recent/related/dynamic/water/other`），并提供 `context-stats [--json] [--budget N] [--query Q]` 表格输出；不传 `report` 时行为与旧版字节级一致（含缓存路径），token 估算 `chars_per_token` 可配（默认 2）。
+- **测试**：新增 `tests/test_lingshu_guard.py`（6 项：非 owner 拒 pwsh、owner 放行、只读放行、桌面不受影响、shadow 只记录、fail-closed/pre-execute 降级）与 `tests/test_context_stats.py`（8 项：分段求和=总长、token=ceil、预算约束、--json、旧调用兼容、ratio 可配、缓存开启仍出账单）。
+
 ## v3.25（2026-11-19）
 
 > 本轮主题：**把 IM 桥接的"配置入口"补上（#36）**——之前 autoRecall/autoCapture 写死为关，profile 里怎么配都传不进去。

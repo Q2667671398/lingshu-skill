@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-// 子插件（启动注入 / 例行维护调度 / IM 桥接）也随根包一起激活。
+// 子插件（启动注入 / 例行维护调度 / IM 桥接 / 群聊鉴权）也随根包一起激活。
 // 它们此前是 cordis-plugin/ 下的独立子包，需要单独 tgz 安装进 profile——
 // 插件商店只装根包，子包永远"没按上"。现改为根包 apply 时直接挂载，
 // 商店一次安装全带上。两子包均零外部依赖，plugin.js 可直接 import。
@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path'
 import * as startupPlugin from './cordis-plugin/lingshu-startup/plugin.js'
 import * as cronPlugin from './cordis-plugin/lingshu-cron/plugin.js'
 import * as imPlugin from './cordis-plugin/lingshu-im/plugin.js'
+import * as guardPlugin from './cordis-plugin/lingshu-guard/plugin.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -85,5 +86,13 @@ export function apply(ctx, config) {
     imPlugin.apply(ctx, imCfg)
   } catch (e) {
     ctx.logger?.error?.('lingshu-skill: im 子插件挂载失败，IM 记忆召回/写回不可用；重装根包可恢复', e)
+  }
+  // 群聊鉴权：IM 会话里非 owner 只能调只读工具；桌面会话不受影响。
+  // 配置透传（profile/bundle 可写 { guard: { shadow, owners, readOnlyAllow, logPath } }），
+  // 没配时插件自己读 ~/.brain-memory/config.json 的 guard 段。默认 shadow=true（只记录不拦）。
+  try {
+    guardPlugin.apply(ctx, cfg.guard || {})
+  } catch (e) {
+    ctx.logger?.error?.('lingshu-skill: guard 子插件挂载失败，IM 工具鉴权未生效（群聊请勿放开执行面）；重装根包可恢复', e)
   }
 }

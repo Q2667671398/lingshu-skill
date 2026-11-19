@@ -1296,6 +1296,14 @@ def _main(argv=None) -> int:
     p_sst.add_argument("action", nargs="?", default="show", choices=["show", "clear"])
     p_sst.add_argument("--json", action="store_true")
 
+    # P0 上下文账单：把注入包按段拆开，算字符数 / 估算 token / 占预算比例
+    p_cst = sub.add_parser("context-stats",
+                           help="上下文账单：注入包按段拆开算字符数、估算 token 与占预算比例")
+    p_cst.add_argument("--json", action="store_true", help="输出机器可读的 JSON 报告")
+    p_cst.add_argument("--budget", type=int, default=None,
+                       help="预算 token 数（缺省用 config budget_tokens）")
+    p_cst.add_argument("--query", default="", help="按指定查询生成注入包（缺省为 startup 注入包）")
+
     # 候选5：只读回放——对比最早快照与当前人格，只输出偏移与拐点，不写库
     p_rpl = sub.add_parser("replay",
                            help="只读回放：对比最早快照与当前人格，输出偏移量与拐点（运行前后全库不变）")
@@ -2046,6 +2054,28 @@ def _main(argv=None) -> int:
         if rep["first_diff_at"] >= 0:
             print(f"  首个差异位置：第 {rep['first_diff_at']} 字符")
         return 0 if rep["ok"] else 1
+
+    if args.cmd == "context-stats":
+        # P0 上下文账单：build_injection 内部按段记账，这里只负责渲染表格 / JSON。
+        rep: dict = {}
+        build_injection(args.query or "", args.budget, rep)
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0
+        budget = int(rep.get("budget") or 0)
+        print(f"上下文账单（字符→token 估算，chars_per_token={rep['chars_per_token']:g}）")
+        print(f"{'段':<11}{'字符':>6}{'估算token':>10}{'占预算':>6}")
+        print("-" * 44)
+        for sec in rep["sections"]:
+            print(f"{sec['name']:<12}{sec['chars']:>8}{sec['tokens']:>12}"
+                  f"{sec['budget_frac']:>9.1%}")
+        print("-" * 44)
+        used_frac = (rep["total_tokens"] / budget) if budget else 0.0
+        print(f"{'总计':<10}{rep['total_chars']:>8}{rep['total_tokens']:>12}{used_frac:>9.1%}")
+        over = rep["total_tokens"] > budget
+        print(f"预算 {budget} tokens：{'超限 ⚠' if over else '未超限 ✅'}"
+              f"（余量 {budget - rep['total_tokens']} tokens）")
+        return 0
 
     if args.cmd == "session-state":
         # 五-D/候选1：查看/清理注入包快照缓存

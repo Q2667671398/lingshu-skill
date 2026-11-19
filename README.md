@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v3.25**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.26**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -564,6 +564,8 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | 做梦 | `dream` / `dream --apply apply.json` / `dream --auto` / `dream --verify [--done]`（合并抽检复核） |
 | 跨对话摄取 | `ingest-dialogues [--path 目录] [--limit N] [--dry-run]`（默认关；`config set dialogue_ingest true` + `dialogue_sources` 目录；`dialogue_ingest_auto` 由 startup 后台子进程执行） |
 | 注入缓存 / 只读回放 / 饱和 | `session-state [show\|clear]`（需 `session_state_cache=true`） / `replay [--days 90] [--limit 20]` / `saturation [--threshold 0.8]` |
+| 上下文账单 | `context-stats [--json] [--budget N] [--query Q]`（按段拆注入包：字符 / 估算 token / 占预算） |
+| 群聊鉴权 | `~/.brain-memory/config.json` 的 `guard` 段：`{"shadow":false}` 才真拦；非 owner 只放行只读工具，日志在 `lingshu-guard.log` |
 | 通道注入放行 | `config set inject_channels '["qq@bot:群号"]'`（默认只注入无通道与 dialogue:* 记忆） |
 | IM 桥接开关 | `~/.brain-memory/config.json` 的 `im` 段（如 `{"autoRecall":true,"autoCapture":false}`）；也可由宿主透传 `{im:{...}}`。默认都关（跨会话隐私） |
 | 冷热归档 | `archive show\|search <词>\|restore <id>\|run [--dry-run]\|count`（沉眠记忆自动雪藏，原文保留可回捞） |
