@@ -1,13 +1,13 @@
 {
-  "version": "3.29",
+  "version": "3.30",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "b039c61a07af0dd01fb18e9d7a75c0a562d4b8b50b7a98afd3a5f70ede34b7c7",
-      "size": 181109
+      "sha256": "4edadb445263430d2d32a593a4b4a228b64fc9fc033b72153c5af72f09c91044",
+      "size": 182341
     },
     "README.md": {
-      "sha256": "889f18ae1663564034246c944840606a6812aa96b3adc233771e18a061054fe3",
-      "size": 61214
+      "sha256": "cfc15bb23b88128a31c904671a71e907193c7861337de4ebad459097fad892d8",
+      "size": 61506
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,8 +18,8 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "8c4404c95375e1c1b4e7c5401be76ed4743d1f7e4c3dca1d7ef187d91bade44a",
-      "size": 32412
+      "sha256": "35964ce464dbd2254e35c6b8d281f4390df5a7cf94e15091da82c223a737936a",
+      "size": 32792
     },
     "assets/panel.html": {
       "sha256": "71bb31a3ee9e3b3904f76211c6829da3a6f12e13cc6969e3efd64d88d5b2ba23",
@@ -98,7 +98,7 @@
       "size": 5219
     },
     "package.json": {
-      "sha256": "292ad2efe05bc1210c1772efa67da4e95bb9a68e73356c10032001e1bb090c93",
+      "sha256": "6128483631daf33a867f70126fc323b19d6fbae5a34509c845e5ea024649af80",
       "size": 860
     },
     "scripts/assembler.py": {
@@ -122,12 +122,12 @@
       "size": 10395
     },
     "scripts/cli.py": {
-      "sha256": "6ce51ccb31e16faaaff549cf2fee6ef83650a5b8e59ef324252237a60fafffee",
-      "size": 233185
+      "sha256": "601c9dfc6374d45910496c7522ebc7cc9b05436b572377ff3a1acc4430026f3d",
+      "size": 237848
     },
     "scripts/core.py": {
-      "sha256": "0559804dd030b46535482b101f7687c36f6cabae823ade393dcc4ac6b3ce6dc4",
-      "size": 78890
+      "sha256": "033f8c1961ca5bd60b87b4e837744395cf938cae3c71ac3b8139ebddfa178d55",
+      "size": 79495
     },
     "scripts/dream.py": {
       "sha256": "e25749c32fe6cb3b3845c9541ef663dffe8efaa0d9bd251f611e1359208800b9",
@@ -180,6 +180,14 @@
     "scripts/persona.py": {
       "sha256": "fb748d2fb7b176d9dd0d7394de69ba4560da7f4205f62256477d3a69dcbdf0f5",
       "size": 107976
+    },
+    "scripts/retriever.py": {
+      "sha256": "a3d31013577be7a7a82c59c67e832b5a22f4e235eeee0f0ef2b76d91d5a5e511",
+      "size": 7029
+    },
+    "scripts/session_summary.py": {
+      "sha256": "7f86a47cfb75b5340f748176f3cd2ca2242bd568351f241df6b9bbd6da3e66c0",
+      "size": 5312
     },
     "scripts/summarizer.py": {
       "sha256": "ff2383f513cda423dac662135a64cec154194fe6f8f8ed1883c8304af772ebea",

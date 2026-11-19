@@ -1,5 +1,21 @@
 # 更新日志
 
+## v3.30（2026-11-19）
+
+> 本轮主题：**附录 C 的 P2 收尾 + P3 接入检索**，一次做完。
+
+- **P2 收尾（`scripts/session_summary.py`）**：
+  - 触发规则三选一——每 `summary_turns`（默认 8）轮 / 水位 ≥ `summary_pct`（默认 60%）/ `--force`；
+  - 落盘 `~/.brain-memory/sessions/summaries/<session>.md`，**保留最近 3 版**，`rollback` 可回退；
+  - `session-summary build|show|rollback` 命令；不触发时不生成（省一次模型/IO）。
+- **P3 接入检索（`scripts/retriever.py`）**：
+  - 优先 `POST {session_rag.url}/v1/search`（附录 B 契约）；没配/超时/报错/不可解析 → **回退 `memory.recall()`** 并记 warning；
+  - 二段式：`search()` 拿候选 → `select()` 按 token 预算挑（模型可选，输出不合格退回打分顺序）；
+  - `build_snippet()` 输出带 `[来源:id]` 标记的片段块，空结果返回 ""；
+  - `retrieve "关键词"` 命令看候选/选中/预算占用。
+- **配置**：新增 `summary`（模型，默认关）、`summary_turns`、`summary_pct`、`session_rag`（url/timeout/budget_tokens/select_model）。
+- **测试**：`tests/test_session_summary.py` 6 项 + `tests/test_retriever.py` 6 项。
+
 ## v3.29（2026-11-19）
 
 > 本轮主题：**附录 C P2 会话摘要层**——五段式模板 + 提交前校验 + fail-open 回退。

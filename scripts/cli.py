@@ -1304,6 +1304,26 @@ def _main(argv=None) -> int:
                        help="预算 token 数（缺省用 config budget_tokens）")
     p_cst.add_argument("--query", default="", help="按指定查询生成注入包（缺省为 startup 注入包）")
 
+    # 附录 C P2 收尾：触发 + 落盘 + 回滚
+    p_ss = sub.add_parser("session-summary",
+                          help="会话摘要：触发判断 / 生成落盘 / 查看 / 回滚（每 N 轮或水位≥60%）")
+    p_ss.add_argument("action", nargs="?", default="build", choices=["build", "show", "rollback"])
+    p_ss.add_argument("--input", default="", help="对话文件（.jsonl/.json），build 用")
+    p_ss.add_argument("--pct", type=float, default=None, help="当前水位百分比（如 65）")
+    p_ss.add_argument("--turns-since-last", type=int, default=0, help="距上次摘要的轮数")
+    p_ss.add_argument("--force", action="store_true", help="强制生成（不看触发条件）")
+    p_ss.add_argument("--session-id", default="default", help="摘要槽位名（默认 default）")
+    p_ss.add_argument("--max-chars", type=int, default=1500)
+    p_ss.add_argument("--steps", type=int, default=1, help="rollback 回退几步（默认 1）")
+    p_ss.add_argument("--json", action="store_true")
+
+    # 附录 C P3：检索接入
+    p_ret = sub.add_parser("retrieve", help="检索片段：优先 session-rag 服务，失败回退本地召回")
+    p_ret.add_argument("query", help="检索关键词")
+    p_ret.add_argument("--k", type=int, default=20, help="候选条数（默认 20）")
+    p_ret.add_argument("--budget", type=int, default=None, help="片段 token 预算（默认 800）")
+    p_ret.add_argument("--json", action="store_true")
+
     # 附录 C P2：会话摘要层（五段式 + 校验 + fail-open）
     p_sum = sub.add_parser("summarize",
                            help="五段式会话摘要：模型优先，失败/不合格回退离线抽取（fail-open）")
@@ -2091,6 +2111,66 @@ def _main(argv=None) -> int:
         over = rep["total_tokens"] > budget
         print(f"预算 {budget} tokens：{'超限 ⚠' if over else '未超限 ✅'}"
               f"（余量 {budget - rep['total_tokens']} tokens）")
+        return 0
+
+    if args.cmd == "session-summary":
+        from session_summary import maybe_summarize, load as ss_load, rollback as ss_rollback
+        if args.action == "show":
+            text = ss_load(args.session_id)
+            if args.json:
+                print(json.dumps({"session_id": args.session_id, "chars": len(text),
+                                  "text": text}, ensure_ascii=False, indent=2))
+            else:
+                print(text or "（还没有摘要：先 session-summary build --input 对话.jsonl）")
+            return 0
+        if args.action == "rollback":
+            res = ss_rollback(args.session_id, steps=args.steps)
+            print(json.dumps(res, ensure_ascii=False, indent=2) if args.json
+                  else ("已回滚：" + res.get("path", "") if res.get("ok")
+                        else "[失败] " + str(res.get("reason"))))
+            return 0 if res.get("ok") else 1
+        if not args.input:
+            print("[错误] build 需要 --input 对话文件", file=sys.stderr)
+            return 2
+        from summarizer import load_turns
+        try:
+            turns = load_turns(args.input)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[错误] 读不了对话文件：{exc}", file=sys.stderr)
+            return 2
+        res = maybe_summarize(turns, session_id=args.session_id,
+                              turns_since_last=args.turns_since_last,
+                              used_pct=args.pct, force=args.force,
+                              cfg=load_config(), max_chars=args.max_chars)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0 if res.get("ok") else 1
+        if res.get("skipped"):
+            print(f"未触发：{res.get('reason')}（要强制就加 --force）")
+        else:
+            print(f"已生成并落盘（来源 {res.get('source')}，{res.get('chars')} 字）：{res.get('path')}")
+            for w in res.get("warnings") or []:
+                print(f"  ⚠ {w}", file=sys.stderr)
+        return 0 if res.get("ok") else 1
+
+    if args.cmd == "retrieve":
+        from retriever import search, select, build_snippet
+        rag = dict(load_config().get("session_rag") or {})
+        res = search(args.query, args.k)
+        picked = select(res["results"], args.query, budget_tokens=args.budget)
+        out = {"query": args.query, "source": res["source"], "candidates": len(res["results"]),
+               "kept": picked["kept"], "select": picked["source"],
+               "tokens": picked.get("tokens", 0),
+               "warnings": (res.get("warnings") or []) + (picked.get("warnings") or [])}
+        if args.json:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+            return 0
+        print(f"检索「{args.query}」：来源 {res['source']}，候选 {out['candidates']} 条，"
+              f"选中 {len(picked['kept'])} 条（{out['tokens']} tokens，{picked['source']}）")
+        for it in picked["kept"]:
+            print(f"- [{it['source'] or 'mem'}:{it['id']}] {it['text'][:120]}")
+        for w in out["warnings"]:
+            print(f"  ⚠ {w}", file=sys.stderr)
         return 0
 
     if args.cmd == "summarize":

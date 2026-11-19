@@ -177,6 +177,18 @@ DEFAULT_CONFIG = {
     #   lazy = 只带一句要点 + id，正文按需用 recall / dereference 取（省 token）
     "inject_mode": "full",
     "inject_lazy_chars": 80,   # lazy 模式下每条要点最多留多少字符
+    # 会话摘要（附录 C P2）：触发规则 + 外部模型（默认关=离线抽取式）
+    "summary_turns": 8,        # 每 N 轮触发一次摘要
+    "summary_pct": 0.60,       # 水位 ≥60% 触发
+    "summary": {               # 模型配置；enabled=false 时全走离线抽取
+        "enabled": False,
+        "base_url": "",
+        "model": "",
+        "api_key_env": "",
+        "timeout": 30,
+    },
+    # 检索接入（附录 C P3）：session-rag 服务；留空回退灵枢本地召回
+    "session_rag": {"url": "", "timeout": 3, "budget_tokens": 800, "select_model": False},
     # remember 写入时的正文截断上限（字符）：单条记忆原文最长保留多少。
     "remember_max_chars": 1200,
     # 上下文水位三级防线（比例，0-1）：
