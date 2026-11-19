@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -95,7 +96,8 @@ def test_cli_build_show_rollback():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         home = Path(td) / "home"
         home.mkdir()
-        env = dict(**__import__("os").environ, BRAIN_MEMORY_HOME=str(home))
+        env = dict(os.environ)
+        env["BRAIN_MEMORY_HOME"] = str(home)
         inp = Path(td) / "turns.jsonl"
         inp.write_text("\n".join(json.dumps({"role": t["role"], "content": t["text"]},
                                             ensure_ascii=False) for t in TURNS), encoding="utf-8")

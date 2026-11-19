@@ -1,5 +1,10 @@
 # 更新日志
 
+## v3.31（2026-11-19）
+
+- **修：`test_session_summary` 在 CI 上必挂**。`dict(**os.environ, BRAIN_MEMORY_HOME=...)` 在宿主已设同名环境变量时抛 `TypeError: multiple values`（GitHub Actions 的 `BRAIN_MEMORY_HOME` 正好会设）；改成先拷贝再赋值，并补 `import os`。本机因为没设该变量所以一直是绿的——属于「只在 CI 暴露」的测试写法问题。
+- 无运行时代码变更。
+
 ## v3.30（2026-11-19）
 
 > 本轮主题：**附录 C 的 P2 收尾 + P3 接入检索**，一次做完。
