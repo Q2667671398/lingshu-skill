@@ -1,12 +1,12 @@
 {
-  "version": "3.53",
+  "version": "3.54",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "bdaa2a23c3f636311c26aaab8bb39f20091c46ae214e6729624ac082370cd971",
-      "size": 220887
+      "sha256": "814f84c964eeafd1a8f37d63fc2117df7f50f41ada52481f0d75ff1b80282f26",
+      "size": 222572
     },
     "README.md": {
-      "sha256": "e35beea4d0dffd69d515a1b2eac428d3114b9486fbd001e262168dd53fd1ff00",
+      "sha256": "82210c22d108173a122d30485d37a7d01101ac49790c813287ed786617fcf441",
       "size": 62363
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "b6053a45bf10b58b7945222f69fadb5639b12ac594e96257d8ff2fa10926903b",
+      "sha256": "0170bfd5a40001c6c8feffef345a3e2373907672cd54c783b8f248a3f04599ef",
       "size": 34498
     },
     "assets/panel.html": {
@@ -98,15 +98,15 @@
       "size": 28927
     },
     "docs/进展与待办.md": {
-      "sha256": "d7fd7d88b4f151b00fb85f6c969133aede6848f8783ff1686ef857b3c5bfd968",
-      "size": 13058
+      "sha256": "f0afa5ac95225dfcd29f6a30aeddc0182dc27339dbc5f63cb5f534f92630fcb1",
+      "size": 13120
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "6ca87ecb51952f6d96303403e7dc5abc37dc53442ef18f0691498fd22b2a978f",
+      "sha256": "14d3ecd09bce9eabe6ebb1a125694f96b0eed923c1695436838c2e9f230cc380",
       "size": 1033
     },
     "scripts/assembler.py": {
@@ -229,6 +229,10 @@
       "sha256": "85a35f8f660767cff1c068e722b51e3b5623c4dffe4822527eee96f9220240d3",
       "size": 7383
     },
+    "scripts/run_tests.py": {
+      "sha256": "b3a609202904fc30ceb8c557b9cb11c89042fb64901e89f4effc877c14d2f2ca",
+      "size": 3501
+    },
     "scripts/safety.py": {
       "sha256": "7586d8d4a627eec67a4891b758665289a33e07a45fd27d526d45c70d1178cd53",
       "size": 14530
@@ -250,8 +254,8 @@
       "size": 10473
     },
     "scripts/sync_engine.py": {
-      "sha256": "9bbce20ca6c5c15415a04a3b71bd782e6d184142e3fd2f8a00b613c9bb7970de",
-      "size": 5841
+      "sha256": "a07c430992c9ed4d4801faad79a1f00d64e1f55f982dd8ac5bdf674bd4f1ff40",
+      "size": 5947
     },
     "scripts/update_dsh_copy.ps1": {
       "sha256": "645feb7a2f79c3765ce81a582519cbcdb7788da16b5ea4eee4f34dbeda316a3d",

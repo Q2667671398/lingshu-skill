@@ -1,5 +1,16 @@
 # 更新日志
 
+## v3.54（2026-11-20）
+
+> 主题：**测试不再污染真实记忆库**。起因是排障 v3.53 时发现本机真库日志里多了两条假的「扫描 DSH 副本失败」——查下来是**我自己的全量测试跑法**没隔离 HOME，`test_release_drift` 的失败分支经 `core.log_event` 写进了真实 `~/.brain-memory/lingshu.log`。
+
+- **`scripts/run_tests.py`（新增，测试统一入口）**：逐个文件给独立临时 `BRAIN_MEMORY_HOME` / `LINGSHU_GLOBAL_SKILLS`，跑完即删；失败时打印该文件最后 40 行；支持关键词过滤（`python scripts/run_tests.py restore`）与 `-v`。以后不用再手写那个 `foreach` 循环，也就不会再忘设环境变量。
+- **`tests/test_release_drift.py` 自隔离**：在 `import growth` 之前，若 `BRAIN_MEMORY_HOME` 没设，就自己建临时目录并 `atexit` 清理。这样即便有人直接 `python tests/test_release_drift.py` 单跑，也不会碰真库（实测：改前真库日志 6→8 行，改后 6→6 行）。
+- **`sync_engine.py` 把 `run_tests.py` 加入 SKIP**：它是开发期工具，不该随 AstrBot 插件副本发布（否则 `sync_engine --check` 会因"根目录多一个副本没有的脚本"判红——这次就红了一次）。
+- 顺带处理真库里的一条早期测试残留（`m_1793448847_edb4538a6c`，正文「一段原文」、tags 含「测试」）：用支持的 `memory freeze` 冻结，不参与召回/注入/做梦，需要时 `unfreeze` 即可还原——**没有删数据**。
+
+**验证**：`python scripts/run_tests.py` → 43/43 通过；跑完真实 `lingshu.log` 行数不变；`sync_engine --check` 恢复 0；五项发布检查全绿。
+
 ## v3.53（2026-11-20）
 
 > 主题：**"记忆又不录入了"——插件找不到 brain.py，静默停摆**。这是今晚最要紧的一处：自动注入、即记即存（extract）、天级任务（daily/backup/dream/drift/auto-archive）全都没在跑，而且没有任何报错。

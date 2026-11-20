@@ -31,8 +31,9 @@ ENGINE = ROOT / "scripts" / "astrbot_plugin_lingshu" / "engine"
 # 一键导出」流程要求 `engine/scripts/panel_server.py` 真的存在；它只依赖标准库 + 同目录
 # 的 brain/panels/growth，`ASSETS` 按 `__file__` 的父父目录解析，正好指向 engine/assets。
 # 以前把它跳过，插件里就只剩一份跑不起来的面板产物。
+# run_tests.py 是开发期跑测入口（v3.54），桥接侧不需要，不进副本。
 SKIP = {"sync_engine.py", "make_manifest.py", "make_checksums.py",
-        "check_version.py", "make_plugin_zip.py"}
+        "check_version.py", "make_plugin_zip.py", "run_tests.py"}
 
 # 随插件发布的文件副本（路径相对仓库根，保持同名同目录）。
 # assets/panel.html 是 panel_src 的构建产物：`panel_build.py --check` 保证源码↔产物一致，

@@ -17,11 +17,25 @@ doctor 只查"包内三处版本互相对账"，从不问"这台机器上跑的�
 """
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# 自隔离（v3.54）：本用例会通过 growth 里的失败分支走到 core.log_event，
+# 若直接 `python tests/test_release_drift.py` 跑且没设 BRAIN_MEMORY_HOME，
+# 就会往**真实** ~/.brain-memory/lingshu.log 写一条假的「扫描 DSH 副本失败」。
+# 必须在 import growth/core 之前设好环境变量，因为它们的路径常量是 import 时算的。
+if not os.environ.get("BRAIN_MEMORY_HOME"):
+    _tmp_home = Path(tempfile.mkdtemp(prefix="ls-drift-"))
+    os.environ["BRAIN_MEMORY_HOME"] = str(_tmp_home / "home")
+    (Path(os.environ["BRAIN_MEMORY_HOME"])).mkdir(parents=True, exist_ok=True)
+    atexit.register(shutil.rmtree, _tmp_home, True)
+
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import growth  # noqa: E402
