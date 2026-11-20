@@ -46,5 +46,8 @@ pnpm-lock.yaml
 docs/修复待办.md
 scripts/test_niah.py
 
+# 一次性运维脚本：2026-11-20 同名重建仓库后用来推 main + tag 白名单，用完即弃
+scripts/recreate_push.ps1
+
 # 测试脚本进仓库：CI 要跑它们（纯标准库、自建临时 HOME，不碰真实记忆库）
 # 注意：测试若需安装目标，必须自己设 LINGSHU_GLOBAL_SKILLS / BRAIN_MEMORY_HOME 到临时目录。

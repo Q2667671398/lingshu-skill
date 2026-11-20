@@ -107,6 +107,21 @@
 | 4 | 隐私拒绝（`recall --asker/--target` 或 `channel user --asker`：目标未 grant；消息不回显目标完整标识） |
 | 10 | 只读降级 |
 
+### 破坏性操作的确认口径（v3.52 统一）
+
+会**覆盖或删除数据**的命令不再各写一套确认，统一走 `safety.confirm_destructive()`：
+
+| 规则 | 行为 |
+|---|---|
+| 影响面 | 无论是否交互，先打印"动哪个目录 / 会不会删文件"（`restore` 会按 `--exact` 区分"备份之后新增的文件删不删"） |
+| `--yes` | 直接放行（脚本、宿主、CI 用这个） |
+| 非交互 + 没有 `--yes` | **拒绝**，退出码 1，并提示必须加 `--yes`（管道、AI 调用、计划任务都属于这一类） |
+| 交互 | 问 `y/N`，**默认 N**；回车 / 其它输入都算取消（退出码 0） |
+
+覆盖的命令：`restore`（含 `--exact`）、`memory purge`（令牌 `--confirm <id前8位>` 仍是身份确认，影响面清单由同一函数打印）。
+
+例外：`backup` 不加口令时只**提示**不拦截——它不销毁数据，且 `restore` 前的自动备份内部传 `assume_yes=True`，不能被这条规则挡住。
+
 ### 自动写回（AstrBot 桥接 `auto_capture`）
 
 默认**关闭**。开启后群友消息写回 `channel remember --source user`（用户原话立即取代旧说法），但有三道闸：敏感词拦截 → 用户 consent 门控（`lingshu 拒绝` 即停）→ 节流。详见[插件 README](../scripts/astrbot_plugin_lingshu/README.md)。

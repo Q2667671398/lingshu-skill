@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.52（2026-11-20）
+
+> 主题：**破坏性操作的确认口径统一** + **Python 版本口径统一到 3.10+**。前者是改进文档 P1-3 的落地，后者是改进文档「问题二」的收尾。
+
+- **新增 `safety.confirm_destructive()` / `safety.is_interactive()`**：所有"会覆盖或删除数据"的命令走同一套确认，规则四条——① 无论是否交互，**先打印影响面**（动哪个目录、会不会删备份之后新增的文件）；② `--yes` 直接放行；③ 不是终端（管道 / AI 调用 / 计划任务）→ **拒绝**并说清必须加 `--yes`；④ 是终端 → 问 `y/N`，默认 N。
+  - `restore`：原先自己写了两段 `input()` 询问（明文备份提示 + 覆盖确认），且非交互分支的文案写死在 `cli.py` 里；现在统一调用 `confirm_destructive`，影响面按 `--exact` 与否分别列出"会/不会删除备份之后新增的文件"。
+  - `purge`：令牌（`--confirm <id前8位>`）仍是身份确认，但同时通过同一个函数打印影响面清单（删除哪一层、关联边会被切断、冷静期判断在哪一层做），口径与其他破坏性操作一致。
+  - 有意保留的例外：`backup` 不加口令时只**提示**不拦截——它不销毁数据，且 `restore` 前的自动备份传 `assume_yes=True`，不能被这条规则挡住。
+- **Python 口径统一到 3.10+**（代码用了 `int | None` 等 3.10 语法，而文档写 3.9+）：`SKILL.md` 第 377 行、`package.json` 的 `description`、`start-panel.bat` 两处提示，全部改为 3.10+。按 3.9 装的用户不会再看到"项目一 import 就语法错误"的假象。
+- **验证**：新增 `tests/test_confirm_destructive.py`（12 条断言：影响面必打印、`--yes` 放行、非交互拒绝、交互 y/n/空/EOF、stdin 无 `isatty` 不崩、`__all__` 导出、`restore`/`purge` 确实走统一函数）；端到端实测——非交互无 `--yes` 时 `restore` 打印影响面并 `exit 1`，加 `--yes` 后恢复成功（隔离 HOME）；全量 42 个测试文件全过。
+- **仓库运维（非代码）**：GitHub 仓库重建为干净历史（旧库改名 `lingshu-skill-legacy` 保留 star 与 Release），贡献者统计里不再有历史改写前的残留署名；本机推送 GitHub 统一加 `-c http.version=HTTP/1.1 -c http.sslBackend=openssl`（默认 schannel 实测 0/3 成功，加参数后 3/3）。
+
 ## v3.51（2026-11-20）
 
 > 主题：**`update_dsh_copy.ps1` 会把本地杂物一起塞进 DSH 插件目录**。用户按 FAQ 去同步 DSH 副本时报「-File 参数不存在」——那条只是他站在 `C:\Users\<name>` 下用了相对路径；顺手查下去发现更麻烦的事：脚本用 `robocopy /E` **整目录复制**，实测会把 `.tmp_refs`（129 MB）和 `_ui_probe`（12 MB）一起拷进 `node_modules\lingshu-skill`。

@@ -1,12 +1,12 @@
 {
-  "version": "3.51",
+  "version": "3.52",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "d334ae9d01d19114ec6cc94cfba3f993278941d7f327d059e9213d80af108c2a",
-      "size": 214852
+      "sha256": "2de85ebaf7bd0a302a89f1f7ea9ce762d54d12e1dcec52b875c861c07803bc1e",
+      "size": 217266
     },
     "README.md": {
-      "sha256": "027b6240d2e3f07f9785628ef796328429678f20b68eac43b55c4e738c49f284",
+      "sha256": "fa085d8214238eafbfc6acce59aa52b25a4ade4bdb4f06c696b1f62872c601e6",
       "size": 62363
     },
     "SKILL-lite.md": {
@@ -18,8 +18,8 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "02b099dfb6c385a962d23df9cfbdebd4ba8b5dd2bd88a3d7c041a082276c7809",
-      "size": 34497
+      "sha256": "1b2f0dffd239704e6e12bedbba24f32409fb9034ca4d1136e4204779604d5ac3",
+      "size": 34498
     },
     "assets/panel.html": {
       "sha256": "c0bc6f8dcd8cc5c774f69bdf3793f3ff8b3b35439c9b19c5d62a0f4ca32684f4",
@@ -74,8 +74,8 @@
       "size": 54
     },
     "docs/commands.md": {
-      "sha256": "cf078b35b013e0204e38967b670a06e247c0e4ab5e2606e727a5fe8fd6f23907",
-      "size": 23331
+      "sha256": "51f1cb2f567ba6c530545afbd15be1ea8721dcb89d0faf05203b2a21988ed4f2",
+      "size": 24323
     },
     "docs/mechanics.md": {
       "sha256": "730bc3c577e5bab370921e43c7d61950c97dedcd629918e8582611cf1392951c",
@@ -94,20 +94,20 @@
       "size": 4017
     },
     "docs/灵枢改进方案-20261120.md": {
-      "sha256": "ebd8c97489319d3dc7632ac47effc70a494ffd5f9dc2f7e33a679656c3abc62c",
-      "size": 25043
+      "sha256": "ddd55abec17bde5ffb0c12e53da7b0e98bee1f55cac408e9b35cd10d785fb621",
+      "size": 28927
     },
     "docs/进展与待办.md": {
-      "sha256": "82aa7e31b6c97852f3f9620a54789f92d80a5e4da161cfa83c28abd67f8cd6e0",
-      "size": 10784
+      "sha256": "d7fd7d88b4f151b00fb85f6c969133aede6848f8783ff1686ef857b3c5bfd968",
+      "size": 13058
     },
     "index.js": {
       "sha256": "8ff6557e0dc342df7a5d9c1f5e357e9ea9858246381817ef2285c2b7f9115ed5",
       "size": 5217
     },
     "package.json": {
-      "sha256": "130a9b844c428ae11232782cde0827e3cadc74f8e4f9653ed222b5c6e2e109eb",
-      "size": 1032
+      "sha256": "02f87834d9051eb4a405d06b3618c572aa18cf31e4848e9c98c1910f1ac6e1b5",
+      "size": 1033
     },
     "scripts/assembler.py": {
       "sha256": "084e1b0157feda76539f0acd57f813edc4fa4df65c7d418912ef874174622db6",
@@ -134,8 +134,8 @@
       "size": 6681
     },
     "scripts/cli.py": {
-      "sha256": "c403afa6309b81a9a632b2ae6393156a91cd62bf8fe96ca251a27321aa8857b1",
-      "size": 251715
+      "sha256": "eaf5ef226bceda4c7d9729f3d09fe017442d9bbefc0f668b10eb74dd3e4704bc",
+      "size": 252205
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
@@ -230,8 +230,8 @@
       "size": 7383
     },
     "scripts/safety.py": {
-      "sha256": "88cc49c65662c7ca2bc52a2d6bcf9446df5b11b09ae655ea1823e065a6288f6d",
-      "size": 11493
+      "sha256": "7586d8d4a627eec67a4891b758665289a33e07a45fd27d526d45c70d1178cd53",
+      "size": 14530
     },
     "scripts/session_import.py": {
       "sha256": "31c68069800e6ca8c91aad7869e7e174adc0b1e027ac0a4f7361a2c3a5363b3f",
@@ -258,8 +258,8 @@
       "size": 4353
     },
     "start-panel.bat": {
-      "sha256": "48dc3d2957b17216788870e7aa1d3afd9ddf304692d8d001682d990e1b90022d",
-      "size": 1475
+      "sha256": "1f189106b4c25f28bc7159b740921d7dc48a7a3a5e54c30d8a06ee0e099b9657",
+      "size": 1477
     }
   }
 }

@@ -384,20 +384,19 @@ def cmd_restore(zip_path: str, yes: bool = False, password: str | None = None,
             print("[错误] 这不像灵枢的记忆备份（缺 persona.json / hippocampus.jsonl）", file=sys.stderr)
             return 1
         if not yes:
-            # 非交互环境（管道/脚本/AI 调用）没有确认提示可用：必须显式 --yes
-            # 才允许覆盖写回，否则静默覆盖数据的风险太大，直接拒绝。
-            if not (sys.stdin and sys.stdin.isatty()):
-                print("[错误] 非交互环境下恢复会覆盖现有数据，必须显式加 --yes 确认。", file=sys.stderr)
-                return 1
-            try:
-                mode = "【--exact】先删除现有受管文件、再" if exact else ""
-                extra = "（备份之后新增的文件会被删除）" if exact else "（备份之后新增的文件不会被删除）"
-                ans = input(f"恢复会{mode}把备份内容写回 {HOME}{extra}。继续？[y/N] ")
-                if ans.strip().lower() not in ("y", "yes"):
-                    print("已取消。")
-                    return 0
-            except EOFError:
-                pass
+            # v3.52：统一走 safety.confirm_destructive —— 非交互必须 --yes，
+            # 交互则先列影响面再问 y/N（默认 N）。
+            extra = "（备份之后新增的文件会被删除）" if exact else "（备份之后新增的文件不会被删除）"
+            impact = [f"把备份内容写回 {HOME}{extra}",
+                      "恢复前会先在 <记忆库>/backups 里留一份现状备份",
+                      "写入采用逐文件原子替换；中途失败可回滚"]
+            if exact:
+                impact.insert(0, "【--exact】先删除现有受管文件（认不出的文件保留）")
+            hint = "脚本/宿主调用请加 --yes。"
+            if exact:
+                hint = "脚本/宿主调用请加 --yes；--exact 会删除受管文件。"
+            if not safety.confirm_destructive("恢复", impact, hint=hint):
+                return 1 if not safety.is_interactive() else 0
     if HOME.exists():
         # 恢复前先留现状备份；备份失败（如磁盘空间不足）必须中止恢复，避免既恢复失败又没有回滚点
         bk = cmd_backup(target=str(HOME / "backups"), keep=10, assume_yes=True)
@@ -4429,6 +4428,14 @@ def _main(argv=None) -> int:
             return 0
         # #34 物理删除：双重确认（dust 冷静期 7 天 + --confirm <id前8位>）
         if mem_cmd == "purge":
+            # v3.52：同样先打影响面（令牌已由 --confirm 提供，视为已确认）
+            safety.confirm_destructive(
+                "物理删除记忆",
+                [f"从 {HOME} 的归档层删除 {args.id} 的正文与索引",
+                 "关联边会被切断，操作不可恢复",
+                 "冷静期未满 7 天的归档会被拒绝（该判断在 memory.purge 内）"],
+                assume_yes=True,
+            )
             try:
                 r = purge(args.id, args.confirm)
             except (ValueError, PermissionError) as exc:

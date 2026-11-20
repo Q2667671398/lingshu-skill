@@ -24,7 +24,7 @@ exit /b 0
 if "%PY%"=="" (
   echo.
   echo [error] Python not found.
-  echo Install Python 3.9+ and check "Add Python to PATH" during setup.
+  echo Install Python 3.10+ and check "Add Python to PATH" during setup.
   echo Download: https://www.python.org/downloads/
   echo.
   pause
@@ -52,7 +52,7 @@ if errorlevel 1 (
   echo [hint] Failed to start. Common causes:
   echo   1. Port %PORT% is in use -- use another port: start-panel.bat 8766
   echo   2. Firewall is blocking -- the panel only listens on 127.0.0.1
-  echo   3. Python is too old -- 3.9 or newer is required
+  echo   3. Python is too old -- 3.10 or newer is required
   echo.
   pause
 )

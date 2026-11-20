@@ -37,6 +37,8 @@ __all__ = [
     "same_volume",
     "backup_dir_candidates",
     "pick_backup_dir",
+    "is_interactive",
+    "confirm_destructive",
     "MANAGED_TOP_FILES",
     "MANAGED_TOP_DIRS",
 ]
@@ -295,3 +297,72 @@ def pick_backup_dir(home: Path | str) -> Path:
     except Exception:
         pass
     return fallback
+
+
+# ---------------------------------------------------------------------------
+# 破坏性操作的统一确认（v3.52）
+#
+# 之前 restore 自己写了一套 input() 询问、purge 用 --confirm 令牌，两套规则并存：
+# 同一种"会覆盖/删除数据"的操作，在不同命令上要求不同的确认方式，用户和宿主都难记。
+# 现在统一走 confirm_destructive()：
+#
+#   1. **先打印影响面**（动哪个目录、会不会删备份之后新增的文件），无论是否交互；
+#   2. `--yes` → 直接放行（脚本/宿主/CI 用）；
+#   3. 不是终端（管道、AI 调用、计划任务）→ **拒绝**，并说清必须加 --yes；
+#   4. 是终端 → 问 y/N，默认 N。
+#
+# 例外：`backup` 不加口令时只**提示**不拦截——它不销毁数据，只是生成明文 zip；
+# 且 restore 前的自动备份传 assume_yes=True，不能被这条规则挡住。
+# ---------------------------------------------------------------------------
+
+
+def is_interactive() -> bool:
+    """当前 stdin 是不是终端。宿主/AI 调用、管道、计划任务里通常是 False。"""
+    try:
+        return bool(sys.stdin is not None and sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def confirm_destructive(action: str, impact: str | list[str], *,
+                        assume_yes: bool = False,
+                        hint: str = "",
+                        stream=None) -> bool:
+    """破坏性操作的统一确认。返回 True＝可以继续，False＝调用方应中止（或被取消）。
+
+    参数：
+        action   ：操作名，如 "恢复"、"生成明文备份"、"物理删除记忆"
+        impact   ：影响面清单（一条字符串或字符串列表），会逐行打印
+        assume_yes：对应 `--yes`；True 时跳过询问（但仍打印影响面）
+        hint     ：拒绝/取消时给用户的下一步建议（可选）
+        stream   ：影响面输出位置，默认 stdout（测试可传 io.StringIO）
+    """
+    out = stream if stream is not None else sys.stdout
+    lines = [impact] if isinstance(impact, str) else list(impact)
+    print(f"[{action}] 影响面：", file=out)
+    for line in lines:
+        print(f"  - {line}", file=out)
+
+    if assume_yes:
+        print(f"[{action}] 已通过 --yes 确认。", file=out)
+        if hint:
+            print(f"        {hint}", file=out)
+        return True
+
+    if not is_interactive():
+        print(f"[错误] 非交互环境下{action}会改动或覆盖数据，必须显式加 --yes 确认。",
+              file=sys.stderr)
+        if hint:
+            print(f"        {hint}", file=sys.stderr)
+        return False
+
+    try:
+        ans = input(f"确认执行{action}？[y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans.strip().lower() in ("y", "yes"):
+        return True
+    print("已取消。", file=out)
+    if hint:
+        print(f"        {hint}", file=out)
+    return False
