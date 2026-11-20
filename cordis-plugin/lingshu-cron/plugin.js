@@ -26,10 +26,15 @@
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-lingshu-cron'
+
+// 本插件文件在 <包根>/cordis-plugin/lingshu-cron/plugin.js → 上两级是包根
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
+const PACKAGE_ROOT = join(PLUGIN_DIR, '..', '..')
 
 const DEFAULTS = {
   brainPy: '',            // brain.py 绝对路径；留空自动探测（与 lingshu-startup 同一套逻辑）
@@ -67,17 +72,25 @@ function mergeConfig(user) {
 
 async function findBrainPy(configured, ctx) {
   if (configured) return existsSync(configured) ? configured : null
+  // ① 本包自带优先：../../scripts/brain.py 与插件同包发布，不依赖宿主状态
+  //    （v3.53 之前缺这一条 → 注册 runtime 技能时没给 resourceBase/path，
+  //     注册表查不到路径，即记即存与天级任务就静默停摆、days 永远不推进）
+  for (const p of brainPyCandidates()) {
+    if (existsSync(p)) return p
+  }
+  // ② 技能注册表（装了全局技能副本时更准；字段名跨版本不同，逐个试）
   try {
     const registry = ctx?.get?.('skills') ?? ctx?.skills
     let items = registry?.list?.()
     if (items?.then) items = await items
     const hit = Array.isArray(items) ? items.find((s) => s?.name === 'lingshu') : null
     if (hit) {
-      for (const [field, isFile] of [
-        ['path', true], ['location', true], ['dir', false],
-        ['baseDir', false], ['directory', false],
-      ]) {
-        const raw = hit[field]
+      const bases = [
+        [hit.path, true], [hit.location, true],
+        [hit?.resourceBase?.path, false],
+        [hit.dir, false], [hit.baseDir, false], [hit.directory, false],
+      ]
+      for (const [raw, isFile] of bases) {
         if (typeof raw !== 'string' || !raw) continue
         const root = isFile ? dirname(raw) : raw
         const p = join(root, 'scripts', 'brain.py')
@@ -85,40 +98,62 @@ async function findBrainPy(configured, ctx) {
       }
     }
   } catch {}
-  const envDir = (process.env.LINGSHU_SKILL_DIR || '').trim()
-  if (envDir) {
-    const p = join(envDir, 'scripts', 'brain.py')
-    if (existsSync(p)) return p
-  }
-  const home = homedir()
-  for (const dir of [
-    join(home, '.dsh', 'skills', 'lingshu'),
-    join(home, '.trae-cn', 'skills', 'lingshu'),
-  ]) {
-    const p = join(dir, 'scripts', 'brain.py')
-    if (existsSync(p)) return p
-  }
   return null
 }
 
-function findPythonExe(configured) {
-  if (configured) return existsSync(configured) ? configured : null
+/** 有可能藏着 brain.py 的绝对路径清单（纯函数，测试与排障共用） */
+export function brainPyCandidates() {
+  const out = [join(PACKAGE_ROOT, 'scripts', 'brain.py')]
+  const envDir = (process.env.LINGSHU_SKILL_DIR || '').trim()
+  if (envDir) out.push(join(envDir, 'scripts', 'brain.py'))
   const home = homedir()
-  const candidates = []
-  const appHomes = [process.env.APP_DSH, join(home, '.dsh')].filter(Boolean)
-  for (const app of appHomes) {
-    candidates.push(
-      join(app, 'app-runtimes', 'app-primary-runtime', 'dependencies', 'python', 'python.exe'),
-      join(app, 'runtimes', 'app-primary-runtime', 'dependencies', 'python', 'python.exe'),
-    )
+  out.push(
+    join(home, '.dsh', 'skills', 'lingshu', 'scripts', 'brain.py'),
+    join(home, '.trae-cn', 'skills', 'lingshu', 'scripts', 'brain.py'),
+  )
+  return out
+}
+
+/** 有可能可用的 python 可执行文件清单（纯函数，测试与排障共用） */
+export function pythonCandidates() {
+  const home = homedir()
+  const out = []
+  for (const app of [process.env.APP_DSH, join(home, '.dsh')].filter(Boolean)) {
+    out.push(join(app, 'app-runtimes', 'app-primary-runtime', 'dependencies', 'python', 'python.exe'))
+    out.push(join(app, 'runtimes', 'app-primary-runtime', 'dependencies', 'python', 'python.exe'))
   }
-  candidates.push(
+  // PATH 上的 python.exe / python3.exe（ServBay、Store、conda 等都能命中）。
+  // 不选 .cmd shim：spawn 走 CreateProcess，不解析 PATHEXT。
+  for (const dir of (process.env.PATH || '').split(delimiter)) {
+    if (!dir) continue
+    out.push(join(dir, 'python.exe'), join(dir, 'python3.exe'))
+  }
+  out.push(
     join(home, 'AppData', 'Local', 'Programs', 'Python', 'python.exe'),
     'C:\\Python313\\python.exe',
     'C:\\Python312\\python.exe',
     'C:\\Program Files\\Python313\\python.exe',
   )
-  for (const p of candidates) {
+  return out
+}
+
+/** 静默失败留痕：写 ~/.dsh/lingshu-diag.json（doctor / 排障读它） */
+export function writeDiag(kind, detail) {
+  try {
+    const base = process.env.APP_DSH || join(homedir(), '.dsh')
+    const payload = {
+      ts: new Date().toISOString(),
+      plugin: 'lingshu-cron',
+      kind,
+      detail: detail && typeof detail === 'object' ? detail : { message: String(detail ?? '') },
+    }
+    writeFileSync(join(base, 'lingshu-diag.json'), JSON.stringify(payload, null, 2), 'utf8')
+  } catch {}
+}
+
+function findPythonExe(configured) {
+  if (configured) return existsSync(configured) ? configured : null
+  for (const p of pythonCandidates()) {
     if (existsSync(p)) return p
   }
   return null
@@ -414,7 +449,16 @@ export function apply(ctx, config) {
     if (brainPyCache) return brainPyCache
     const found = await findBrainPy(cfg.brainPy, ctx)
     if (!found) {
-      if (!warnedNoBrain) { warnedNoBrain = true; warn('lingshu-cron: 未找到 brain.py（未安装灵枢？），调度跳过') }
+      // 静默失败必须留痕：这是 2026-11-20「记忆突然不录入了」的直接证据来源
+      if (!warnedNoBrain) {
+        warnedNoBrain = true
+        writeDiag('brainPy-not-found', {
+          tried: brainPyCandidates(),
+          packageRoot: PACKAGE_ROOT,
+          configured: cfg.brainPy || null,
+        })
+        warn('lingshu-cron: 未找到 brain.py（未安装灵枢？），调度跳过')
+      }
       return null
     }
     brainPyCache = found

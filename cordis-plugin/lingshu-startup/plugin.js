@@ -20,10 +20,11 @@
 // 技能目录；brain.py 自身保证只读降级（HOME 不可写时照样注入）。
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 
 // 刻意零外部依赖：不 import @deepseek-ai/schemastery。原因——link: 安装时模块
 // 真实路径留在技能目录，Node 从那里向上找 node_modules 一路到盘符根都找不到
@@ -31,6 +32,29 @@ import { randomUUID } from 'node:crypto'
 // 去掉依赖后 link 安装也能工作，改 plugin.js 即时生效，不必每次重打包。
 
 export const name = 'dsh-lingshu-startup'
+
+// 本插件文件在 <包根>/cordis-plugin/lingshu-startup/plugin.js，
+// 往上一级是 cordis-plugin/，再上一级就是包根（含 scripts/brain.py 与 SKILL.md）。
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
+const PACKAGE_ROOT = join(PLUGIN_DIR, '..', '..')
+
+/**
+ * 把"找不到 brain.py / python"这类静默失败写进 ~/.dsh/lingshu-diag.json。
+ * 为什么需要：插件里所有失败都必须吞掉（事件串行、抛异常会回滚会话），
+ * 结果就是"记忆不录入了"却没有任何痕迹可查——2026-11-20 那次排障就卡在这。
+ */
+export function writeDiag(kind, detail) {
+  try {
+    const base = process.env.APP_DSH || join(homedir(), '.dsh')
+    const payload = {
+      ts: new Date().toISOString(),
+      plugin: 'lingshu-startup',
+      kind,
+      detail: detail && typeof detail === 'object' ? detail : { message: String(detail ?? '') },
+    }
+    writeFileSync(join(base, 'lingshu-diag.json'), JSON.stringify(payload, null, 2), 'utf8')
+  } catch {}
+}
 
 // 默认配置（纯普通对象，零依赖）。DSH 对导出 Config 的插件会喂用户配置，
 // 不导出 Config 时喂默认空对象——两种情况本插件都能工作。
@@ -57,23 +81,27 @@ function mergeConfig(user) {
 /** 依次探测常见安装位置的 brain.py */
 async function findBrainPy(configured, ctx) {
   if (configured) return existsSync(configured) ? configured : null
-  // 方案3：直接问 APP 技能 catalog 要路径——registry 条目带 SKILL.md 的位置
-  // （官方文档措辞 "location for its SKILL.md ... may be an absolute filesystem
-  // path"，字段名不同版本可能是 path/location/baseDir/dir，逐个试，命中即用）。
-  // 换盘符/自定义目录/目录改名都能命中，不靠猜。任何一步失败静默落回兜底探测。
-  // list() 同步/异步返回都支持（agent/created 是 async 监听器，await 无成本）。
+  // ① 先看本包自带：插件就在 <包根>/cordis-plugin/lingshu-startup/ 里，
+  //    ../../scripts/brain.py 一定和它同包发布。这一条不依赖任何宿主状态，
+  //    也不依赖"技能注册表带路径"（v3.53 之前正是缺了这一条：注册 runtime 技能
+  //    时没给 resourceBase/path，子插件就永远找不到 brain.py，整条自动注入/
+  //    即记即存/天级任务全部静默停摆）。
+  for (const p of brainPyCandidates()) {
+    if (existsSync(p)) return p
+  }
+  // ② 再问技能注册表（装了全局技能副本时更准；字段名跨版本不同，逐个试）
   try {
     const registry = ctx?.get?.('skills') ?? ctx?.skills
     let items = registry?.list?.()
     if (items?.then) items = await items
     const hit = Array.isArray(items) ? items.find((s) => s?.name === 'lingshu') : null
     if (hit) {
-      // path 指向 SKILL.md 时取其目录；location/baseDir 指向技能根目录时不取目录。
-      for (const [field, isFile] of [
-        ['path', true], ['location', true], ['dir', false],
-        ['baseDir', false], ['directory', false],
-      ]) {
-        const raw = hit[field]
+      const bases = [
+        [hit.path, true], [hit.location, true],
+        [hit?.resourceBase?.path, false], // DSH 的 runtime 技能可带资源根目录
+        [hit.dir, false], [hit.baseDir, false], [hit.directory, false],
+      ]
+      for (const [raw, isFile] of bases) {
         if (typeof raw !== 'string' || !raw) continue
         const root = isFile ? dirname(raw) : raw
         const p = join(root, 'scripts', 'brain.py')
@@ -84,22 +112,43 @@ async function findBrainPy(configured, ctx) {
     // 技能注册表探测失败不该静默——留一条日志方便排障（但不在群/会话里打扰）
     try { ctx?.logger?.warn?.('lingshu-startup: 技能注册表探测异常，走环境变量/默认路径兜底', e) } catch {}
   }
-  // 环境变量兜底：装在非常规位置（换盘符/自定义目录）时，
-  // 设 LINGSHU_SKILL_DIR 指向技能根目录即可，不用改 profile。
-  const envDir = (process.env.LINGSHU_SKILL_DIR || '').trim()
-  if (envDir) {
-    const p = join(envDir, 'scripts', 'brain.py')
-    if (existsSync(p)) return p
-  }
-  const home = homedir()
-  for (const dir of [
-    join(home, '.dsh', 'skills', 'lingshu'),
-    join(home, '.trae-cn', 'skills', 'lingshu'),
-  ]) {
-    const p = join(dir, 'scripts', 'brain.py')
-    if (existsSync(p)) return p
-  }
   return null
+}
+
+/** 有可能藏着 brain.py 的绝对路径清单（纯函数，便于测试与排障打印） */
+export function brainPyCandidates() {
+  const out = [join(PACKAGE_ROOT, 'scripts', 'brain.py')]
+  const envDir = (process.env.LINGSHU_SKILL_DIR || '').trim()
+  if (envDir) out.push(join(envDir, 'scripts', 'brain.py'))
+  const home = homedir()
+  out.push(
+    join(home, '.dsh', 'skills', 'lingshu', 'scripts', 'brain.py'),
+    join(home, '.trae-cn', 'skills', 'lingshu', 'scripts', 'brain.py'),
+  )
+  return out
+}
+
+/** 有可能可用的 python 可执行文件清单（纯函数，便于测试与排障打印） */
+export function pythonCandidates() {
+  const home = homedir()
+  const out = []
+  for (const app of [process.env.APP_DSH, join(home, '.dsh')].filter(Boolean)) {
+    out.push(join(app, 'app-runtimes', 'app-primary-runtime', 'dependencies', 'python', 'python.exe'))
+    out.push(join(app, 'runtimes', 'app-primary-runtime', 'dependencies', 'python', 'python.exe'))
+  }
+  // PATH 里的 python.exe / python3.exe（ServBay、Store、conda 等布局都能命中）。
+  // 刻意不选 .cmd shim：spawn 走 CreateProcess 不解析 PATHEXT。
+  for (const dir of (process.env.PATH || '').split(delimiter)) {
+    if (!dir) continue
+    out.push(join(dir, 'python.exe'), join(dir, 'python3.exe'))
+  }
+  out.push(
+    join(home, 'AppData', 'Local', 'Programs', 'Python', 'python.exe'),
+    'C:\\Python313\\python.exe',
+    'C:\\Python312\\python.exe',
+    'C:\\Program Files\\Python313\\python.exe',
+  )
+  return out
 }
 
 /**
@@ -110,24 +159,7 @@ async function findBrainPy(configured, ctx) {
  */
 function findPythonExe(configured) {
   if (configured) return existsSync(configured) ? configured : null
-  const home = homedir()
-  const candidates = []
-  // DSH 自带运行时：DSH_HOME 环境变量优先，其次 ~/.dsh
-  const dshHomes = [process.env.DSH_HOME, join(home, '.dsh')].filter(Boolean)
-  for (const dsh of dshHomes) {
-    candidates.push(
-      join(dsh, 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'python', 'python.exe'),
-      join(dsh, 'runtimes', 'dsh-primary-runtime', 'dependencies', 'python', 'python.exe'),
-    )
-  }
-  // Python 官方安装器与其他常见落点
-  candidates.push(
-    join(home, 'AppData', 'Local', 'Programs', 'Python', 'python.exe'),
-    'C:\\Python313\\python.exe',
-    'C:\\Python312\\python.exe',
-    'C:\\Program Files\\Python313\\python.exe',
-  )
-  for (const p of candidates) {
+  for (const p of pythonCandidates()) {
     if (existsSync(p)) return p
   }
   return null
@@ -224,15 +256,32 @@ export function apply(ctx, config) {
 
       const brainPy = await findBrainPy(cfg.brainPy, ctx)
       if (!brainPy) {
+        // 静默失败必须有痕迹：doctor / 面板 / 手工排障都读这个文件
+        writeDiag('brainPy-not-found', {
+          tried: brainPyCandidates(),
+          packageRoot: PACKAGE_ROOT,
+          configured: cfg.brainPy || null,
+        })
         if (!warnedOnce) { warnedOnce = true; try { ctx.logger?.warn?.('lingshu-startup: 未找到 brain.py（未安装灵枢？），跳过注入') } catch {} }
         return
       }
       const pythonExe = findPythonExe(cfg.python)
       const text = await runStartup(pythonExe, cfg.python, brainPy, cfg.budget, cfg.timeoutMs)
       if (!text) {
+        writeDiag('startup-no-output', {
+          brainPy,
+          pythonExe: pythonExe || null,
+          pythonConfigured: cfg.python || null,
+          pythonTried: pythonCandidates().slice(0, 12),
+        })
         if (!warnedOnce) { warnedOnce = true; try { ctx.logger?.warn?.('lingshu-startup: brain.py startup 未产出注入文本（python 不在/超时/未初始化），跳过注入') } catch {} }
         return
       }
+      // 成功时清掉上一次的失败痕迹，避免旧 diag 一直误导排障
+      try {
+        const base = process.env.APP_DSH || join(homedir(), '.dsh')
+        rmSync(join(base, 'lingshu-diag.json'), { force: true })
+      } catch {}
       // 只存不投递：send/inject 走 inbox 都有生命周期坑（实测坐实），真正进模型
       // 上下文要在 agent/pre-step 里追加 messages（见下）。
       pending.set(agent, text)

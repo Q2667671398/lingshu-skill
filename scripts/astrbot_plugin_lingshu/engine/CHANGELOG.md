@@ -1,5 +1,30 @@
 # 更新日志
 
+## v3.53（2026-11-20）
+
+> 主题：**"记忆又不录入了"——插件找不到 brain.py，静默停摆**。这是今晚最要紧的一处：自动注入、即记即存（extract）、天级任务（daily/backup/dream/drift/auto-archive）全都没在跑，而且没有任何报错。
+
+**现象与证据**（真实机器实测）：
+
+- `~/.dsh/lingshu-cron-state.json` 的 `turns` 一直在涨（说明 `agent/turn-stopping` 正常），但 `days` 六个任务全部停在 **2026-11-19**；
+- `~/.brain-memory/hippocampus.jsonl` 最后一条是 14:26，之后零新增；
+- `lingshu.log` 里 `会话开始，注入完成` 停在 12:54，重启后（17:19）再没出现过；
+- 插件行 `include:lingshu` 是 `enabled=true / fiberPhase=active`——**装是装上的，就是不动**。
+
+**根因**：根包 `index.js` 用 `ctx.skills.register({...})` 注册 runtime 技能时**没给 `resourceBase` / `path`**。DSH 的 `dsh-skill` 里 `runtimeCandidate()` 只有当技能带 `path` 时才把它暴露给 `list()`（源码 `lib/index.js` 的 `...skill.path !== void 0 ? { path: skill.path } : {}`），所以两个子插件 `findBrainPy()` 走注册表永远拿不到路径；兜底目录 `~/.dsh/skills/lingshu` 又不存在 → 返回 `null` → `fire()`/`inject` 在**第一步之前**就 return，`state.days` 自然永远不推进。而插件里所有异常都必须吞掉（`agent/*` 是串行事件，抛出会回滚会话），于是全程无声。
+
+**修法**：
+
+- **`index.js` 注册时带 `resourceBase: { kind: 'directory', path: here }`**，注册表从此能给出技能根目录（语义上也正确：我们本来就告诉模型"Base directory for this skill"）。
+- **两个子插件先按自身位置找**：新增 `brainPyCandidates()`，首选 `join(PACKAGE_ROOT, 'scripts', 'brain.py')`（`import.meta.url` 上两级＝包根）。包内相对路径不依赖任何宿主状态，重装/换盘/改名都不会断。注册表探测降为第二优先，并新增 `resourceBase.path` 字段识别。
+- **python 探测扫 PATH**：新增 `pythonCandidates()`，除 DSH 运行时与常见安装器外，逐条扫 `process.env.PATH` 找 `python.exe` / `python3.exe`（ServBay、Store、conda 布局都能命中；仍不选 `.cmd` shim，因为 `spawn` 走 `CreateProcess` 不解析 PATHEXT）。实测本机从 0 命中变为直接选中 `D:\ServBay\packages\python\current\python.exe`（候选 138 个）。
+- **失败留痕**：新增 `writeDiag()`，找不到 brain.py / startup 无输出时写 `~/.dsh/lingshu-diag.json`（含 `kind`、试过的路径清单、包根），成功时自动清除。以后"突然不录入了"至少有个文件可查。
+- **回归测试**：`tests/test_plugin_brainpy_resolution.py`（5 条）——源码断言（必须带 `resourceBase`、包内候选排在注册表之前、扫 PATH、写 diag）+ 有 node 时**真实 import 两个插件模块**，断言首选路径就是包内 `scripts/brain.py` 且文件存在。零外部依赖，插件可被 node 直接 import。
+
+**验证**：本机改后用 Node 真实导入两个插件，`brainPyCandidates()[0]` 均为 `<包根>/scripts/brain.py` 且存在；`pythonCandidates()` 命中 ServBay python；随后用模拟 ctx 触发一次 `agent/turn-stopping`，`state.days` 六个任务全部推进到当天，`hippocampus.jsonl` 出现新的即记即存条目（详见本轮汇报）。
+
+**顺带**：本轮还排查了用户机器的 profile 配置——`~/.dsh/profiles/desktop/cordis.patch.yml` 曾临时加过显式 `brainPy/python`（作为对照实验），代码修好后已移除，避免把路径钉死。
+
 ## v3.52（2026-11-20）
 
 > 主题：**破坏性操作的确认口径统一** + **Python 版本口径统一到 3.10+**。前者是改进文档 P1-3 的落地，后者是改进文档「问题二」的收尾。

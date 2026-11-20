@@ -60,6 +60,10 @@ export function apply(ctx, config) {
     // `skill(name="lingshu")` 会抛 "source must be a string"（改进清单 #2）。
     source: 'bundled:lingshu',
     provider: 'lingshu-skill',
+    // v3.53：必须声明资源根目录。DSH 的 runtimeCandidate 只在技能带 path/resourceBase
+    // 时才把位置暴露给 list()；此前没给，子插件（startup/cron）就查不到 brain.py，
+    // 注入与即记即存会**静默停摆**——2026-11-20 那次"记忆不录入了"就是这个。
+    resourceBase: { kind: 'directory', path: here },
     invocation: { modelInvocable: true, userInvocable: true },
   })
 
