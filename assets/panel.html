@@ -1,4 +1,4 @@
-﻿﻿<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,6 +11,9 @@
     --teal:#5fa8a0; --red:#c96b5f; --violet:#8d86c9;
     /* 语义色别名：供情绪/欲望条等内联样式引用，避免 var(--accent/--good/--bad) 取不到值变透明 */
     --accent:var(--amber); --good:var(--teal); --bad:var(--red);
+    /* 证据等级等场景用的补充色（以前只有 var(--green)/var(--blue) 的引用没定义，
+       整个 color/border-color 声明在计算时失效 → 徽章退化成一团灰） */
+    --green:#6fbf8b; --blue:#7ea6e0;
     /* 主题跟随：文本语义色（深色底上更亮的同系文字）+ 星图/节点 RGB 三元组（浅色主题在 enhance.css 覆盖为深色版本） */
     --teal-text:#9fd2cb; --red-text:#dda49b; --amber-text:#e3b96c;
     --node-persona:240,208,120; --node-high:224,92,79; --node-mid:217,164,65;
@@ -34,6 +37,9 @@
     border-right:1px solid var(--line);padding:24px 16px 18px;
     display:flex;flex-direction:column;gap:22px;position:sticky;top:0;height:100vh;
     background:rgba(10,12,15,.6);
+    /* 侧栏信息块（记忆库路径 / 水位 / 版本 / 待审核 / 会话模式）比视口高时，
+       以前直接裁掉且无法滚动，底部几条永远看不到；这里允许独立滚动。 */
+    overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;
   }
   .brand{display:flex;align-items:center;gap:10px;font-size:15px;letter-spacing:.5px;font-weight:600;padding:0 8px}
   .brand .orb{
@@ -51,6 +57,14 @@
   nav button.active{background:var(--amber-soft);color:var(--amber)}
   nav button .ic{width:16px;text-align:center;opacity:.9}
   .sidefoot{margin-top:auto;font-size:11px;color:var(--faint);line-height:1.7;padding:0 8px;word-break:break-all}
+  /* 侧栏可滚动后，各块不许被压缩（否则导航按钮会被挤扁而不是整体滚动） */
+  aside > .brand, aside > nav, aside > .sidefoot{flex-shrink:0}
+  /* 技能根目录里"目录不存在"的折叠摘要 */
+  details.root-more{margin-top:8px}
+  details.root-more > summary{cursor:pointer;padding:6px 2px;color:var(--muted)}
+  details.root-more > summary:hover{color:var(--text)}
+  /* 内容还没写进 <pre> 时不显示空盒子（成长页「每日例行」输出区） */
+  .pre:empty{display:none}
   .sidefoot b{color:var(--muted);font-weight:500}
   main{padding:30px 38px 60px;max-width:1180px;width:100%}
   header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:26px}
@@ -415,23 +429,26 @@
         <button class="ghost" id="btn-conflicts">冲突检查</button>
         <button class="btn" id="btn-add">＋ 写一条</button>
       </div>
-      <div id="bulk-bar" class="card" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px">
+      <div id="bulk-bar" class="card hidden" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px">
         <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="bulk-all"> 全选
         </label>
         <span class="sub" id="bulk-count" style="min-width:70px">已选 0 条</span>
-        <button class="ghost" id="bulk-confirm">✓ 批量确认</button>
-        <button class="ghost" id="bulk-discard">✗ 批量废弃</button>
-        <input id="bulk-imp" type="number" min="1" max="10" placeholder="重要性 1-10" style="width:118px">
-        <button class="ghost" id="bulk-imp-btn">批量设重要性</button>
-        <input id="bulk-tag" placeholder="标签，逗号分隔" style="width:150px">
-        <button class="ghost" id="bulk-tag-add">批量加标签</button>
-        <button class="ghost" id="bulk-tag-rm">批量删标签</button>
-        <button class="ghost" id="bulk-pin">批量置顶</button>
-        <button class="ghost" id="bulk-unpin">批量取消置顶</button>
-        <button class="ghost" id="bulk-freeze" title="冻结后不参与召回/注入/做梦，仍可查看">❄ 批量冻结</button>
-        <button class="ghost" id="bulk-unfreeze">批量解冻</button>
-        <button class="ghost" id="bulk-delete" style="color:var(--red)">批量删除</button>
+        <span class="sub" id="bulk-hint">勾选记忆卡片左侧的复选框，这里会展开全部批量操作</span>
+        <div id="bulk-acts" class="hidden" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="ghost" id="bulk-confirm">✓ 批量确认</button>
+          <button class="ghost" id="bulk-discard">✗ 批量废弃</button>
+          <input id="bulk-imp" type="number" min="1" max="10" placeholder="重要性 1-10" style="width:118px">
+          <button class="ghost" id="bulk-imp-btn">批量设重要性</button>
+          <input id="bulk-tag" placeholder="标签，逗号分隔" style="width:150px">
+          <button class="ghost" id="bulk-tag-add">批量加标签</button>
+          <button class="ghost" id="bulk-tag-rm">批量删标签</button>
+          <button class="ghost" id="bulk-pin">批量置顶</button>
+          <button class="ghost" id="bulk-unpin">批量取消置顶</button>
+          <button class="ghost" id="bulk-freeze" title="冻结后不参与召回/注入/做梦，仍可查看">❄ 批量冻结</button>
+          <button class="ghost" id="bulk-unfreeze">批量解冻</button>
+          <button class="ghost" id="bulk-delete" style="color:var(--red)">批量删除</button>
+        </div>
       </div>
       <div id="layer-bar" class="card" style="margin-bottom:14px;padding:10px 16px" title="记忆库各层分布"></div>
       <div class="card hidden" id="conflict-box" style="margin-bottom:14px;border-color:rgba(201,107,95,.4)">
@@ -2148,13 +2165,18 @@ function renderAiChanges(ov){
     : `<div class="sub">近 7 天 AI 没有主动改过人格。做梦微调 traits 会先在漂移账本累积，过门限才会真正改动。</div>`;
   // 未读高亮常驻：不在这里标已读，由 markAiChangesViewed()（切走/刷新时）统一处理
 }
-// 标已读：切走页签或刷新/关闭页面时调用。navigator.sendBeacon 保证关页也不丢请求。
+// 标已读：切走页签或刷新/关闭页面时调用。
+// 注意不能用 navigator.sendBeacon——它无法带 Authorization 头，服务端一律 403，
+// 控制台每次切页都刷一条红字，重复回退请求还会打两次。用 fetch + keepalive
+// 取得同样的"关页也不丢请求"语义，同时补上 token。
 function markAiChangesViewed(){
   try {
-    navigator.sendBeacon("/api/persona/changes-viewed", new Blob(["{}"], {type: "application/json"}));
-  } catch (_) {
-    api("/api/persona/changes-viewed", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}).catch(() => {});
-  }
+    fetch("/api/persona/changes-viewed", {
+      method: "POST", keepalive: true,
+      headers: {"Content-Type": "application/json", Authorization: "Bearer " + PANEL_TOKEN},
+      body: "{}"
+    }).catch(() => {});
+  } catch (_) { /* 老浏览器不支持 keepalive：放弃上报，不影响页面 */ }
 }
 // 刷新/关闭页面：只要人格页有未读高亮，离开时就标已读
 window.addEventListener("beforeunload", () => {
@@ -2450,7 +2472,7 @@ function renderSkills(out){
   const roots = S.ws.skill_roots || [];
   const rootBox = $("skill-root-list");
   if (rootBox) {
-    rootBox.innerHTML = roots.length ? roots.map(r => `<div class="mem" style="padding:8px 12px">
+    const rootRow = r => `<div class="mem" style="padding:8px 12px">
       <div class="mem-body w100">
         <div class="row" style="gap:8px;align-items:center">
           <span class="badge ${r.custom ? "archive" : "hippo"}">${esc(r.label)}</span>
@@ -2461,8 +2483,19 @@ function renderSkills(out){
           ${r.custom ? `<button class="iconbtn" title="移除此自定义目录" data-rootrm="${esc(r.path)}" style="margin-left:auto">✕</button>` : ""}
         </div>
       </div>
-    </div>`).join("")
-      : `<div class="sub">未发现任何技能目录。</div>`;
+    </div>`;
+    // 宿主越多，"目录不存在"的行越多（常见 10+ 行红字）。只把**真的有技能**的目录和
+    // 用户自己加的目录平铺展示，剩下的收进一行折叠摘要——不删除、不影响重新扫描。
+    const live = roots.filter(r => r.exists || r.custom);
+    const missing = roots.filter(r => !r.exists && !r.custom);
+    rootBox.innerHTML = !roots.length ? `<div class="sub">未发现任何技能目录。</div>`
+      : (live.length ? live.map(rootRow).join("")
+         : `<div class="sub">还没有任何宿主技能目录存在。</div>`)
+        + (missing.length
+          ? `<details class="root-more"><summary class="sub">另有 ${missing.length} 个宿主技能目录不存在（点开查看路径）</summary>
+               <div style="margin-top:6px">${missing.map(rootRow).join("")}</div>
+             </details>`
+          : "");
   }
   // 跨宿主扫描到的技能（只读，可直接用/借用；灵枢本体自身除外）
   const scan = (S.ws.skill_scan || []).filter(s => !s.self);
@@ -2683,7 +2716,12 @@ function memDay(m){
 }
 function renderMemRows(rows){
   if (!rows.length) {
-    $("mem-list").innerHTML = `<div class="empty">没有匹配的记忆。放宽筛选，或者按回车做一次模糊回忆。</div>`;
+    // 空库时上面的分层条已经在说「记忆库还是空的」，这里再摆一个虚线空态就是两个空盒子叠着；
+    // 只有"库里有记忆、只是筛选没命中"才需要提示放宽筛选。
+    const total = Number((S.ov && S.ov.stats && S.ov.stats.total) || 0);
+    $("mem-list").innerHTML = total > 0
+      ? `<div class="empty">没有匹配的记忆。放宽筛选，或者按回车做一次模糊回忆。</div>` : "";
+    bulkUpdateCount();
     return;
   }
   if (S.memView !== "timeline") {
@@ -2809,6 +2847,10 @@ function switchTab(tab){
   if (S.tab !== "persona" && document.querySelector("#ai-changes tr.unread")) markAiChangesViewed();
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + tab));
+  // 页签写进地址栏：刷新/收藏回到同一页，发给别人也直接落到这一页（replaceState 不污染后退键）
+  if (location.hash.slice(1) !== S.tab) {
+    try { history.replaceState(null, "", "#" + S.tab); } catch (_) { /* file:// 等环境不支持时忽略 */ }
+  }
   const titles = {
     overview: ["概览", "它现在记得什么，是什么状态"],
     memories: ["记忆", "分层存储与模糊回忆"],
@@ -2834,7 +2876,9 @@ function switchTab(tab){
   if (tab === "graph") loadGraph(Number($("graph-limit").value || 300));
   else { stopPhysics(); stopGraphAnim(); }   // 离开联想页即停模拟，不空耗 CPU
   if (tab === "logs") loadLogs();
-  if (tab === "diag") loadDiagnostics();
+  // 诊断页有两张随时间变化的卡：体检结果 + 数据目录位置，进页面时一起刷（以前只刷体检，
+  // 数据目录卡靠一段 class 判断写错的 MutationObserver，永远停在「加载中…」）
+  if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); }
   if (tab === "persona") { loadSnapshots(); loadPersonaSuggest(); }  // 切到人格页时顺手刷快照列表与画像归纳建议
   if (["knowledge", "notes", "skills", "growth"].includes(tab)) {
     if (S.ws) { renderKnowledge(); renderNotes(); renderSkills(); renderDshPlugins(); renderGrowth(); renderOnboarding(); }
@@ -2875,7 +2919,7 @@ function renderExtOllama(st){
   } else if (st.installed && st.serving && st.model_ready) {
     body = `<div style="margin-top:10px;color:#38a169;font-size:13px">✓ 已就绪：语义召回已启用</div>`;
   } else if (!st.installed && st.fallback_enabled) {
-    body = `<div style="margin-top:10px;font-size:13px;color:var(--sub,#888)">未安装 Ollama：语义召回由纯 Python 降级向量兜底（无需安装即可用）；安装 Ollama 可获得真模型向量，召回更准。</div>`;
+    body = `<div style="margin-top:10px;font-size:13px;color:var(--muted)">未安装 Ollama：语义召回由纯 Python 降级向量兜底（无需安装即可用）；安装 Ollama 可获得真模型向量，召回更准。</div>`;
   }
   // 按钮：v2.99 一键化——不管装没装，统一一个「一键开启向量记忆」按钮，
   // 服务端 setup 端点自己判断「已装跳过/未装先下载→解压→起服务→拉模型→写配置」
@@ -2883,7 +2927,8 @@ function renderExtOllama(st){
     if (st.semantic_ready && st.embed_configured) {
       // 全就绪：不需要按钮（右上角徽章已表达状态）
     } else {
-      btn = `<button class="primary" id="btn-ollama-setup">一键开启向量记忆</button>`;
+      // 主行动按钮统一 .btn 样式（.primary 在样式表里没有定义，会退化成浏览器默认灰按钮）
+      btn = `<button class="btn" id="btn-ollama-setup">一键开启向量记忆</button>`;
     }
   }
   box.innerHTML = `
@@ -3501,6 +3546,15 @@ function bulkUpdateCount(){
     all.checked = total > 0 && n === total;
     all.indeterminate = n > 0 && n < total;
   }
+  // 没选中时不摆一整排危险按钮：只留「全选 + 提示」，选中后展开全部操作。
+  // 空库（一条记忆都没有）连整条都收起来，别占一屏空白。
+  const acts = $("bulk-acts"), hint = $("bulk-hint"), bar = $("bulk-bar");
+  if (acts) acts.classList.toggle("hidden", n === 0);
+  if (hint) hint.classList.toggle("hidden", n > 0);
+  if (bar) {
+    const st = (S.ov && S.ov.stats) || {};
+    bar.classList.toggle("hidden", !(Number(st.total) > 0));
+  }
 }
 $("mem-list").addEventListener("change", e => {
   if (e.target.classList && e.target.classList.contains("mem-check")) bulkUpdateCount();
@@ -3705,10 +3759,8 @@ async function migrateHome(){
 }
 $("btn-home-refresh") && $("btn-home-refresh").addEventListener("click", loadHomeInfo);
 $("btn-home-migrate") && $("btn-home-migrate").addEventListener("click", migrateHome);
-// 进诊断页时顺带刷新数据目录卡
-if ($("view-diag")) new MutationObserver(() => {
-  if ($("view-diag").classList.contains("on")) loadHomeInfo();
-}).observe($("view-diag"), { attributes: true, attributeFilter: ["class"] });
+// 进诊断页由 switchTab 统一触发（以前这里观察的是 class "on"，而页签用的是 "active"，
+// 条件永远不成立 → 数据目录卡一直停在「加载中…」）
 
 // ---- 淡忘可逆（fold / unfold / revive）+ #34 物理删除：事件委托到记忆卡片按钮
 // 冷却期口径与 memory._PURGE_COOLDOWN_DAYS 保持一致：dust 满 7 天才显示 🗑 按钮
@@ -4302,7 +4354,21 @@ setInterval(async () => {
 }, 30000);
 let pollFailCount = 0;   // 后台轮询连续失败计数（离线横幅用）
 
-load();
+// 地址栏 #页签 深链：首屏数据到位后再切（renderMemoryList 依赖 S.ov，早切会渲染空列表）
+const PANEL_TAB_IDS = ["overview", "memories", "persona", "knowledge", "notes", "skills",
+                       "emotion", "graph", "growth", "dream", "logs", "diag", "store", "ext"];
+function tabFromHash(){
+  const t = (location.hash || "").slice(1);
+  return PANEL_TAB_IDS.includes(t) ? t : "overview";
+}
+load().then(() => {
+  const t = tabFromHash();
+  if (t !== "overview") switchTab(t);
+});
+window.addEventListener("hashchange", () => {
+  const t = tabFromHash();
+  if (t !== S.tab) switchTab(t);
+});
 
 // ---- 灵枢本体更新：检测只在面板服务启动时后台做一次（结果写缓存），
 // 这里刷新面板只读缓存点亮红点；右上角按钮手动查才重新联网检测
@@ -4652,6 +4718,12 @@ setTimeout(() => checkUpdate(true), 1200);
   }
   function close(){ const ov = $id("pm-overlay"); if (ov) ov.classList.add("hidden"); }
   $id("btn-panels").onclick = open;
+  // Esc 关闭：其它浮层（弹窗/命令面板）都认 Esc，这里不认会显得半截
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    const ov = $id("pm-overlay");
+    if (ov && !ov.classList.contains("hidden")) close();
+  });
 
   async function ppost(action, extra){
     return api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
@@ -5010,6 +5082,7 @@ setTimeout(() => checkUpdate(true), 1200);
     --text:#23201a; --muted:#554f44; --faint:#6f6858;
     --amber:#a9741c; --amber-soft:rgba(169,116,28,.12);
     --teal:#2f7d72; --red:#a8453a; --violet:#5b52a3;
+    --green:#2f7d4f; --blue:#2f5f9e;
     --teal-text:#2f7d72; --red-text:#a8453a; --amber-text:#8a5d13;
     --node-persona:201,162,39; --node-high:192,57,43; --node-mid:169,116,28;
     --node-low:47,125,114; --node-min:91,102,115;
@@ -5053,7 +5126,12 @@ setTimeout(() => checkUpdate(true), 1200);
   #ls-dock.ls-collapsed{width:auto}
   #ls-dock.ls-collapsed .ls-body{display:none}
   .ls-head{display:flex;align-items:center;gap:8px;padding:10px 12px;
-    background:var(--surface2);border-bottom:1px solid var(--line);cursor:grab}
+    background:var(--surface2);border-bottom:1px solid var(--line);cursor:grab;
+    touch-action:none;user-select:none}
+  #ls-dock.ls-dragging .ls-head{cursor:grabbing}
+  #ls-dock.ls-dragging{box-shadow:0 26px 70px rgba(0,0,0,.55);opacity:.96}
+  /* 收起态只留标题条：整块高度变了，拖拽后的位置要重新夹进视口（JS 里做） */
+  #ls-dock.ls-collapsed .ls-head{border-bottom:none}
   .ls-head b{font-weight:600;letter-spacing:.3px;flex:1}
   .ls-head .ls-dot{width:7px;height:7px;border-radius:50%;background:var(--teal)}
   .ls-head .ls-dot.bad{background:var(--red)}
@@ -5086,7 +5164,12 @@ setTimeout(() => checkUpdate(true), 1200);
   "use strict";
   var KEY = "lingshu.panel.prefs";
   var prefs = {theme:"auto", density:"cozy", refresh:60, open:true};
+  var firstVisit = false;
+  try { firstVisit = !localStorage.getItem(KEY); } catch(e){}
   try { Object.assign(prefs, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch(e){}
+  // 窄屏（手机/小窗）默认收起：展开态要占掉大半个视口，把正文全遮住。
+  // 只在"用户从没调过"时这么定，之后尊重他自己的选择。
+  if (firstVisit && window.innerWidth && window.innerWidth <= 760) prefs.open = false;
   function save(){ try{ localStorage.setItem(KEY, JSON.stringify(prefs)); }catch(e){} }
   function apply(){
     var t = prefs.theme;
@@ -5102,7 +5185,7 @@ setTimeout(() => checkUpdate(true), 1200);
   dock.innerHTML =
     '<div class="ls-head"><span class="ls-dot" id="ls-dot"></span><b>运行洞察</b>' +
     '<button id="ls-refresh" title="立即刷新">刷新</button>' +
-    '<button id="ls-toggle" title="收起/展开">－</button></div>' +
+    '<button id="ls-toggle" title="收起/展开（双击标题栏同样可收起）">－</button></div>' +
     '<div class="ls-body">' +
     '<div class="ls-kpis" id="ls-kpis"><div class="ls-empty">加载中…</div></div>' +
     '<div id="ls-rows"></div>' +
@@ -5112,6 +5195,78 @@ setTimeout(() => checkUpdate(true), 1200);
     '<select id="ls-refresh-interval"><option value="0">不自动刷新</option><option value="30">30 秒</option><option value="60">60 秒</option><option value="300">5 分钟</option></select>' +
     '</div></div>';
   document.body.appendChild(dock);
+
+  /* ---------------------------------------------------------------- 拖拽 + 位置记忆
+     浮窗是 position:fixed，默认停在右下角，会盖住正文（尤其是窄屏和长卡片）。
+     这里把标题栏做成真的可拖：拖走、松手记位置、下次打开还在那；也能双击收起。
+     位置一律夹在视口内，避免拖到屏幕外就再也抓不回来。 */
+  var positioned = false;   // 是否已被换成 left/top 绝对定位（false = 还在用 CSS 贴右下角）
+  function dockSize(){
+    var r = dock.getBoundingClientRect();
+    return {w: r.width || 340, h: r.height || 60};
+  }
+  function clampPos(x, y){
+    var s = dockSize();
+    var maxX = Math.max(0, (window.innerWidth || 0) - s.w - 4);
+    var maxY = Math.max(0, (window.innerHeight || 0) - s.h - 4);
+    return {x: Math.min(Math.max(0, x), maxX), y: Math.min(Math.max(0, y), maxY)};
+  }
+  function place(x, y){
+    var p = clampPos(x, y);
+    dock.style.left = p.x + "px";
+    dock.style.top = p.y + "px";
+    dock.style.right = "auto";
+    dock.style.bottom = "auto";
+    positioned = true;
+    return p;
+  }
+  // 首次：没存过位置就**保留 CSS 的 right/bottom 定位**（内容还在加载，此时量高度会偏小，
+  // 算出来的 top 会把浮窗顶出视口）；等真的开始拖了，再把当前矩形换算成 left/top。
+  if (prefs.pos && isFinite(prefs.pos.x) && isFinite(prefs.pos.y)) place(prefs.pos.x, prefs.pos.y);
+
+  var drag = null;
+  var head = dock.querySelector(".ls-head");
+  head.addEventListener("pointerdown", function(e){
+    if (e.button !== 0 || (e.target.closest && e.target.closest("button"))) return;
+    var r = dock.getBoundingClientRect();
+    place(r.left, r.top);                  // 固定成 left/top（数值不变，不会跳）
+    drag = {dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId};
+    try { head.setPointerCapture(e.pointerId); } catch (_) {}
+    dock.classList.add("ls-dragging");
+    // 不要在这里 preventDefault：Chrome 会随之取消 mousedown/click/dblclick 这些
+    // 兼容事件，"双击标题栏收起"就永远收不到。禁止选中与滚动交给 CSS
+    // （.ls-head 的 user-select:none / touch-action:none）。
+  });
+  head.addEventListener("pointermove", function(e){
+    if (!drag || e.pointerId !== drag.id) return;
+    place(e.clientX - drag.dx, e.clientY - drag.dy);
+  });
+  function endDrag(e){
+    if (!drag || (e && e.pointerId !== drag.id)) return;
+    var r = dock.getBoundingClientRect();
+    var p = place(r.left, r.top);          // 松手时再夹一次：拖动中滚动/缩放都可能越界
+    prefs.pos = {x: Math.round(p.x), y: Math.round(p.y)};
+    save();
+    dock.classList.remove("ls-dragging");
+    drag = null;
+  }
+  head.addEventListener("pointerup", endDrag);
+  head.addEventListener("pointercancel", endDrag);
+  head.addEventListener("dblclick", function(e){
+    if (e.target.closest && e.target.closest("button")) return;
+    $("ls-toggle").onclick();
+  });
+  // 窗口变小/收起展开都会改变尺寸：把浮窗重新夹回视口内（位置也顺手纠正，避免下次打开跑出去）。
+  // 还没被拖动过（仍由 CSS 贴右下角）就什么都不做——CSS 自己会跟着视口走。
+  function reflow(){
+    if (!positioned) return;
+    var r = dock.getBoundingClientRect();
+    var p = place(r.left, r.top);
+    prefs.pos = {x: Math.round(p.x), y: Math.round(p.y)};
+    save();
+  }
+  window.addEventListener("resize", reflow);
+
 
   var $ = function(id){ return document.getElementById(id); };
   $("ls-theme").value = prefs.theme;
@@ -5123,6 +5278,7 @@ setTimeout(() => checkUpdate(true), 1200);
   $("ls-toggle").onclick = function(){
     prefs.open = dock.classList.toggle("ls-collapsed") ? false : true;
     this.textContent = prefs.open ? "－" : "＋"; save();
+    reflow();   // 收起/展开会改变尺寸，位置要重新夹回视口
   };
   if (!prefs.open) $("ls-toggle").textContent = "＋";
 
@@ -5388,8 +5544,15 @@ setTimeout(() => checkUpdate(true), 1200);
         var m = r.memory || r;
         var txt = String(m.text || "").slice(0, 90);
         return {
-          label: "记忆：" + txt, hint: "打开记忆页", text: txt,
-          run: function () { close(); if (typeof switchTab === "function") switchTab("memories"); }
+          label: "记忆：" + txt, hint: "打开并筛选记忆", text: txt,
+          run: function () {
+            close();
+            // 落到记忆页后把搜索框填成这条记忆的原文片段，而不是只停在列表顶部。
+            // 先填再切页：switchTab 自己会拉一次列表，避免重复请求。
+            var box = document.getElementById("search");
+            if (box) box.value = txt.slice(0, 24);
+            if (typeof switchTab === "function") switchTab("memories");
+          }
         };
       });
       items = navItems(q).slice(0, 6).concat(extra);

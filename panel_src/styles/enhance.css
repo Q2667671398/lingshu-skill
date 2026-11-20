@@ -4,6 +4,7 @@
     --text:#23201a; --muted:#554f44; --faint:#6f6858;
     --amber:#a9741c; --amber-soft:rgba(169,116,28,.12);
     --teal:#2f7d72; --red:#a8453a; --violet:#5b52a3;
+    --green:#2f7d4f; --blue:#2f5f9e;
     --teal-text:#2f7d72; --red-text:#a8453a; --amber-text:#8a5d13;
     --node-persona:201,162,39; --node-high:192,57,43; --node-mid:169,116,28;
     --node-low:47,125,114; --node-min:91,102,115;
@@ -47,7 +48,12 @@
   #ls-dock.ls-collapsed{width:auto}
   #ls-dock.ls-collapsed .ls-body{display:none}
   .ls-head{display:flex;align-items:center;gap:8px;padding:10px 12px;
-    background:var(--surface2);border-bottom:1px solid var(--line);cursor:grab}
+    background:var(--surface2);border-bottom:1px solid var(--line);cursor:grab;
+    touch-action:none;user-select:none}
+  #ls-dock.ls-dragging .ls-head{cursor:grabbing}
+  #ls-dock.ls-dragging{box-shadow:0 26px 70px rgba(0,0,0,.55);opacity:.96}
+  /* 收起态只留标题条：整块高度变了，拖拽后的位置要重新夹进视口（JS 里做） */
+  #ls-dock.ls-collapsed .ls-head{border-bottom:none}
   .ls-head b{font-weight:600;letter-spacing:.3px;flex:1}
   .ls-head .ls-dot{width:7px;height:7px;border-radius:50%;background:var(--teal)}
   .ls-head .ls-dot.bad{background:var(--red)}

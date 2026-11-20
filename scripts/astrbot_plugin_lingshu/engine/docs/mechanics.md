@@ -10,6 +10,7 @@
 - [每日例行与自我总结](#每日例行与自我总结)
 - [安装灵枢本体：先读风险告知](#安装灵枢本体先读风险告知)
 - [工作记忆](#工作记忆)
+- [话题栈与拟人闲聊](#话题栈与拟人闲聊)
 - [做梦](#做梦)
 - [capture：上下文原样封存](#capture上下文原样封存)
 - [知识库](#知识库)
@@ -22,8 +23,22 @@
 - [灵魂与自我](#灵魂与自我你不是一个常量)
 - [人格规则](#人格规则)
 - [备份、恢复与迁移](#备份恢复与迁移)
+- [通道记忆归属三元组与隐私裁决](#通道记忆归属三元组与隐私裁决)
 - [与 DSH 记忆的边界与每日同步](#与-dsh-记忆的边界与每日同步)
 - [设计依据](#设计依据简述)
+
+---
+
+## 通道记忆归属三元组与隐私裁决
+
+群聊场景下每条记忆带 `(channel, group, user)` 归属三元组（channel = 平台标识如 `qq@bot1`，group = 群号、私聊为空，user = 全局用户标识如 `qq:10001`）。归属决定可见性，而不是"谁问都能看"：
+
+- **物理隔离**：`channel recall` 按三元组过滤——跨 channel、跨群的记忆在召回阶段就不可见（即使已授权），不存在"召回后再裁"的窗口。
+- **授权作用域**：`channel privacy grant` 在群内执行只对该群可见（scope=群）；全域授权（`*`）在所有群生效。授权可带 `--expires-days N`，到期自动失效（fail-closed：过期即视为未授权）。
+- **本人优先**：三元组中 user 等于自己的记忆永远可见；`--group` 留空的私聊只放本人记忆 + 全局记忆。
+- **冲突裁决**：同一 (channel, user) 作用域内，`--source user`（用户亲口说的）写回时**立即取代**旧说法（旧条标记 `superseded_by`）；`--source ai/dream` 的候选与旧记忆冲突时只做**双标待审**（`conflict_flag` + `conflicts` 链），等 `review confirm/discard` 人工裁决——AI 的说法永远不能自动压过用户。
+- **隐私门控**：`recall --asker/--target`、`channel user --asker` 启用第三人查询门控：目标未 grant → 退出码 4 拒绝，且拒绝消息不回显目标完整标识。
+- **敏感命令鉴权**：通道上下文（带 `--user + --channel`）执行 forget/dream/backup/restore/sync/owner 管理，需 owner/admin 白名单；纯本机 CLI 不受此限。
 
 ---
 
@@ -160,6 +175,51 @@ python scripts/brain.py work clear              # 丢掉
 - `work flush` 之前，它什么都不是；flush 之后才进入海马体，才算"记住"。
 - 决定权在你：默认不写盘；写不写、写哪些，都是你自己的判断，不是引擎自动行为。
 - 想要"这次聊完就记住、下次也能用"的 → 直接 `remember`，不要走暂存。
+
+## 话题栈与拟人闲聊（v2.71+）
+
+聊天不是答题，人是有话题偏好的：顺着刚说的延伸最自然，旧话题聊死了不会硬续，冷场了才自己挑个新话头。话题栈（`topics.jsonl`）就是给这层行为提供数据的——它记"我们最近聊过什么、各自还剩多少热度"。
+
+### 数据模型与权重规则
+
+每条话题：`{name, weight, ts, turns, type, whys}`。规则（常量在 `scripts/core.py`）：
+
+- **容量**：最多 12 个话题（TOPIC_CAPACITY），满了挤掉最旧的。
+- **指数衰减**：每 12 小时一个衰减周期，未重提的权重 ×0.85（TOPIC_DECAY）。这样一觉醒来，昨天聊嗨的话题自然凉下来，不用手动降权。
+- **彻底过期**：7 天没重提就退栈（TOPIC_TTL）。
+- **用户重提**：`topic touch "话题名"` 把权重拉回 0.8——用户自己捡起来的话题永远是主线。
+- **AI 自发话题低起步**：`topic touch "..." --weight 0.4`——AI 挑起的新话头初始权重压低，别抢占用户的主线；用户接住了再涨。
+- **反馈闭环**：用户敷衍/转移话题是隐性负反馈 → `topic feedback "..." --bad`（权重 ×0.6）；用户展开多说 → `--good`（+0.15）。几次之后哪类话头用户爱接、哪类冷场，栈里自己就有了。
+
+### 自发话题（spawn_new）的准入门槛
+
+注入包把话题分两档展示：还热乎的（≥0.30）和快聊死的（<0.30，标 ↓）。**只有当下面全部满足，才允许自发新话题**：
+
+1. 话题栈里有快聊死的（注入包标了 ↓），或用户连续敷衍（嗯、哈哈、随便）；
+2. 用户情绪不是 sad / annoyed（`emotion mirror` 判断——难过、烦躁时禁止强行转话题，先共情）；
+3. 用户没在倾诉、吐槽、认真提问、没刚抛新话题、没说想结束；
+4. 同一会话最多连续 1 次自发；连续两次用户对自发话题依旧敷衍，就停止主动，安静承接。
+
+自发时：用「对了」「说起来」这类过渡词软化，新话题低压力生活化（美食、短片、散步），禁止沉重、硬核、说教；候选优先级：**历史话题的关联衍生**（聊电脑→数码配件）> 通用生活化 > 人设专属爱好。
+
+### 命令
+
+```bash
+python scripts/brain.py topic list                 # 看栈（↓=低于阈值 0.30）--json 给结构化
+python scripts/brain.py topic touch "折腾电脑"      # 用户重提/接住话题，权重拉回 0.8
+python scripts/brain.py topic touch "数码配件" --weight 0.4 --type hobby --why "从电脑话题衍生"
+python scripts/brain.py topic feedback "刷短视频" --bad --why "敷衍带过"   # 负反馈 ×0.6
+python scripts/brain.py topic feedback "家庭服务器" --good                # 正反馈 +0.15
+python scripts/brain.py topic drop "天气"           # 用户明确不想聊，移出栈
+python scripts/brain.py topic status --json        # 面板/上层模块用
+```
+
+### 与其他模块的联动
+
+- **七情六欲 / emotion mirror**：用户情绪 sad/annoyed 时是自发话题的硬闸；情绪抒发优先共情，不强制提问。
+- **会话模式**：work 工程模式下话题栈照样注入，但拟人闲聊纪律不适用——工程任务不套这套，别拿"对了你昨晚吃什么"打断排错。
+- **记忆关联**：自发话题优先从历史话题衍生（比通用话题过渡顺滑），本质是 assoc 思路在话题层的复用。
+- **防台账化**：注入包里的话题栈是行为依据不是清单，别在回复里逐条复述"我们聊过 A、B、C"。
 
 ## 做梦
 
@@ -482,7 +542,7 @@ python scripts/brain.py evolve list --limit 20
 记忆是裸文件，最怕的是"重装/清盘/写坏就没了"。把它当存折一样定期打包：
 
 ```bash
-python scripts/brain.py backup                      # 默认 D:/brain-memory-backups（没有 D 盘就桌面）
+python scripts/brain.py backup                      # 默认跨卷：别的盘 brain-memory-backups，兜底 <记忆库>/backups（v3.45 起；更早版本写 D:/ 或 ~/Documents）
 python scripts/brain.py backup --out "D:\我的备份"  # 指定位置
 python scripts/brain.py backup --keep 10            # 只留最近 10 份，旧的自动删
 ```

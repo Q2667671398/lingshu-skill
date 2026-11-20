@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 2.87
+version: 3.47
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -33,6 +33,10 @@ description: 类脑持久记忆、人格与成长系统——跨会话记住事�
 默认 `~/.brain-memory/`（Windows：`C:\Users\<你>\.brain-memory`）。目录解析优先级：环境变量 `BRAIN_MEMORY_HOME` > 指针文件 `~/.brain-memory/.home`（内容为目标目录路径）> 默认位置；单次会话也可 `--home <目录>`。
 **迁移数据目录**：用户想换位置时，告诉 TA 打开面板 →「诊断」页 →「数据目录」卡片，填目标目录点"迁移到此处"即可（自动整库复制 + 写指针文件，重启面板/新会话生效，旧目录保留）。用户让你代劳时，把目标绝对路径写进 `~/.brain-memory/.home` 指针文件并用系统命令把旧目录整个复制过去——不要试图在运行中的会话里切换 HOME（子模块已各自复制了路径，运行中切换会混写两个目录）。
 **只读降级**：数据目录不可写时 `inject/startup/recall` 自动降级为只读，照样带回已有记忆、只是不回写；也可显式 `--ro` 或 `BRAIN_MEMORY_READONLY=1`。
+
+**数据目录护栏（v3.45，真实事故复盘）**：盘符根、用户主目录本体、用户库文件夹（桌面/文档/下载/图片/视频/音乐/OneDrive）、系统目录**一律拒绝**当记忆库（`scripts/safety.py` 的 `assert_safe_home`）——出过的事故就是这些目录被整片清空、库跟着一起没。逃生阀 `BRAIN_MEMORY_ALLOW_UNSAFE_HOME=1`（放行但警告）。**备份默认跨卷选址**：`BRAIN_MEMORY_BACKUP_DIR` > 别的卷 `brain-memory-backups` > `<记忆库>/backups`，不再写 `~/Documents`（同目录同卷的备份会被同一次事故带走）。库从"有内容"变成"全空"时 `startup` 会打「⚠ 记忆库疑似被清空」横幅并给出最近备份包；完整处置流程见 `docs/recovery.md`。
+
+**明文库提示（v3.02 #2）**：整个记忆库是明文 JSON/JSONL——用户设备被他人直接接触时，记忆原文可被读取。告诉用户三点：① 敏感对话尽量别让 AI 原样 capture；② 备份一律加 `--password`（加密备份，token 不入包）；③ 群聊场景务必配置 `config.json` 的 `owners/admins` 白名单（`channel:id` 形式），否则所有通道成员都可能触发敏感命令。导出（`export --format md`）同样产出明文，让用户自己选存放位置。
 
 ```
 persona.json   人格+情绪状态+好奇心/理智+演化历史
@@ -205,10 +209,14 @@ python scripts/brain.py ext rm <名字>                    # 删除
 
 模型侧触发：想做长久的自动行为（每会话提醒、自定义命令）时，先想该写进 `remember`（记忆）、`skill new`（说明书）还是 `ext new`（可执行钩子）——要"每会话都执行的代码"，用 `ext`。
 
+## 语义召回与向量服务
+
+记忆默认带**纯 Python 降级向量兜底**（config.json `embed.fallback`，默认开启）：不装 Ollama 也能用本地 hash 向量做语义召回；装了 Ollama（nomic-embed-text）则自动优先用真模型向量。**向量服务不可用是正常降级状态**，不是故障——降级兜底照常工作，只是语义精度略低。当用户抱怨"回忆不准"或想提升语义召回精度时，引导用户打开面板（http://127.0.0.1:8765）「本地能力」页点「一键开启向量记忆」自动装好 Ollama 并接入（已装会跳过下载直接拉模型接入；不装也能靠降级兜底先用起来）。装了不用也无妨：Ollama 空闲 5 分钟会自动卸载模型、不占资源。
+
 ## 淡忘可逆与记忆来源（v2.41+）
 
 - **淡忘不是终点**：dust 层记忆可 `fold`（原文收进 folded_text 只留 gist，数据还在）/ `unfold`（想起来，原文还原）/ `revive`（复活回活跃层）。面板 dust 卡片带 ⇲⇱⤴ 按钮。
-- **记忆带来源**：每条记忆有 `project` / `session` 归属（缺省 `default`）；冲突检测只在同源比较——A 项目用 MySQL、B 项目用 PostgreSQL 是并存事实，不误报冲突。`/api/remember` 可显式传入。
+- **记忆带来源**：每条记忆有 `project` / `session` 归属（缺省 `default`）；冲突检测只在同源比较——A 项目用 MySQL、B 项目用 PostgreSQL 是并存事实，不误报冲突。CLI 用 `remember --project` / `recall --project` 显式传入，同项目召回加分排前（不硬过滤，跨项目照常可见）。
 - **面板「诊断」标签页**：`GET /api/diagnostics`（`brain.diagnose()`）归因数据异常——死链、冲突未裁决、数据膨胀、来源归属完整率、折叠状态。
 - **群聊通道**（聊天机器人宿主）：记忆带 `channel`/`group_id`/`user` 三元组，同一用户跨群共享画像、群内话题按群隔离；涉及第三人的记忆需本人 `channel privacy grant` 授权后他人才能查。`channel owner add/list` 管理主人白名单。
 
@@ -223,6 +231,16 @@ python scripts/brain.py ext rm <名字>                    # 删除
    POST /api/panels/cloud {"action":"save-config","gitee_repo":"owner/repo","gitee_token":"...","github_repo":"可选","github_token":"可选"}
    ```
    之后 `POST /api/panels/cloud {"action":"publish","name":"面板名","screenshot":"data:image/png;base64,..."}` 发布（截图可选）。用户不愿交令牌时，指引用户自己在面板「市场」标签页填写，不要索要。
+
+## 实时沉淀与画像同步（v3.01）
+
+- **教训三写**：遇到报错/返工，先 `recall`/知识库检索是否遇到过（recall 命中知识条目会提示「该问题曾有记录」）；没有则 `lesson "教训"` 一条命令沉淀三处——memory(mistake) + knowledge(status=pending，带 memory_id 来源) + note。
+- **remember 自动落笔记**：importance≥7 或 kind∈{insight,mistake,fact} 时自动追加一条笔记（带 memory_id 反向引用，fail-open 不阻塞主写入）；insight/mistake 同时进知识库待审闸。
+- **人格画像自动归纳**：`persona suggest scan` 扫描记忆里的偏好/关系/错误/事实与笔记知识，产出候选特征（带证据链）；`persona suggest adopt N` 采纳、`discard N` 忽略——人格从记忆派生、确认后才进 persona，防记忆幻觉污染人格。
+- **人格漂移可度量**：`persona drift` 输出稳定度分（0~100）；mistake/relationship 记忆更抗遗忘（衰减半衰期更长），被误淡忘的重要记忆 `memory boost <id>` 一键拉回。
+- **注入自检行**：注入包尾部带一行人格摘要（性格/喜欢/讨厌），防长会话人格走样；包顶部有「上次会话写入失败 N 次」失败可见化行。
+- **人格未读高亮**：面板人格页「AI 近期改动」改动行常驻 amber 高亮；切走页签、刷新/关闭页面（或点「标记已读」按钮）才标已读、高亮消失。
+- **水位守卫**：`startup` 尾部固定带水位提醒块（本轮轮次/距上次做梦/交接 + 建议动作）；真实水位由 cron pre-step 估算并在首次跨过 60/75/90 时注入提醒；面板概览有水位卡。
 
 ## 拟人闲聊：主动对话纪律（v2.71+）
 
@@ -266,15 +284,45 @@ python scripts/brain.py topic drop "加班"                  # 用户明确说�
 - [ ] 值得长留而没记的 → 补 `remember`；今日总结/沉淀 → `daily --force`
 - [ ] 顺手提炼当天对话里的 1-3 个情绪事件 → `daily --feel "情绪:强度:原因"`（可重复；这是情绪系统的主要输入源，不写就一直是空骨架）
 
+**任务/项目完成时（收尾清点）**：
+
+- [ ] 在项目仓库里跑一次 `checkpoint --note "这次做了什么"`：用 git 证据（HEAD/最后提交/工作区/版本）写一条「任务收尾」episode，幂等——同一状态不重复写。
+- 这比"零散过程记忆"更完整：下次开工先 `recall <项目名> 收尾`，能立刻看到上次收尾时的状态与待办。
+- 不是 git 仓库/没有变化时它会明确跳过，不会制造噪音。
+
 ## 高频命令索引
 
 ```bash
 python scripts/brain.py startup --query "..." [--budget 1400]   # 会话开始（最重要）
-python scripts/brain.py remember "内容" --kind fact --importance 7
-python scripts/brain.py recall "关键词" --k 6
+python scripts/brain.py remember "内容" --kind fact --importance 7 [--project 项目名]
+python scripts/brain.py recall "关键词" --k 6 [--project 项目名]   # 同项目记忆 +0.25 加分（不硬过滤）
 python scripts/brain.py check-context --used 68      # 60 清点 / 75 做梦 / 90 封存
 python scripts/brain.py capture "原文" --tag 逃生
 python scripts/brain.py dream --auto                 # 做梦整理
+python scripts/brain.py ingest-dialogues [--path 目录] [--limit 20] [--dry-run]
+  # 跨对话摄取：把别的会话导出（.jsonl/.md/.txt）增量读成 episode 记忆
+  # 默认关。开启三步：config set dialogue_ingest true →
+  #   config set dialogue_sources '["D:/exports/chats"]' → ingest-dialogues --dry-run 看一遍
+  # 近实时：config set dialogue_ingest_auto true（startup 用后台子进程跑，不阻塞首轮）
+python scripts/brain.py session-state [show|clear]     # 注入缓存状态（需 config session_state_cache=true）
+python scripts/brain.py replay [--days 90] [--limit 20]   # 只读回放：人格偏移与拐点，不写库
+python scripts/brain.py saturation [--threshold 0.8]      # traits 临界余量告警
+python scripts/brain.py context-stats [--json] [--budget N]  # 注入包分段账单（字符/估算token/占预算）
+python scripts/brain.py config set inject_mode lazy          # 记忆只带“要点+id”，正文用 recall 取
+python scripts/brain.py config set inject_lazy_chars 80      # lazy 模式每条要点上限（默认 80）
+python scripts/brain.py context-plan [--budget N] [--json]   # 五段式装配试排：会裁哪段、裁多少
+python scripts/brain.py summarize --input 对话.jsonl [--json]  # 五段式会话摘要（模型可选，失败自动回退）
+python scripts/brain.py session-summary build --input 对话.jsonl [--pct 65] [--force]
+  # 触发(每8轮/水位≥60%/--force) → 生成 → 落盘 sessions/summaries/<id>.md（留 3 版）
+python scripts/brain.py session-summary show|rollback [--steps N]
+python scripts/brain.py checkpoint [--repo 路径] [--note "…"] [--dry-run]  # 任务收尾清点（幂等）
+python scripts/brain.py retrieve "关键词" [--k 20] [--budget 800]  # 检索片段：服务优先，失败回退本地
+python scripts/brain.py rag init|ingest 文件.jsonl|search "词"|stats|serve  # 跨会话原文检索服务（SQLite FTS5）
+  # 通道记忆默认不进本机注入；要放行某个通道：config set inject_channels '["qq@bot:群号"]'
+  # IM 桥接（dsh-im）：autoRecall/autoCapture 默认关；开在 ~/.brain-memory/config.json 的 im 段，
+  #   或 profile patch 里给 lingshu-skill 传 {im:{"autoRecall":true}}（v3.25 起透传生效）
+  # 群聊鉴权：guard 段控制。**出厂 shadow=false（默认拦截）**；要先观察误伤再收紧时显式设 {"guard":{"shadow":true}}，此时启动会打一条 warn"观察模式，敏感命令不会被拦截"。
+  #   非 owner 只能用只读工具（read/grep/glob/web_search…），桌面端不受影响
 python scripts/brain.py daily [--feel "开心:0.7:原因"]  # 每日例行（顺手记情绪事件，可重复）
 python scripts/brain.py usage --reply "回复文本"       # 核对上一轮找回的记忆是否真被用上
 python scripts/brain.py mode show|work|human|auto|explain  # 会话模式（explain 看 auto 判定依据）
@@ -283,11 +331,37 @@ python scripts/brain.py persona show|history|snapshot|drift
 python scripts/brain.py emotion now|feel|events|adjust|cool
 python scripts/brain.py emotion check "回复文本"      # 情绪-输出一致性核对（语气与内部情绪严重背离时告警）
 python scripts/brain.py logs [--level warn|error]     # 运行日志（锁冲突/异常/解析报错）
+python scripts/brain.py failures [--days 7] [--json]  # 被 fail-open 吞掉的异常账本（按类聚合）
 python scripts/brain.py user-rules add "<长期规则>"   # 更新永不覆盖
 python scripts/brain.py ext new|list|edit|run|rm      # 扩展模块（可执行钩子）
 python scripts/brain.py knowledge add|search|review
+  # knowledge add 格式规范（字段与 growth.add_knowledge() 一一对应）：
+  #   位置参数 <title>  标题（必需；高度相似标题 jaccard≥0.75 会自动合并进已有条目）
+  #   --body      正文全文（长中文正文建议先存 md 文件再用脚本读入，避免命令行编码问题）
+  #   --topic     主题分类，如「灵枢·插件商店/更新缓存」
+  #   --points    要点列表，顿号/逗号/换行分隔（_split 切分）
+  #   --tags      标签，同样 _split 切分；--entities 实体；--source-ids 来源记忆 id
+  #   --confidence 0-1（user 默认 0.8）；--source user|ai（user 直接 confirmed，ai 进 pending 待审核）
+  #   --review    显式指定 confirmed/pending/discarded（覆盖 --source 默认值）
+  # 注意：没有 --title / --file 参数（title 是位置参数；正文长时用 scripts 里临时脚本调
+  #   growth.add_knowledge() 读文件录入，参考已录入条目 k_a933489efd 的做法）。
+  # 验证：python scripts/brain.py knowledge search <关键词> 或 knowledge show <id>
 python scripts/brain.py work | work done <序号> | work flush
+python scripts/brain.py status --json               # 水位唯一数据源（退出码 0/1=60%/2=75%/3=90%，面板/cron/doctor 都读它）
+python scripts/brain.py doctor [--json]             # 七合一体检（audit/人格/记忆诊断/写权限/副本sha/日志warn/engine-sync——副本漂移直接暴露）
+python scripts/brain.py lesson "教训内容"            # 一条命令三写：memory(mistake)+knowledge(pending)+note
+python scripts/brain.py persona suggest [list|scan|adopt N|discard N]  # 从记忆/笔记归纳人格画像候选，确认后生效
+python scripts/brain.py persona viewed              # 确认已浏览人格近期改动
+python scripts/brain.py persona audit [--days 30]   # 人格变更审计链（事件→变更→证据）
+python scripts/brain.py memory boost <id>           # 遗忘纠正：把被淡忘但重要的记忆拉回并重置衰减
+python scripts/brain.py memory freeze|unfreeze <id>  # 冻结/解冻：冻结的不参与召回、注入与做梦
+python scripts/brain.py memory integrity             # 记忆哈希链校验（篡改/损坏定位）
+python scripts/brain.py dream --verify [--done]      # 梦合并抽检：复核后 --done 标记
+python scripts/brain.py lessons [list]               # 教训库（被验证+0.10 / 被推翻−0.15 / <0.2 退役）
+python scripts/brain.py export --format md [--out 文件]  # 人类可读 Markdown 导出
+python scripts/brain.py auditlog [limit]             # 审计日志（谁/何时/做了什么）
 python scripts/brain.py serve                        # 可视化面板 :8765
+python scripts/bench.py [--n 1000|--quick]           # 性能基准：隔离临时库量 remember/recall/inject/doctor 的 p50/p95（不碰真实记忆库）
 ```
 
 其余命令（人格编辑、mind、assoc、note、learn、skill、growth、evolve、backup、sync 等）见 [`docs/commands.md`](docs/commands.md)。

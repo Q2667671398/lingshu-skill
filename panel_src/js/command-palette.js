@@ -130,8 +130,15 @@
         var m = r.memory || r;
         var txt = String(m.text || "").slice(0, 90);
         return {
-          label: "记忆：" + txt, hint: "打开记忆页", text: txt,
-          run: function () { close(); if (typeof switchTab === "function") switchTab("memories"); }
+          label: "记忆：" + txt, hint: "打开并筛选记忆", text: txt,
+          run: function () {
+            close();
+            // 落到记忆页后把搜索框填成这条记忆的原文片段，而不是只停在列表顶部。
+            // 先填再切页：switchTab 自己会拉一次列表，避免重复请求。
+            var box = document.getElementById("search");
+            if (box) box.value = txt.slice(0, 24);
+            if (typeof switchTab === "function") switchTab("memories");
+          }
         };
       });
       items = navItems(q).slice(0, 6).concat(extra);

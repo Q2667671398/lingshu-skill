@@ -66,7 +66,20 @@ def split(out: Path = OUT, src: Path = SRC) -> int:
     return 0
 
 
-def build(src: Path = SRC, out: Path = OUT) -> bytes:
+def _norm_bytes(data: bytes) -> bytes:
+    """比较用规范形态：去 BOM + CRLF→LF。
+
+    和 manifest / sync_engine / make_checksums 保持同一口径。否则在 Windows 上
+    只要 git 按 core.autocrlf 把源码写成 CRLF、产物是 LF，`--check` 就会假红
+    （实测踩过：git checkout 之后一次次报"不同步"，其实内容一模一样）。
+    """
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    return data.replace(b"\r\n", b"\n")
+
+
+def build(src: Path = SRC, out: Path | None = OUT) -> bytes:
+    """拼装产物；out=None 时只返回字节、不落盘（--check 用，检查不该改文件）。"""
     shell = (src / "index.html").read_bytes()
     meta = json.loads((src / "blocks.json").read_text(encoding="utf-8"))
     for i, blk in enumerate(meta):
@@ -74,8 +87,9 @@ def build(src: Path = SRC, out: Path = OUT) -> bytes:
         body = (src / blk["file"]).read_bytes()
         close = b"</style>" if blk["kind"] == "style" else b"</script>"
         shell = shell.replace(token, blk["open"].encode() + body + close, 1)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(shell)
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(shell)
     return shell
 
 
@@ -85,8 +99,8 @@ def main(argv=None) -> int:
         return split()
     if "--check" in argv:
         old = OUT.read_bytes() if OUT.exists() else b""
-        new = build()
-        if old != new:
+        new = build(out=None)          # 只读：检查不能顺手把产物重写掉
+        if _norm_bytes(old) != _norm_bytes(new):
             print("[panel] 不同步：assets/panel.html != panel_src 重建结果"
                   "（改了源码就跑 python scripts/panel_build.py）", file=sys.stderr)
             return 1

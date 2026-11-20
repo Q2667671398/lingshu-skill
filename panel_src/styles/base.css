@@ -6,6 +6,9 @@
     --teal:#5fa8a0; --red:#c96b5f; --violet:#8d86c9;
     /* 语义色别名：供情绪/欲望条等内联样式引用，避免 var(--accent/--good/--bad) 取不到值变透明 */
     --accent:var(--amber); --good:var(--teal); --bad:var(--red);
+    /* 证据等级等场景用的补充色（以前只有 var(--green)/var(--blue) 的引用没定义，
+       整个 color/border-color 声明在计算时失效 → 徽章退化成一团灰） */
+    --green:#6fbf8b; --blue:#7ea6e0;
     /* 主题跟随：文本语义色（深色底上更亮的同系文字）+ 星图/节点 RGB 三元组（浅色主题在 enhance.css 覆盖为深色版本） */
     --teal-text:#9fd2cb; --red-text:#dda49b; --amber-text:#e3b96c;
     --node-persona:240,208,120; --node-high:224,92,79; --node-mid:217,164,65;
@@ -29,6 +32,9 @@
     border-right:1px solid var(--line);padding:24px 16px 18px;
     display:flex;flex-direction:column;gap:22px;position:sticky;top:0;height:100vh;
     background:rgba(10,12,15,.6);
+    /* 侧栏信息块（记忆库路径 / 水位 / 版本 / 待审核 / 会话模式）比视口高时，
+       以前直接裁掉且无法滚动，底部几条永远看不到；这里允许独立滚动。 */
+    overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;
   }
   .brand{display:flex;align-items:center;gap:10px;font-size:15px;letter-spacing:.5px;font-weight:600;padding:0 8px}
   .brand .orb{
@@ -46,6 +52,14 @@
   nav button.active{background:var(--amber-soft);color:var(--amber)}
   nav button .ic{width:16px;text-align:center;opacity:.9}
   .sidefoot{margin-top:auto;font-size:11px;color:var(--faint);line-height:1.7;padding:0 8px;word-break:break-all}
+  /* 侧栏可滚动后，各块不许被压缩（否则导航按钮会被挤扁而不是整体滚动） */
+  aside > .brand, aside > nav, aside > .sidefoot{flex-shrink:0}
+  /* 技能根目录里"目录不存在"的折叠摘要 */
+  details.root-more{margin-top:8px}
+  details.root-more > summary{cursor:pointer;padding:6px 2px;color:var(--muted)}
+  details.root-more > summary:hover{color:var(--text)}
+  /* 内容还没写进 <pre> 时不显示空盒子（成长页「每日例行」输出区） */
+  .pre:empty{display:none}
   .sidefoot b{color:var(--muted);font-weight:500}
   main{padding:30px 38px 60px;max-width:1180px;width:100%}
   header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:26px}

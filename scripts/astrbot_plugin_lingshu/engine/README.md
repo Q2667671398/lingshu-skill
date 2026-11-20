@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v2.87**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.47**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -46,6 +46,27 @@
 - [快速开始](#快速开始)
 - [命令速查](#命令速查)
 - [项目结构](#项目结构)
+
+## 最新特性速览（v3.14）
+
+- **v3.14 修复批**：切 HOME（`--home`/面板迁移）后做梦不再读错 working.jsonl；子进程统一 UTF-8 解码（中文 Windows 不再 GBK 崩线程）；doctor 版本矩阵不再恒 WARN；超长正文截断会明确提示；备份默认目录改到文档/桌面，不再写盘符根；包元数据补 `repository`/`homepage`。
+
+- **CI 修复（第四轮#1）**：tests/ 本地化后 CI 里四个 tests step 一直空跑假绿——已删除，`py_compile` 只查 `scripts/`，CI 只留真检查（check_version / manifest / sync / checksums）。
+- **engine 副本一致性（第四轮#2）**：`doctor` 新增第 10 项 `engine-sync`——scripts/ 与 AstrBot engine/ 副本漂移直接在体检里暴露，附带修平命令提示。
+- **project 接线（第四轮#3）**：`remember` / `recall` 加 `--project`；同项目召回 +0.25 加分排前（**不硬过滤**，跨项目照常可见）；合并路径上旧 `default` 标记可被真实项目名补挂。
+- **importance 通胀治理（第四轮#4）**：`daily` metrics 新增 importance 直方图与 0.9+ 占比（通胀报警器）；注入星星改为**全库分位归一**——只有全库前 10% 的记忆吃满 ★★★★★（<20 条退回原始值），`--importance 8` 与 `--importance 7` 的差别重新拉开。
+- **性能基准（第四轮#5）**：新增 `scripts/bench.py`——隔离临时 HOME 生成 N 条合成记忆（`--n` / `--quick`），量 remember / recall / inject / doctor 的 p50/p95；改召回阈值前后的"有没有变慢"从手感变成数字。
+
+<details><summary>v3.10 及更早</summary>
+
+- **记忆管控**：`memory freeze/unfreeze <id>` 冻结的记忆不参与召回、注入与做梦；`remember --correction` 标记被用户纠正的记录（永不自动合并/淡忘/归档）；`remember --ttl N` 给事实设保质期，到期转「待复核」。
+- **数据结构与完整性**：`HOME/_meta.json` 记录 schema 版本（老版本遇到新 schema 自动降级只读，不写坏库）；每条记忆带 SHA-256 内容哈希并串成 prev-hash 链，`memory integrity` 一条命令定位篡改/损坏。
+- **召回与向量**：`recall --mode fast|deep|auto` 三档（纯词面 / 全量向量+冲突提示 / 自动择优）；`rebuild-embeds [--force]` 全量重算（含归档层），换 embedding 模型时缓存自动失效。
+- **自我进化**：`lesson "教训"` 一条命令三写（memory+knowledge 待审+note）；`lessons` 教训库带置信度——被后续对话验证 +0.10、被推翻 −0.15，低于 0.2 自动退役；`persona self-model` 输出机器可读的自模型（擅长/短板/还没弄清）。
+- **可观测性**：`doctor` 十项体检（含版本矩阵、当前写入者与 engine 副本一致性）；`auditlog` 统一审计流；`dream --verify` 复核做梦合并抽检；`status --json` 是唯一水位数据源（退出码按 60/75/90 分级）。
+- **可靠性**：注入包顶部「上次会话写入失败 N 次」；`backup` 自动做恢复演练；日志超 1MB 自动轮转；Windows 文件占用给 rename→WMI 进程定位与退出引导，不再猜 taskkill。
+
+</details>
 
 ## 核心机制
 
@@ -211,6 +232,13 @@ python scripts/brain.py assoc unlink m_3f2a... m_9c1d...
   自动探测全局技能目录里的 `scripts/brain.py`，跑 `startup` 并把人格、记忆、待办、
   行为指引以 UserMessage 形态 `agent.inject()` 进会话上下文——**会话一开始记忆就在
   上下文里**。`clear` / `compact` 不重复注入，进程内按 agent 去重。
+- **`lingshu-im`（dsh-im 桥接）**：装了 [`dsh-im`](https://github.com/xmanrui/dsh-im) 后，
+  QQ / 微信 / 飞书 / Telegram 等 IM 聊天也具备与 AstrBot 桥接一致的设置——`autoRecall`
+  对话前按用户本轮消息召回、`autoCapture` 对话后写回用户原话（须本人 `capture-on` 授权）、
+  `memoryIsolation` 隔离噪声、`recallBudget` / `captureMinChars` / `captureInterval` 控量控频。
+  身份来自 `dsh-im/session-pre-bind` 事件 + 宿主只读服务 `dshIm.describeConversationSync()`，
+  按「平台@机器人 / 发送者 / 群」三元组隔离；注入时顺带告诉模型本会话的
+  `--channel / --group / --user`，模型自己调灵枢 CLI 也不会写错身份。
 - 失败宽容：灵枢没装、Python 不在、超时——全部静默跳过，绝不阻塞会话；
   `brain.py startup` 只读记忆库，HOME 不可写时自动只读降级照样注入。
   **装完插件必须完全重启 DSH**——Host 的插件树（cordis bundles）是主进程启动时
@@ -344,6 +372,19 @@ python scripts/brain.py assoc unlink m_3f2a... m_9c1d...
   3. **重启 AI 工具重试**：审批故障通常是会话级/临时性的，换个会话或重启客户端后可能恢复；
   4. **不要让 AI 绕过**：改名脚本、拆字符串拼命令等手段既不可靠也违反工具安全策略。
 
+### 常见问题：Windows 上 `python` 的退出码读不到（`%ERRORLEVEL%` 恒 0）
+
+- **现象**：在 CMD 里跑 `python scripts/brain.py doctor` 后用 `%ERRORLEVEL%` 判断结果，永远是 0；PowerShell 里 `$LASTEXITCODE` 同样不可靠。
+- **原因**：`python` 命令常常解析到 `python.cmd`（py launcher / Store 别名 / 某些环境管理器生成的包装脚本）。`.cmd` 只做转发，**不会把子进程退出码传回**，于是调用方看到的是包装脚本自己的 0。
+- **怎么办**：需要判断退出码时，**用 `python.exe` 的完整路径**（`where python` 找到它）：
+
+  ```powershell
+  & "D:\ServBay\packages\python\current\python.exe" scripts\brain.py doctor
+  $LASTEXITCODE   # 现在能拿到真实值：0 正常 / 1 WARN / 2 FAIL
+  ```
+
+  或者用 Python 侧间接判断：`python scripts/brain.py doctor --json`，读 JSON 里的 `ok` 字段（不依赖退出码）。
+
 ## 脚本 vs 模型：谁在真正干活
 
 **先打消一个误会：装上灵枢不等于自动拥有类人脑智能。** 这套脚本是「存储、调度、数学计算」；真正的「智能」——合并记忆、理解情绪、提炼知识——仍然靠你接入的大模型。谁干什么，边界如下：
@@ -429,13 +470,34 @@ SYSTEM """你运行在本地，有记忆系统「灵枢」。每轮先按需执�
 ### 发布新版本的标准流程（维护者）
 
 ```bash
+# 0. 一次性：安装 git 钩子（pre-commit 版本守卫 + pre-push tag 守卫）
+python scripts/check_version.py --install
+
 # 1. 改完代码后：生成/刷新发布清单（内置 version 与 SKILL.md 一致性校验）
 python scripts/make_manifest.py
-# 2. 升 SKILL.md 的 version，并在 CHANGELOG.md 写好对应小节（如 "## v2.33 — 标题"）
+# 2. 升 SKILL.md 的 version，并在 CHANGELOG.md 写好对应小节（如 "## v3.15 — 标题"）
 #    ——这两步由 pre-commit 钩子强制：代码变更不升版本、升版本没写 CHANGELOG 都会被拒绝
-# 3. 提交并打 tag
-git add -A && git commit -m "v2.33 …" && git tag v2.33 && git push --tags
+# 3. 提交
+git add -A && git commit -m "v3.15 …"
+# 4. 推送 main（--follow-tags 确保 tag 跟着一起推）
+git push --follow-tags gitee main && git push --follow-tags origin main
+
+# 5. 核对 tag 与版本是否对齐（也可以手动跑）
+python scripts/check_tag.py --check
 ```
+
+> **tag 守卫（pre-push）**：推 `main` 时若当前版本还没有 `vX.Y` tag，钩子会自动在 HEAD
+> 打一个带注释的 tag，并**拒绝本次推送**，提示改用 `git push --follow-tags`。
+> 这样「仓库很久没打 tag、市场版本说明一直停在旧版本」不会再发生。
+> 应急跳过：`LINGSHU_SKIP_TAG_CHECK=1 git push ...`（不建议）。
+
+> **Release 自动创建**：`.github/workflows/release.yml` 在推送 `v*` tag 时触发，
+> 自动把 CHANGELOG 对应版本小节写成 GitHub Release 正文。
+> **这一步不能省**：插件市场（dsh-market）的「版本说明」读的是
+> `awesome-dsh-plugin` 目录站抓取的 **GitHub Release**，不是 git tag；
+> 只打 tag 不建 Release，市场会一直显示上一次 Release 的说明。
+> 目录站每天抓一次，所以 Release 建好后，市场通常要等下一次抓取才更新（market 自身另有 1 小时缓存）。
+> 手动兜底：`gh release create v3.18 --notes-file <(sed -n '/^## v3.18/,/^## v3.1[0-7]/p' CHANGELOG.md)`。
 
 ### 用户侧更新
 
@@ -495,10 +557,26 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 
 | 领域 | 命令 |
 |---|---|
-| 记忆 | `remember` / `recall` / `inject` / `startup` / `list` / `forget` |
+| 记忆 | `remember [--project 名]` / `recall [--mode fast\|deep\|auto] [--project 名]`（同项目 +0.25 加分，不硬过滤） / `inject` / `startup` / `list` / `forget` / `export --md [--out 文件]` |
+| 记忆管控 | `memory freeze <id>` / `memory unfreeze <id>` / `memory boost <id>` / `memory integrity` / `remember --correction` / `remember --ttl N` |
 | 上下文水位 | `check-context --used 68`（60 清点 / 75 做梦 / 90 封存） |
 | 原样封存 | `capture "<原文>" [--tag 逃生]` |
-| 做梦 | `dream` / `dream --apply apply.json` / `dream --auto` |
+| 做梦 | `dream` / `dream --apply apply.json` / `dream --auto` / `dream --verify [--done]`（合并抽检复核） |
+| 跨对话摄取 | `ingest-dialogues [--path 目录] [--limit N] [--dry-run]`（默认关；`config set dialogue_ingest true` + `dialogue_sources` 目录；`dialogue_ingest_auto` 由 startup 后台子进程执行） |
+| 注入缓存 / 只读回放 / 饱和 | `session-state [show\|clear]`（需 `session_state_cache=true`） / `replay [--days 90] [--limit 20]` / `saturation [--threshold 0.8]` |
+| 上下文账单 | `context-stats [--json] [--budget N] [--query Q]`（按段拆注入包：字符 / 估算 token / 占预算） |
+| 五段装配试排 | `context-plan [--budget N] [--json]`（stable/summary/retrieved/recent/current 按预算排一遍，看会裁什么） |
+| 会话摘要 | `summarize --input 对话.jsonl [--json] [--prev 旧摘要.md]`（五段式；模型可选，失败/不合格自动回退离线抽取） |
+| 摘要触发/落盘 | `session-summary build --input 对话.jsonl [--pct 65] [--force]`（每 8 轮或水位 ≥60% 触发；留 3 版可 `rollback`） |
+| 检索片段 | `retrieve "关键词" [--k 20] [--budget 800]`（优先 `config.session_rag.url`，失败回退灵枢本地召回） |
+| 收尾清点 | `checkpoint [--repo 路径] [--note "…"] [--dry-run] [--force]`（用 git 证据写一条「任务收尾」episode，同一状态不重复写） |
+| 原文检索服务 | `rag init\|ingest 文件.jsonl\|search "词"\|stats\|serve`（SQLite + FTS5 trigram；`serve` 起 `127.0.0.1:8791` 供 `retrieve` 用） |
+| 面板 | `python scripts/panel_build.py`（源码在 `panel_src/`，改完重建）；面板里 `Ctrl/⌘+K` 打开命令面板，记忆列表 >120 条自动分块懒渲染 |
+| 面板洞察 | 面板右下角「运行洞察」浮窗：版本 / 原文库 / 收尾清点 / 群聊鉴权 / 嵌入状态；支持主题（跟随系统/深/浅）、密度、自动刷新 |
+| 注入模式 | `config set inject_mode lazy`（记忆只带要点 + id，正文用 `recall` 取；默认 `full`）/ `config set inject_lazy_chars 80` |
+| 群聊鉴权 | `~/.brain-memory/config.json` 的 `guard` 段：`{"shadow":false}` 才真拦；非 owner 只放行只读工具，日志在 `lingshu-guard.log` |
+| 通道注入放行 | `config set inject_channels '["qq@bot:群号"]'`（默认只注入无通道与 dialogue:* 记忆） |
+| IM 桥接开关 | `~/.brain-memory/config.json` 的 `im` 段（如 `{"autoRecall":true,"autoCapture":false}`）；也可由宿主透传 `{im:{...}}`。默认都关（跨会话隐私） |
 | 冷热归档 | `archive show\|search <词>\|restore <id>\|run [--dry-run]\|count`（沉眠记忆自动雪藏，原文保留可回捞） |
 | 人格 | `persona show\|set traits.幽默=70\|sync\|path\|interview\|self\|lock\|unlock\|history [--limit]\|rollback <序号>\|snapshot [--label]\|snapshots\|restore <名字>\|drift [--days 7] [--json]` |
 | 情绪 | `emotion now\|arc\|list\|feel\|evaluate\|mirror\|desire\|config\|events\|adjust <序号>\|del <序号>\|cool\|check "回复文本"` |
@@ -506,6 +584,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | 会话模式 | `mode show\|work\|human\|auto\|explain "一句话话题"`（工程会话自动隔离情绪；explain 看 auto 判定依据） |
 | 记忆关联 | `assoc link <idA> <idB> --relation 因果 --why "..."\|unlink <idA> <idB>\|of <id>\|auto [--dry-run]\|graph --limit 300` |
 | 运行日志 | `logs [--limit 20] [--level warn\|error] [--all]`（锁冲突/异常/解析报错，面板「日志」页同款） |
+| 失败账本 | `failures [--days 7] [--top 10] [--recent N] [--json]`（被 fail-open 吞掉的异常按类聚合；面板洞察里也显示近 24h 次数） |
 | 审核闸 | `review [--json]` / `review confirm <id>` / `review discard <id>`（记忆 m_* 与知识 k_* 通用） |
 | 用户规则 | `user-rules show\|add <规则>\|clear`（写在数据目录 lingshu.user.md，更新永不覆盖，每会话自动注入） |
 | 自查 | `audit [--json]`（待审计数 + 冲突记忆 + 该做什么） |
@@ -519,6 +598,9 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | DSH 插件（只读） | `skill plugins [--json]` |
 | 成长 | `growth status` / `growth review --days 7` |
 | 进化日志 | `evolve log "标题" --kind persona\|skill\|knowledge\|thinking\|self` |
+| 教训库 | `lesson "教训"`（三写：memory+knowledge 待审+note） / `lessons [list]` / `lessons add "..."` |
+| 审计日志 | `auditlog [limit] [--json]`（谁/何时/做了什么，>5000 条自动裁剪） |
+| 向量重建 | `rebuild-embeds [--force]`（含归档层，换模型自动失效重建） |
 | 备份恢复 | `backup [--out 目录] [--keep 20]` / `restore <zip> [--yes]` |
 | 数据目录 | `home show\|move\|verify` |
 | 与 DSH 同步 | `sync dsh [--dir 目录] [--days 1] [--force]` |
@@ -526,7 +608,8 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | 通道三元组 | `channel remember "内容" --group <id>\|recall "词" --group <id>\|user <id>`（群隔离/跨群记忆/按人回忆） |
 | 群友隐私 | `channel privacy status\|grant <用户>\|revoke <用户>`（本人授权门控，未授权查第三人返回退出码 4） |
 | 淡忘可逆 | `memory dust fold\|unfold\|revive <id>`（折叠只留 gist / 原文还原 / 复活回活跃层，面板 ⇲⇱⤴ 按钮） |
-| 诊断 | 面板「诊断」标签页 / `GET /api/diagnostics`（死链、冲突未裁决、数据膨胀、来源归属完整率） |
+| 诊断 | `doctor`（十项体检，含 engine 副本一致性）/ 面板「诊断」标签页 / `GET /api/diagnostics`（死链、冲突未裁决、数据膨胀、来源归属完整率） |
+| 性能基准 | `python scripts/bench.py [--n 1000] [--quick]`（隔离临时库量 p50/p95，不碰真实记忆库） |
 
 全局参数：`--home <目录>`（切换数据目录）、`--ro`（只读降级）。
 
@@ -555,6 +638,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
     ├── persona.py          # 人格/快照回滚/初识与自我设定
     ├── dream.py            # 做梦：聚类巩固与梦境应用
     ├── cli.py              # 子命令解析与执行/备份恢复/启动注入/每日例行
+    ├── bench.py            # 性能基准：隔离临时库量 remember/recall/inject/doctor 的 p50/p95
     ├── growth.py           # 成长系统：知识库/笔记/技能/进化日志/DSH 插件扫描
     ├── panel_server.py     # 本地面板 HTTP 服务（token 鉴权 + 来源校验）
     ├── astrbot_plugin_lingshu/  # AstrBot 插件（subprocess 进程隔离，通道三元组开箱即用）

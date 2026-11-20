@@ -1,4 +1,4 @@
-﻿﻿<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -155,23 +155,26 @@
         <button class="ghost" id="btn-conflicts">冲突检查</button>
         <button class="btn" id="btn-add">＋ 写一条</button>
       </div>
-      <div id="bulk-bar" class="card" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px">
+      <div id="bulk-bar" class="card hidden" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px">
         <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="bulk-all"> 全选
         </label>
         <span class="sub" id="bulk-count" style="min-width:70px">已选 0 条</span>
-        <button class="ghost" id="bulk-confirm">✓ 批量确认</button>
-        <button class="ghost" id="bulk-discard">✗ 批量废弃</button>
-        <input id="bulk-imp" type="number" min="1" max="10" placeholder="重要性 1-10" style="width:118px">
-        <button class="ghost" id="bulk-imp-btn">批量设重要性</button>
-        <input id="bulk-tag" placeholder="标签，逗号分隔" style="width:150px">
-        <button class="ghost" id="bulk-tag-add">批量加标签</button>
-        <button class="ghost" id="bulk-tag-rm">批量删标签</button>
-        <button class="ghost" id="bulk-pin">批量置顶</button>
-        <button class="ghost" id="bulk-unpin">批量取消置顶</button>
-        <button class="ghost" id="bulk-freeze" title="冻结后不参与召回/注入/做梦，仍可查看">❄ 批量冻结</button>
-        <button class="ghost" id="bulk-unfreeze">批量解冻</button>
-        <button class="ghost" id="bulk-delete" style="color:var(--red)">批量删除</button>
+        <span class="sub" id="bulk-hint">勾选记忆卡片左侧的复选框，这里会展开全部批量操作</span>
+        <div id="bulk-acts" class="hidden" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="ghost" id="bulk-confirm">✓ 批量确认</button>
+          <button class="ghost" id="bulk-discard">✗ 批量废弃</button>
+          <input id="bulk-imp" type="number" min="1" max="10" placeholder="重要性 1-10" style="width:118px">
+          <button class="ghost" id="bulk-imp-btn">批量设重要性</button>
+          <input id="bulk-tag" placeholder="标签，逗号分隔" style="width:150px">
+          <button class="ghost" id="bulk-tag-add">批量加标签</button>
+          <button class="ghost" id="bulk-tag-rm">批量删标签</button>
+          <button class="ghost" id="bulk-pin">批量置顶</button>
+          <button class="ghost" id="bulk-unpin">批量取消置顶</button>
+          <button class="ghost" id="bulk-freeze" title="冻结后不参与召回/注入/做梦，仍可查看">❄ 批量冻结</button>
+          <button class="ghost" id="bulk-unfreeze">批量解冻</button>
+          <button class="ghost" id="bulk-delete" style="color:var(--red)">批量删除</button>
+        </div>
       </div>
       <div id="layer-bar" class="card" style="margin-bottom:14px;padding:10px 16px" title="记忆库各层分布"></div>
       <div class="card hidden" id="conflict-box" style="margin-bottom:14px;border-color:rgba(201,107,95,.4)">

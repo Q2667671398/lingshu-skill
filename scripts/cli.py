@@ -3651,6 +3651,19 @@ def _main(argv=None) -> int:
         except Exception as e:
             checks.append(("engine-sync", "WARN", str(e)))
 
+        # 11. 发布漂移：**本机已安装副本**的版本 vs 当前源码版本。
+        #     这一项是补历史的洞：v3.45 的护栏/熔断写好了、本机跑的却还是 v3.44，
+        #     而 doctor 只查包内三处版本互相对账，从不问"运行时用的是哪一版"。
+        try:
+            import growth as _growth
+            rd = _growth.release_drift()
+            detail = rd["message"]
+            if rd["drift"]:
+                detail += f"（共 {len(rd['copies'])} 个副本）"
+            checks.append(("release-drift", "WARN" if rd["drift"] else "PASS", detail))
+        except Exception as e:
+            checks.append(("release-drift", "WARN", f"发布漂移自检失败：{e}"))
+
         fails = sum(1 for _, s, _ in checks if s == "FAIL")
         warns = sum(1 for _, s, _ in checks if s == "WARN")
         if args.json:

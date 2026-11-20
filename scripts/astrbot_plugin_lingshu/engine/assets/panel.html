@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,6 +11,15 @@
     --teal:#5fa8a0; --red:#c96b5f; --violet:#8d86c9;
     /* 语义色别名：供情绪/欲望条等内联样式引用，避免 var(--accent/--good/--bad) 取不到值变透明 */
     --accent:var(--amber); --good:var(--teal); --bad:var(--red);
+    /* 证据等级等场景用的补充色（以前只有 var(--green)/var(--blue) 的引用没定义，
+       整个 color/border-color 声明在计算时失效 → 徽章退化成一团灰） */
+    --green:#6fbf8b; --blue:#7ea6e0;
+    /* 主题跟随：文本语义色（深色底上更亮的同系文字）+ 星图/节点 RGB 三元组（浅色主题在 enhance.css 覆盖为深色版本） */
+    --teal-text:#9fd2cb; --red-text:#dda49b; --amber-text:#e3b96c;
+    --node-persona:240,208,120; --node-high:224,92,79; --node-mid:217,164,65;
+    --node-low:95,168,160; --node-min:125,137,150;
+    --edge:120,140,170; --path:233,196,106; --search:95,168,160;
+    --graph-label:233,230,223; --graph-focus:242,239,230; --graph-focus-ring:255,255,255;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
@@ -28,6 +37,9 @@
     border-right:1px solid var(--line);padding:24px 16px 18px;
     display:flex;flex-direction:column;gap:22px;position:sticky;top:0;height:100vh;
     background:rgba(10,12,15,.6);
+    /* 侧栏信息块（记忆库路径 / 水位 / 版本 / 待审核 / 会话模式）比视口高时，
+       以前直接裁掉且无法滚动，底部几条永远看不到；这里允许独立滚动。 */
+    overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;
   }
   .brand{display:flex;align-items:center;gap:10px;font-size:15px;letter-spacing:.5px;font-weight:600;padding:0 8px}
   .brand .orb{
@@ -45,6 +57,14 @@
   nav button.active{background:var(--amber-soft);color:var(--amber)}
   nav button .ic{width:16px;text-align:center;opacity:.9}
   .sidefoot{margin-top:auto;font-size:11px;color:var(--faint);line-height:1.7;padding:0 8px;word-break:break-all}
+  /* 侧栏可滚动后，各块不许被压缩（否则导航按钮会被挤扁而不是整体滚动） */
+  aside > .brand, aside > nav, aside > .sidefoot{flex-shrink:0}
+  /* 技能根目录里"目录不存在"的折叠摘要 */
+  details.root-more{margin-top:8px}
+  details.root-more > summary{cursor:pointer;padding:6px 2px;color:var(--muted)}
+  details.root-more > summary:hover{color:var(--text)}
+  /* 内容还没写进 <pre> 时不显示空盒子（成长页「每日例行」输出区） */
+  .pre:empty{display:none}
   .sidefoot b{color:var(--muted);font-weight:500}
   main{padding:30px 38px 60px;max-width:1180px;width:100%}
   header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:26px}
@@ -95,6 +115,9 @@
   .chip{padding:3px 9px;border-radius:999px;background:#1a1f26;border:1px solid var(--line);font-size:11.5px;color:var(--muted)}
   .chip.good{border-color:rgba(95,168,160,.28);color:#9fd2cb;background:rgba(95,168,160,.07)}
   .chip.bad{border-color:rgba(201,107,95,.28);color:#dda49b;background:rgba(201,107,95,.07)}
+  /* 人格未读改动高亮：停留查看期间一直高亮，切走页签或刷新页面才标已读、高亮消失 */
+  tr.unread td{background:rgba(217,164,65,.08)}
+  tr.unread td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
 
   .mem{
     display:flex;gap:14px;align-items:flex-start;padding:14px 16px;border:1px solid var(--line);
@@ -277,7 +300,8 @@
       <button data-tab="dream" aria-label="梦"><span class="ic">✦</span><span>梦</span></button>
       <button data-tab="logs" aria-label="日志"><span class="ic">☰</span><span>日志</span></button>
       <button data-tab="diag" aria-label="自诊断"><span class="ic">✚</span><span>诊断</span></button>
-      <button data-tab="store" aria-label="拓展商店"><span class="ic">⇘</span><span>拓展</span></button>
+      <button data-tab="store" aria-label="插件商店"><span class="ic">⇘</span><span>插件商店</span></button>
+      <button data-tab="ext" aria-label="本地能力"><span class="ic">⬢</span><span>本地能力</span></button>
       <button id="btn-panels" aria-label="面板管理"><span class="ic">▧</span><span>面板</span></button>
     </nav>
     <div class="sidefoot" id="sidefoot"></div>
@@ -405,21 +429,26 @@
         <button class="ghost" id="btn-conflicts">冲突检查</button>
         <button class="btn" id="btn-add">＋ 写一条</button>
       </div>
-      <div id="bulk-bar" class="card" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px">
+      <div id="bulk-bar" class="card hidden" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px">
         <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="bulk-all"> 全选
         </label>
         <span class="sub" id="bulk-count" style="min-width:70px">已选 0 条</span>
-        <button class="ghost" id="bulk-confirm">✓ 批量确认</button>
-        <button class="ghost" id="bulk-discard">✗ 批量废弃</button>
-        <input id="bulk-imp" type="number" min="1" max="10" placeholder="重要性 1-10" style="width:118px">
-        <button class="ghost" id="bulk-imp-btn">批量设重要性</button>
-        <input id="bulk-tag" placeholder="标签，逗号分隔" style="width:150px">
-        <button class="ghost" id="bulk-tag-add">批量加标签</button>
-        <button class="ghost" id="bulk-tag-rm">批量删标签</button>
-        <button class="ghost" id="bulk-pin">批量置顶</button>
-        <button class="ghost" id="bulk-unpin">批量取消置顶</button>
-        <button class="ghost" id="bulk-delete" style="color:var(--red)">批量删除</button>
+        <span class="sub" id="bulk-hint">勾选记忆卡片左侧的复选框，这里会展开全部批量操作</span>
+        <div id="bulk-acts" class="hidden" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="ghost" id="bulk-confirm">✓ 批量确认</button>
+          <button class="ghost" id="bulk-discard">✗ 批量废弃</button>
+          <input id="bulk-imp" type="number" min="1" max="10" placeholder="重要性 1-10" style="width:118px">
+          <button class="ghost" id="bulk-imp-btn">批量设重要性</button>
+          <input id="bulk-tag" placeholder="标签，逗号分隔" style="width:150px">
+          <button class="ghost" id="bulk-tag-add">批量加标签</button>
+          <button class="ghost" id="bulk-tag-rm">批量删标签</button>
+          <button class="ghost" id="bulk-pin">批量置顶</button>
+          <button class="ghost" id="bulk-unpin">批量取消置顶</button>
+          <button class="ghost" id="bulk-freeze" title="冻结后不参与召回/注入/做梦，仍可查看">❄ 批量冻结</button>
+          <button class="ghost" id="bulk-unfreeze">批量解冻</button>
+          <button class="ghost" id="bulk-delete" style="color:var(--red)">批量删除</button>
+        </div>
       </div>
       <div id="layer-bar" class="card" style="margin-bottom:14px;padding:10px 16px" title="记忆库各层分布"></div>
       <div class="card hidden" id="conflict-box" style="margin-bottom:14px;border-color:rgba(201,107,95,.4)">
@@ -466,11 +495,26 @@
         </div>
       </div>
       <div class="card" style="margin-top:14px">
+        <h2>画像归纳建议</h2>
+        <div class="sub" style="margin-bottom:8px">从最近的记忆里归纳出的候选：喜欢/讨厌/关系。采纳会写进「长出来的部分」并带证据链（可在演化历史里看到证据是哪条记忆）。</div>
+        <div style="margin-bottom:8px"><button class="ghost" id="btn-suggest-scan" style="padding:3px 12px;font-size:12px">扫描最近记忆</button> <button class="ghost" id="btn-suggest-refresh" style="padding:3px 12px;font-size:12px">刷新列表</button></div>
+        <div id="persona-suggest"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
         <h2>AI 近期改动 · 待你过目</h2>
         <div class="sub" style="margin-bottom:8px">做梦/自我总结由 AI 发起的人格变更（手动编辑、回滚、初识回答不算）。不对就点「回滚到此」撤销。</div>
         <div id="ai-changes"></div>
-        <div style="margin-top:10px"><button class="ghost" id="btn-persona-diff" style="padding:3px 12px;font-size:12px">查看变化明细</button></div>
+        <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+          <button class="ghost" id="btn-persona-diff" style="padding:3px 12px;font-size:12px">查看变化明细</button>
+          <button class="ghost" id="btn-changes-viewed" style="padding:3px 12px;font-size:12px">标记已读</button>
+        </div>
         <div id="persona-diff" style="margin-top:10px"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>自动快照 · 按时间可回滚</h2>
+        <div class="sub" style="margin-bottom:8px">每次改人格（AI 或手动）都会先存一份完整快照。改坏了点「回滚到此」回到那一刻；回滚前会再存一份"回滚前"快照，可以再回回。</div>
+        <div style="margin-bottom:8px"><button class="ghost" id="btn-snapshots" style="padding:3px 12px;font-size:12px">刷新快照列表</button></div>
+        <div id="snapshots"></div>
       </div>
       <div class="card" style="margin-top:14px">
         <h2>演化历史</h2>
@@ -657,11 +701,11 @@
             <h2 style="margin-bottom:4px">记忆联想 · 3D 空间</h2>
             <div class="sub" id="graph-hint">以<b>人格星核</b>为中心自动放射连接全部记忆；共享实体/标签的记忆自动连线。点节点聚焦，邻居被点亮；<b>左键拖=旋转 · 右键拖=平移 · 滚轮=缩放 · Esc=退出聚焦</b>。</div>
             <div class="row" style="margin-top:6px;gap:12px;flex-wrap:wrap">
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:12px;height:12px;border-radius:50%;background:#f0d078;box-shadow:0 0 8px #f0d078;display:inline-block"></i>人格星核</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#e05c4f;display:inline-block"></i>很重要</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#d9a441;display:inline-block"></i>较重要</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#5fa8a0;display:inline-block"></i>一般</span>
-              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#5d646e;display:inline-block"></i>不重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:12px;height:12px;border-radius:50%;background:rgb(var(--node-persona));box-shadow:0 0 8px rgb(var(--node-persona));display:inline-block"></i>人格星核</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-high));display:inline-block"></i>很重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-mid));display:inline-block"></i>较重要</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-low));display:inline-block"></i>一般</span>
+              <span class="sub" style="display:flex;align-items:center;gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:rgb(var(--node-min));display:inline-block"></i>不重要</span>
               <span class="sub" style="color:var(--faint)">颜色=重要程度 · 越近被想起越亮</span>
             </div>
           </div>
@@ -687,11 +731,21 @@
       <div class="card" style="padding:0;overflow:hidden;position:relative">
         <canvas id="graph-canvas" style="display:block;width:100%;height:560px;cursor:grab"></canvas>
         <div id="graph-tip" class="sub" style="position:absolute;left:14px;bottom:12px;pointer-events:none;font-size:11.5px;color:var(--faint)"></div>
+        <div id="graph-loadtip" class="sub hidden" style="position:absolute;left:0;right:0;top:46%;text-align:center;pointer-events:none;font-size:13px;color:var(--faint)"></div>
         <div id="graph-detail" class="card hidden" style="position:absolute;right:14px;top:14px;width:280px;max-height:80%;overflow:auto;background:rgba(17,21,26,.94);backdrop-filter:blur(6px)"></div>
       </div>
       <div class="card" style="margin-top:14px">
         <div class="row"><h2 style="margin:0">关联明细</h2><span class="sub" id="graph-stat" style="margin-left:auto"></span></div>
         <div id="graph-neighbors" class="sub" style="margin-top:10px">点一个节点，看它连着什么。</div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <input id="path-a" placeholder="节点 A：id 或 gist 关键词" style="flex:1;min-width:140px">
+            <span class="sub">→</span>
+            <input id="path-b" placeholder="节点 B：id 或 gist 关键词" style="flex:1;min-width:140px">
+            <button class="ghost" id="btn-graph-path">找关联路径</button>
+          </div>
+          <div id="graph-path-out" class="sub" style="margin-top:8px">最多沿 3 跳联想链找两条记忆怎么连起来，基于当前加载的子图。</div>
+        </div>
       </div>
       <div class="card" style="margin-top:14px">
         <h2>手动建立关联</h2>
@@ -724,6 +778,15 @@
           </div>
           <textarea id="review-out" rows="12" style="margin-top:10px" spellcheck="false" placeholder="点上面按钮生成复盘素材"></textarea>
         </div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <div class="row">
+          <h2 style="margin:0">成长时间线</h2>
+          <span class="sub" id="timeline-state" style="margin-left:auto">—</span>
+        </div>
+        <div class="sub" style="margin-top:6px">性格跳变、成形时刻、被纠正的节点——成长里的拐点都在这。</div>
+        <div id="growth-timeline" style="margin-top:10px"></div>
       </div>
 
       <div class="split" style="margin-bottom:14px">
@@ -824,7 +887,8 @@
             <h2 style="margin-bottom:4px">自诊断</h2>
             <div class="sub">不只展示记忆，还归因异常：死链（指向不存在的 id）、冲突未裁决、数据膨胀、来源归属完整率。</div>
           </div>
-          <button class="ghost" id="btn-diag-refresh" style="margin-left:auto">重新体检</button>
+          <button class="ghost" id="btn-diag-fixlinks" style="margin-left:auto;display:none">清理死链</button>
+          <button class="ghost" id="btn-diag-refresh" style="margin-left:8px">重新体检</button>
         </div>
         <div id="diag-summary" style="margin-top:12px"></div>
         <div id="diag-body" style="margin-top:10px"><div class="empty">加载中…</div></div>
@@ -874,7 +938,7 @@
       <div class="card" style="margin-bottom:14px">
         <div class="row" style="flex-wrap:wrap">
           <div>
-            <h2 style="margin-bottom:4px">拓展商店</h2>
+            <h2 style="margin-bottom:4px">插件商店</h2>
             <div class="sub">灵枢的宿主适配插件（AstrBot / cordis 等）都在这里。点「安装」导出到
               <code>~/.brain-memory/extensions/installed/</code>，再按各插件说明复制到宿主的插件目录即可启用。</div>
           </div>
@@ -884,6 +948,21 @@
           </div>
         </div>
         <div id="store-list" style="margin-top:12px"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-ext">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">本地能力</h2>
+            <div class="sub">给灵枢加装本地能力：装好的扩展自动接入，卸载只需删目录。</div>
+          </div>
+          <div class="row" style="margin-left:auto">
+            <button class="ghost" id="btn-ext-refresh">刷新</button>
+          </div>
+        </div>
+        <div id="ext-ollama" style="margin-top:12px"><div class="empty">加载中…</div></div>
       </div>
     </section>
   </main>
@@ -989,6 +1068,14 @@ const progress = topProgress();
   <div class="box">
     <h3 id="upd-title">检查更新</h3>
     <div class="pre" id="upd-detail" style="margin:10px 0 4px"></div>
+    <div id="upd-dsh-section" style="display:none;margin-top:14px;padding:12px;border:1px solid #e2c27a;border-radius:8px;background:#fffaf0">
+      <div style="font-weight:600;margin-bottom:8px">⚠ DSH 插件副本需要修复</div>
+      <div id="upd-dsh-detail" style="font-size:13px;color:#5a4a1f;line-height:1.6"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="upd-dsh-repair" style="background:#c47f17">一键修复 DSH 副本</button>
+        <button class="btn hidden" id="upd-dsh-force" style="background:#b03030">强制更新 DSH 副本</button>
+      </div>
+    </div>
     <div class="row" style="margin-top:16px">
       <button class="ghost" id="upd-close">关闭</button>
       <button class="btn hidden" id="upd-apply">立即更新</button>
@@ -1047,10 +1134,25 @@ const PANEL_TOKEN = "/*__PANEL_TOKEN__*/";
 async function api(path, opts){
   opts = opts || {};
   opts.headers = Object.assign({}, opts.headers || {}, {Authorization: "Bearer " + PANEL_TOKEN});
-  if (!opts.signal) opts.signal = AbortSignal.timeout(15000); // 网络挂起不能死等，15s 兜底
-  const r = await fetch(path, opts);
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+  if (opts.signal == null) opts.signal = AbortSignal.timeout(opts.timeoutMs || 15000); // 网络挂起不能死等，15s 兜底；长操作传 timeoutMs 放宽
+  let r, data;
+  try {
+    r = await fetch(path, opts);
+    data = await r.json().catch(() => ({}));
+  } catch (err) {
+    // 网络层错误统一中文化：TimeoutError/AbortError 是超时中断，TypeError 是断网/服务挂了
+    if (err && (err.name === "TimeoutError" || err.name === "AbortError"))
+      throw new Error("请求超时——服务可能正忙（如拉取远程更新源），稍后再试");
+    if (err instanceof TypeError)
+      throw new Error("无法连接面板服务（可能已关闭或网络断开）");
+    throw err;
+  }
+  if (!r.ok || data.error) {
+    // 403 readonly 响应里 error="readonly" 不可读，message 才是人话——优先用 message
+    const msg = data.message || data.error;
+    if (data.error === "readonly") throw new Error(msg || "数据目录当前只读，写操作已被禁用");
+    throw new Error(msg || ("HTTP " + r.status));
+  }
   return data;
 }
 
@@ -1085,6 +1187,7 @@ function memCard(m){
         ${pending ? `<span class="badge" style="background:rgba(230,100,80,.18);color:#e66450" title="AI 整理出来的，还没人工确认，确认前不算事实">待审核</span>` : ""}
         ${m.conflict_flag ? `<span class="badge" style="background:rgba(217,164,65,.18);color:var(--amber)" title="与旧记忆有矛盾，待人工裁决：确认后取代旧说法，废弃则旧说法继续有效">⚔️ 冲突待裁决</span>` : ""}
         ${m.folded ? `<span class="badge" title="原文已收起，点右侧 ⇱ 展开还原或 ⤴ 复活">折叠</span>` : ""}
+        ${m.frozen ? `<span class="badge" style="background:rgba(110,150,220,.18);color:#6e96dc" title="已冻结：不参与召回/注入/做梦，仍可查看与解冻">❄ 冻结</span>` : ""}
         ${m.project && m.project !== "default" ? `<span class="badge" title="来源归属：project/session">⌗ ${esc(m.project)}${m.session && m.session !== "default" ? " / " + esc(m.session) : ""}</span>` : ""}
         <span class="badge">${esc(KIND[m.kind] || m.kind)}</span>
         ${m.emotion ? `<span class="badge" style="background:rgba(233,196,106,.16);color:var(--amber)" title="情绪增强编码：情绪强烈时记住的事更牢">♡ ${esc(m.emotion)}</span>` : ""}
@@ -1103,8 +1206,12 @@ function memCard(m){
       ${m.layer === "dust" ? (m.folded
           ? `<button class="iconbtn" title="展开还原（把折叠收起的原文放回来）" data-dustact="unfold" data-dustid="${esc(m.id)}">⇱</button>`
           : `<button class="iconbtn" title="折叠（原文收起，只留摘要；可随时展开还原）" data-dustact="fold" data-dustid="${esc(m.id)}">⇲</button>`)
-          + `<button class="iconbtn" title="复活（还原原文并回到活跃层）" data-dustact="revive" data-dustid="${esc(m.id)}">⤴</button>` : ""}
+          + `<button class="iconbtn" title="复活（还原原文并回到活跃层）" data-dustact="revive" data-dustid="${esc(m.id)}">⤴</button>`
+          + (dustCooldownOver(m)
+            ? `<button class="iconbtn danger" title="物理删除（不可恢复；需冷静满 7 天，点击后输入 id 前 8 位确认）" data-purge="${esc(m.id)}">🗑</button>` : "") : ""}
       <button class="iconbtn ${m.pinned ? "pin" : ""}" title="置顶/取消" data-pin="${esc(m.id)}">◈</button>
+      <button class="iconbtn ${m.frozen ? "pin" : ""}" title="${m.frozen ? "解冻（恢复参与召回/注入）" : "冻结（保留但不参与召回/注入/做梦）"}" data-freeze="${esc(m.id)}" data-frozen="${m.frozen ? 1 : 0}">${m.frozen ? "☀" : "❄"}</button>
+      <button class="iconbtn" title="遗忘纠正：稳定度×1.5，恢复被淡忘的记忆" data-boost="${esc(m.id)}">⚡</button>
       <button class="iconbtn" title="编辑" data-edit="${esc(m.id)}">✎</button>
       <button class="iconbtn" title="忘记" data-forget="${esc(m.id)}">✕</button>
     </div>
@@ -1158,12 +1265,26 @@ function renderOverview(){
   renderLayerBar();
   const rc = ov.review_counts || {};
   const rcTotal = (rc.memories || 0) + (rc.knowledge || 0) + (rc.persona || 0);
-  $("sidefoot").innerHTML = `<b>记忆库</b><br>${esc(ov.home || st.home || "")}<br><br><b>人格档案</b><br>persona.json`
+  const w = ov.water || {};
+  // _water_level 的 pct 是 0-1 小数（--used 65 会被 /100），0-100 口径换算回来
+  const rawPct = Number(w.pct || 0);
+  const wPct = rawPct > 0 && rawPct <= 1 ? Math.round(rawPct * 100) : Math.round(rawPct);
+  const wWarn = wPct >= 85;
+  $("sidefoot").innerHTML = `<b>记忆库</b><br>${esc(ov.home || st.home || "")}<br><br><b>注入水位</b><br>${wPct ? wPct + "%" : "—"}`
+    + (Number.isFinite(w.hours_since_dream) ? `<br>距上次做梦 ${w.hours_since_dream}h` : "")
+    + (wWarn ? ` <b style="color:#e66450">接近上限</b>` : "")
+    + `<br><br><b>人格档案</b><br>persona.json`
+    + (ov.source && ov.source.version ? `<br><br><b>代码版本</b><br>v${esc(ov.source.version)}<br><span style="font-size:10px">${esc(ov.source.script_dir || "")}</span>` : "")
     + `<br><br><b>模型档位</b><br>${esc(tierLabel(ov.model_tier))}`
     + `<br><br><b>会话模式</b><br>${esc(modeLabel(ov.mode))} <a href="javascript:void 0" data-mode-cycle style="color:var(--amber)">切换</a>`
     + (rcTotal ? `<br><br><b style="color:#e66450">待审核 ${rcTotal} 项</b><br>记忆 ${rc.memories || 0} · 知识 ${rc.knowledge || 0} · 人格 ${rc.persona || 0}` : "")
     + ((ov.persona_drift && ov.persona_drift.alert) ? `<br><br><b style="color:#e66450">人格漂移偏大</b><br><a href="#" data-goto="persona" style="color:var(--amber)">去人格页查看/回滚 →</a>` : "")
-    + (ov.readonly ? `<br><b style="color:var(--red)">只读模式</b>` : "");
+    + (ov.readonly ? `<br><b style="color:var(--red)">只读模式</b>` : "")
+    // #24 当前写入者：多机共享记忆库时，锁文件里的 host 让"另一台在写"变得可见
+    + ((ov.writers && ov.writers.length)
+        ? `<br><br><b>当前写入者</b><br>` + ov.writers.map(w =>
+            `${esc(w.file)} · ${esc(w.host || "?")}:${w.pid}${w.alive ? "" : "（已退出）"}`).join("<br>")
+        : "");
 
   const roBanner = $("ro-banner");
   if (roBanner) roBanner.classList.toggle("hidden", !ov.readonly);
@@ -1191,8 +1312,8 @@ function renderOverview(){
     : `<div class="sub">还没有性格设定：等初识，或由它自己决定。</div>`;
 
   const evo = p.evolved || {};
-  const likesAll = [...new Set([...(p.likes || []), ...(evo.learned_likes || [])])];
-  const dislikesAll = [...new Set([...(p.dislikes || []), ...(evo.learned_dislikes || [])])];
+  const likesAll = [...new Set([...(p.likes || []), ...(evo.learned_likes || [])].map(chipText))];
+  const dislikesAll = [...new Set([...(p.dislikes || []), ...(evo.learned_dislikes || [])].map(chipText))];
   const chips = [];
   likesAll.slice(0, 6).forEach(x => chips.push(`<span class="chip good">喜欢 ${esc(x)}</span>`));
   dislikesAll.slice(0, 4).forEach(x => chips.push(`<span class="chip bad">讨厌 ${esc(x)}</span>`));
@@ -1251,8 +1372,8 @@ function renderPersonaEditor(p){
   $("pf-role").value = ident["身份"] || "";
   $("pf-callme").value = ident["称呼你"] || "";
   $("pf-traits").value = Object.entries(p.traits || {}).map(([k, v]) => `${k}:${tval(v)}`).join("\n");
-  $("pf-likes").value = (p.likes || []).join(", ");
-  $("pf-dislikes").value = (p.dislikes || []).join(", ");
+  $("pf-likes").value = (p.likes || []).map(chipText).join(", ");
+  $("pf-dislikes").value = (p.dislikes || []).map(chipText).join(", ");
   $("pf-cur").value = dr.curiosity ?? "";
   $("pf-reason").value = dr.reason ?? "";
   $("pf-path").textContent = "persona.json · 改动可回滚";
@@ -1406,17 +1527,40 @@ function renderDailyCards(){
 // ---------------- 记忆联想 · 3D 空间（零依赖力导向） ----------------
 const GRAPH = { data: null, pos: [], yaw: 0.6, pitch: -0.35, dist: 360,
                 focus: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}, targetDist: 360,
-                selected: null, hover: null, loaded: false, nbrs: null, anim: null };
+                selected: null, hover: null, loaded: false, nbrs: null, anim: null, pathEdges: null };
 const LAYER_COLOR = { cortex: "#d9a441", hippo: "#5fa8a0", dust: "#5d646e", archive: "#8f92b8" };
 // 颜色 = 重要程度（与图例一致）：红=很重要 / 金=较重要 / 青=一般 / 灰=不重要；人格星核专属暖金
-const PERSONA_COLOR = "#f0d078";
-function nodeColor(n){
-  if (n.layer === "persona" || n.kind === "persona") return PERSONA_COLOR;
+// 主题跟随：取 --node-* RGB 三元组（浅色主题在 enhance.css 里覆盖为深色版本）
+function nodeColor(n, P){
+  if (n.layer === "persona" || n.kind === "persona") return "rgb(" + P.persona + ")";
   const imp = n.importance == null ? 0.5 : n.importance;
-  if (imp >= 0.8) return "#e05c4f";
-  if (imp >= 0.6) return "#d9a441";
-  if (imp >= 0.35) return "#5fa8a0";
-  return "#5d646e";
+  if (imp >= 0.8) return "rgb(" + P.high + ")";
+  if (imp >= 0.6) return "rgb(" + P.mid + ")";
+  if (imp >= 0.35) return "rgb(" + P.low + ")";
+  // 低重要度也用可辨识的灰蓝：太深的灰在暗背景上像半透明/隐形
+  return "rgb(" + P.min + ")";
+}
+// 星图调色板：从 CSS 变量读一次，data-theme 变化时自动重取
+function graphPalette(){
+  const t = document.documentElement.getAttribute("data-theme") || "dark";
+  if (graphPalette._theme === t && graphPalette._cache) return graphPalette._cache;
+  const cs = getComputedStyle(document.documentElement);
+  const g = n => { const v = (cs.getPropertyValue(n) || "").trim(); return v || null; };
+  const P = {
+    persona: g("--node-persona") || "240,208,120",
+    high: g("--node-high") || "224,92,79",
+    mid: g("--node-mid") || "217,164,65",
+    low: g("--node-low") || "95,168,160",
+    min: g("--node-min") || "125,137,150",
+    edge: g("--edge") || "120,140,170",
+    path: g("--path") || "233,196,106",
+    search: g("--search") || "95,168,160",
+    label: g("--graph-label") || "233,230,223",
+    focus: g("--graph-focus") || "242,239,230",
+    focusRing: g("--graph-focus-ring") || "255,255,255"
+  };
+  graphPalette._theme = t; graphPalette._cache = P;
+  return P;
 }
 
 function hashStr(s){
@@ -1439,6 +1583,8 @@ function startPhysics(){
     if (!nodes || !pos || !vel || !GRAPH.loaded){ GRAPH.phys = null; return; }
     const n = Math.min(nodes.length, 260);
     const kk = 24, rep = 5200;
+    // 防重叠：硬斥力只对"贴在一起"的节点生效，避免大图里互相穿透成一坨；>250 个节点跳过保性能
+    const overlap = nodes.length <= 250;
     let energy = 0;
     for (let i = 0; i < n; i++){
       let fx = 0, fy = 0, fz = 0;
@@ -1465,8 +1611,36 @@ function startPhysics(){
       vel[i].x = (vel[i].x + fx * 0.06) * 0.86;
       vel[i].y = (vel[i].y + fy * 0.06) * 0.86;
       vel[i].z = (vel[i].z + fz * 0.06) * 0.86;
+    }
+    // 防重叠碰撞步：两两距离小于"半径和+4"时沿连线推开（0.5 阻尼），直接改位置不进速度，避免震荡
+    if (overlap){
+      for (let i = 0; i < nodes.length; i++){
+        const ri = 3 + (nodes[i].importance || 0.5) * 11;
+        for (let j = i + 1; j < nodes.length; j++){
+          const dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y, dz = pos[i].z - pos[j].z;
+          const d2 = dx*dx + dy*dy + dz*dz;
+          const minD = ri + 3 + (nodes[j].importance || 0.5) * 11 + 4;
+          if (d2 >= minD * minD || d2 === 0) continue;   // d2===0 时跳过：方向向量未定义，硬推会出 NaN
+          const d = Math.sqrt(d2), push = (minD - d) / d * 0.5;
+          pos[i].x += dx * push; pos[i].y += dy * push; pos[i].z += dz * push;
+          pos[j].x -= dx * push; pos[j].y -= dy * push; pos[j].z -= dz * push;
+        }
+      }
+    }
+    // 超出物理预算(n)的尾部节点不做两两斥力/弹簧，但要给一个"径向归位"力并照常前进：
+    // 否则它们永远停在初始随机球心附近、位置从不更新，大图中心会挤成一团死点
+    for (let i = n; i < nodes.length; i++){
+      const p = pos[i];
+      const d = Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z) + 1e-6;
+      const f = (d - kk) / d * -0.006;   // 远的往回收、近的往外推，缓慢归位到 kk 半径
+      vel[i].x = (vel[i].x + p.x * f) * 0.9;
+      vel[i].y = (vel[i].y + p.y * f) * 0.9;
+      vel[i].z = (vel[i].z + p.z * f) * 0.9;
+    }
+    // 位置推进遍历全部节点（不能只推前 n 个，否则尾部节点被冻结在初始位置）
+    for (let i = 0; i < nodes.length; i++){
       pos[i].x += vel[i].x; pos[i].y += vel[i].y; pos[i].z += vel[i].z;
-      energy += vel[i].x*vel[i].x + vel[i].y*vel[i].y + vel[i].z*vel[i].z;
+      if (i < n) energy += vel[i].x*vel[i].x + vel[i].y*vel[i].y + vel[i].z*vel[i].z;
     }
     renderGraph();
     // 动能连挂 40 帧都极低 → 休眠；任何交互 autoWake() 重新启动
@@ -1507,9 +1681,12 @@ async function loadGraph(limit){
   $("graph-neighbors").innerHTML = "点一个节点，看它连着什么。";
   $("graph-detail").classList.add("hidden");
   GRAPH.selected = null; GRAPH.hover = null; GRAPH.nbrs = null;
-  GRAPH.searchHits = null; GRAPH.searchPos = 0;
+  GRAPH.searchHits = null; GRAPH.searchPos = 0; GRAPH.pathEdges = null;
   stopGraphAnim();
   stopPhysics();
+  // 加载/空态提示：画布是异步数据，先给"在做了"的反馈，避免像卡死
+  const loadTip = $("graph-loadtip");
+  if (loadTip){ loadTip.textContent = "正在构建联想空间…"; loadTip.classList.remove("hidden"); }
   GRAPH.focus = {x: 0, y: 0, z: 0}; GRAPH.target = {x: 0, y: 0, z: 0};
   GRAPH.targetDist = 360;
   try {
@@ -1523,6 +1700,7 @@ async function loadGraph(limit){
     });
     // 弹簧表：物理模拟用；邻接表：选中时"激活扩散"高亮
     const nodes = GRAPH.data.nodes, edges = GRAPH.data.edges;
+    edges.forEach((e, i) => { e._ei = i; });   // 边序号：路径高亮按序号记录，重载后失效自动清空
     const idx = new Map(nodes.map((x, i) => [x.id, i]));
     GRAPH.springs = Array.from({length: nodes.length}, () => []);
     edges.forEach(e => { const a = idx.get(e.src), b = idx.get(e.dst);
@@ -1536,10 +1714,12 @@ async function loadGraph(limit){
     renderGraph();
     // 库里没有可画的记忆时给明确的空态引导，别让一片空白被当成"加载失败"
     if (!nodes.length){
+      if (loadTip){ loadTip.textContent = "还没有可联想的记忆节点"; loadTip.classList.remove("hidden"); }
       $("graph-hint").textContent = "还没有可展示的记忆（或都在淡忘区/归档层）。先聊几句让它记点东西，或到「梦」页做一次做梦沉淀。";
       $("graph-stat").textContent = "";
       $("graph-neighbors").innerHTML = "";
     } else {
+      if (loadTip) loadTip.classList.add("hidden");
       const nAuto = edges.filter(e => e.auto).length;
       $("graph-hint").textContent = `${nodes.length} 条记忆 · ${edges.length} 条关联（${nAuto} 条自动联想）· 点节点：以它为中心 + 激活相邻记忆`;
       $("graph-stat").textContent = `${nodes.length} 节点 · ${edges.length} 关联边 · 手动 ${edges.length - nAuto} / 自动 ${nAuto}`;
@@ -1572,6 +1752,7 @@ function renderGraph(){
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+  const P = graphPalette();
   const cx = W / 2, cy = H / 2;
   const nodes = GRAPH.data.nodes, edges = GRAPH.data.edges;
   // 层筛选：选定层之外全部隐藏（边两端都可见才画）；人格星核是放射中心，始终显示
@@ -1600,16 +1781,22 @@ function renderGraph(){
     if (!shown.has(ai) || !shown.has(bi)) return;
     const pa = proj[ai], pb = proj[bi];
     const touchSel = sel != null && (ai === sel || bi === sel);
+    // hover 高亮：未选中节点时点亮与 hover 节点相连的边（选中态优先，hover 不覆盖）
+    const touchHover = sel == null && GRAPH.hover != null && (ai === GRAPH.hover || bi === GRAPH.hover);
+    // 联想路径边：找关联路径的结果临时高亮，帮助看清"A 怎么到 B"
+    const onPath = GRAPH.pathEdges != null && GRAPH.pathEdges.includes(e._ei);
     const edgeHot = sel == null || touchSel || (hot.has(ai) && hot.has(bi));
     const w = Math.min(1.8, 0.3 + e.weight * 0.35);
-    ctx.lineWidth = touchSel ? w + 1.4 : (w + 0.5) * (edgeHot ? 1 : 0.55);
-    // 手动关联实线；自动联想虚线更淡（一眼区分"记下的联系"与"推出来的联系"）
-    ctx.setLineDash(e.auto ? [3, 5] : []);
-    ctx.strokeStyle = touchSel
-      ? "rgba(233,196,106,.95)"
-      : e.auto
-        ? "rgba(120,140,170," + (edgeHot ? 0.04 + Math.min(0.28, e.weight * 0.07) : 0.025 + Math.min(0.12, e.weight * 0.03)) + ")"
-        : "rgba(120,140,170," + (edgeHot ? 0.05 + Math.min(0.4, e.weight * 0.1) : 0.03 + Math.min(0.18, e.weight * 0.04)) + ")";
+    ctx.lineWidth = (touchSel || onPath) ? w + 1.4 : (w + 0.5) * (edgeHot || touchHover ? 1 : 0.55);
+    // 路径边必须看清走向，用实线盖过自动联想的虚线
+    ctx.setLineDash(e.auto && !onPath ? [3, 5] : []);
+    ctx.strokeStyle = onPath
+      ? "rgba(" + P.path + ",.9)"
+      : touchSel || touchHover
+        ? "rgba(" + P.path + ",.85)"
+        : e.auto
+        ? "rgba(" + P.edge + "," + (edgeHot ? 0.04 + Math.min(0.28, e.weight * 0.07) : 0.025 + Math.min(0.12, e.weight * 0.03)) + ")"
+        : "rgba(" + P.edge + "," + (edgeHot ? 0.05 + Math.min(0.4, e.weight * 0.1) : 0.03 + Math.min(0.18, e.weight * 0.04)) + ")";
     ctx.beginPath(); ctx.moveTo(cx + pa.x, cy + pa.y); ctx.lineTo(cx + pb.x, cy + pb.y); ctx.stroke();
     ctx.setLineDash([]);
   });
@@ -1617,36 +1804,37 @@ function renderGraph(){
   // 节点（先画非焦点，再画焦点；近的压在上面）
   const order = nodes.map((n, i) => i).sort((a, b) => proj[a].z - proj[b].z);
   const drawNode = i => {
+    if (!shown.has(i)) return;   // 层筛选/背面/太小的节点不画（否则筛选只隐藏了边，节点还全在）
     const n = nodes[i], p = proj[i];
     const r = (3 + (n.importance || 0.5) * 11) * Math.max(0.4, p.s);
-    const base = nodeColor(n);
+    const base = nodeColor(n, P);
     const dim = sel != null && !hot.has(i);
     const focusHit = GRAPH.hover === i || GRAPH.selected === i;
     // 焦点/展示中的节点永远实心不透底（否则能透过节点看见后面的连线，像透明玻璃珠）；
-    // 半透明只保留给"选中态下被压暗"的背景节点——普通节点一律实心，近因明暗改由颜色亮度表达
-    ctx.globalAlpha = dim ? 0.14 : 1;
+    // 选中态下背景节点压暗但不至于隐形：0.14 太透像玻璃珠，提到 0.3 保轮廓可辨识
+    ctx.globalAlpha = dim ? 0.3 : 1;
     // 焦点选中：外圈呼吸光环（注意力）
     if (GRAPH.selected === i){
       ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, r + 6, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(233,196,106,.5)"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = "rgba(" + P.path + ",.5)"; ctx.lineWidth = 1.5; ctx.stroke();
     }
     // 搜索命中：青色描边标记
     if (GRAPH.searchHits && GRAPH.searchHits.includes(i)){
       ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, r + 3.5, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(95,168,160,.9)"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = "rgba(" + P.search + ",.9)"; ctx.lineWidth = 1.5; ctx.stroke();
     }
     ctx.beginPath(); ctx.arc(cx + p.x, cy + p.y, focusHit ? r + 2 : r, 0, Math.PI * 2);
     // 发光：重要节点和焦点节点带柔光晕（类星图质感）
     if (focusHit || (n.importance || 0) > 0.75){ ctx.shadowColor = base; ctx.shadowBlur = focusHit ? 16 : 9; }
-    ctx.fillStyle = focusHit ? "#f2efe6" : base;
+    ctx.fillStyle = focusHit ? "rgb(" + P.focus + ")" : base;
     ctx.fill();
     ctx.shadowBlur = 0;
-    if (focusHit){ ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke(); }
+    if (focusHit){ ctx.lineWidth = 2; ctx.strokeStyle = "rgb(" + P.focusRing + ")"; ctx.stroke(); }
     const labelable = (GRAPH.selected === i || (sel != null && hot.has(i) && i !== sel) || (GRAPH.selected == null && n.importance >= 0.8));
-    if (p.s > 0.45 && labelable && !(dim && false) && shown.has(i)){
+    if (p.s > 0.45 && labelable && shown.has(i)){
       ctx.globalAlpha = dim ? 0.35 : ctx.globalAlpha;
       ctx.font = (GRAPH.selected === i ? "bold 11px" : "10px") + " system-ui,sans-serif";
-      ctx.fillStyle = GRAPH.selected === i ? "rgba(240,208,120,.98)" : "rgba(233,230,223,.95)";
+      ctx.fillStyle = GRAPH.selected === i ? "rgba(" + P.path + ",.98)" : "rgba(" + P.label + ",.95)";
       ctx.fillText((n.gist || "").slice(0, GRAPH.selected === i ? 16 : 12), cx + p.x + r + 4, cy + p.y + 4);
     }
     ctx.globalAlpha = 1;
@@ -1664,7 +1852,7 @@ function renderGraph(){
 function graphSearch(q, advance){
   const data = GRAPH.data; if (!data || !GRAPH.loaded) return;
   q = (q || "").trim().toLowerCase();
-  if (!q){ GRAPH.searchHits = null; GRAPH.searchPos = 0; renderGraph(); return; }
+  if (!q){ GRAPH.searchHits = null; GRAPH.searchPos = 0; GRAPH.pathEdges = null; renderGraph(); return; }
   const hits = [];
   data.nodes.forEach((n, i) => {
     if (GRAPH.layerFilter && n.layer !== GRAPH.layerFilter) return;
@@ -1685,10 +1873,70 @@ function graphSearch(q, advance){
 // 层筛选：只显示选定层的节点（空 = 全部）
 function graphLayerFilter(){
   GRAPH.layerFilter = $("graph-layer").value || null;
+  const node = GRAPH.data && GRAPH.data.nodes[GRAPH.selected];
+  // 切层后焦点/路径可能落在被筛掉的层上：清掉，否则详情卡指着图上看不见的节点、路径线悬空
+  if (GRAPH.layerFilter && node && node.layer !== GRAPH.layerFilter){
+    GRAPH.selected = null;
+    GRAPH.pathEdges = null;
+    $("graph-detail").classList.add("hidden");
+    $("graph-neighbors").innerHTML = "点一个节点，看它连着什么。";
+  }
   renderGraph();
 }
 function docsOf(n){
   return `${n.gist ? n.gist.slice(0, 40) : ""}${n.kind ? " · " + n.kind : ""} · 重要 ${Math.round((n.importance || 0) * 100)}% · ${LAYER[n.layer] || n.layer || ""}${n.emotion ? ` · ♡ ${n.emotion}` : ""}`;
+}
+
+// 关键词 → 节点索引：与 graphSearch 同款匹配（gist/id 子串），命中多条取第一条
+function graphResolveNode(q){
+  const nodes = GRAPH.data && GRAPH.data.nodes; if (!nodes) return null;
+  q = (q || "").trim().toLowerCase();
+  if (!q) return null;
+  for (let i = 0; i < nodes.length; i++){
+    if ((nodes[i].gist || "").toLowerCase().includes(q) || (nodes[i].id || "").toLowerCase().includes(q)) return i;
+  }
+  return null;
+}
+
+// 联想路径：无权重 BFS，最多 3 跳；返回节点索引链，同时把途经边序号写进 GRAPH.pathEdges 供高亮
+function findGraphPath(qa, qb){
+  const nodes = GRAPH.data.nodes, edges = GRAPH.data.edges;
+  const a = graphResolveNode(qa), b = graphResolveNode(qb);
+  if (a == null){ toast("找不到起点：" + qa, true); return null; }
+  if (b == null){ toast("找不到终点：" + qb, true); return null; }
+  if (a === b){ toast("A 和 B 是同一条记忆", true); return null; }
+  // BFS 记 parent + 深度，找到即停；限制 MAX_HOPS 跳——不限制会绕出十几跳的"路径"，
+  // 既看不懂也失去"两跳联想"的意义
+  const MAX_HOPS = 3;
+  const prev = new Map([[a, -1]]);
+  const depth = new Map([[a, 0]]);
+  const queue = [a];
+  let found = false;
+  while (queue.length){
+    const cur = queue.shift();
+    if (cur === b){ found = true; break; }
+    const dcur = depth.get(cur) || 0;
+    if (dcur >= MAX_HOPS) continue;
+    const ns = GRAPH.nbrs && GRAPH.nbrs.get(cur);
+    if (!ns) continue;
+    for (const nx of ns){
+      if (!prev.has(nx)){ prev.set(nx, cur); depth.set(nx, dcur + 1); queue.push(nx); }
+    }
+  }
+  if (!found){ toast("3 跳内没有关联路径", true); return null; }
+  // 回溯节点链，再由相邻节点对找到对应边序号
+  const chain = [];
+  for (let cur = b; cur !== -1; cur = prev.get(cur)) chain.unshift(cur);
+  const edgeIdx = new Map(edges.map(e => {
+    const ai = nodes.findIndex(x => x.id === e.src), bi = nodes.findIndex(x => x.id === e.dst);
+    return [ai + "-" + bi, e._ei != null ? e._ei : edges.indexOf(e)];
+  }));
+  const pathEdges = [];
+  for (let k = 0; k + 1 < chain.length; k++){
+    const ei = edgeIdx.get(chain[k] + "-" + chain[k+1]) ?? edgeIdx.get(chain[k+1] + "-" + chain[k]);
+    if (ei != null) pathEdges.push(ei);
+  }
+  return { chain, pathEdges };
 }
 
 function focusGraphNode(i){
@@ -1702,6 +1950,7 @@ function focusGraphNode(i){
 
 function resetGraphView(){
   GRAPH.selected = null;
+  GRAPH.pathEdges = null;   // 退出全景时清掉路径高亮，星图回到干净状态
   GRAPH.target = {x: 0, y: 0, z: 0};
   GRAPH.targetDist = 360;
   startGraphAnim();
@@ -1750,7 +1999,9 @@ function graphHit(x, y){
   let best = null, bestD = 14;
   nodes.forEach((n, i) => {
     if (GRAPH.layerFilter && n.layer !== GRAPH.layerFilter) return;   // 被筛选掉的层点不到
-    const p = proj[i], r = (3 + (n.importance || 0.5) * 11) * Math.max(0.4, p.s);
+    const p = proj[i];
+    if (p.z >= GRAPH.dist * 0.9 || p.s <= 0.12) return;   // 背面/缩得太小的节点同 renderGraph 一样不可见
+    const r = (3 + (n.importance || 0.5) * 11) * Math.max(0.4, p.s);
     const dx = x - (cx + p.x), dy = y - (cy + p.y);
     const d = Math.sqrt(dx * dx + dy * dy);
     if (d < r + 5 && d < bestD){ bestD = d; best = i; }
@@ -1828,11 +2079,14 @@ function initGraphInteractions(){
 // 键盘退出：Esc 回全景（点节点后按 Esc，不用找按钮）
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && GRAPH.selected != null
-      && !$("view-graph").classList.contains("hidden")){
+      && $("view-graph").classList.contains("active")){   // view 用 active 切换，旧写法 hidden 恒为真（在别的 tab 按 Esc 也会误重绘）
     resetGraphView();
     renderGraph();
   }
 });
+
+// learned_likes/dislikes 的条目可能是 {text,evidence,since} 字典（画像归纳带证据链）或旧纯字符串
+function chipText(x){ return (x && typeof x === "object") ? String(x.text || JSON.stringify(x)) : String(x); }
 
 function renderEvolved(p){
   const ev = p.evolved || {};
@@ -1845,8 +2099,8 @@ function renderEvolved(p){
     insights.slice(-6).map(x => `<li>${esc(x)}</li>`).join("") + `</ul>`;
   if (likes.length || dislikes.length) {
     html += `<div class="chips" style="margin-top:10px">` +
-      likes.map(x => `<span class="chip good">${esc(x)}</span>`).join("") +
-      dislikes.map(x => `<span class="chip bad">${esc(x)}</span>`).join("") + `</div>`;
+      likes.map(x => `<span class="chip good" title="${esc((x && x.evidence) ? "证据：" + x.evidence.join("、") : "")}">${esc(chipText(x))}</span>`).join("") +
+      dislikes.map(x => `<span class="chip bad" title="${esc((x && x.evidence) ? "证据：" + x.evidence.join("、") : "")}">${esc(chipText(x))}</span>`).join("") + `</div>`;
   }
   $("evolved").innerHTML = html || `<div class="sub">还没有长出新东西。每次做梦都可能留下痕迹。</div>`;
 }
@@ -1877,6 +2131,7 @@ function renderHistory(p){
 
 // AI 近期人格改动（审核入口）：review_counts.persona = ai_persona_changes(7)，
 // 这里取明细。回滚序号按演化历史总条数倒推（history 表序号 = 距最新第几条）。
+// 未读高亮在人格页常驻，标已读的时机：切走页签（switchTab）或刷新/关闭页面（beforeunload）。
 function renderAiChanges(ov){
   const box = $("ai-changes");
   if (!box) return;
@@ -1890,6 +2145,7 @@ function renderAiChanges(ov){
   const p = (ov.persona) || {};
   const total = (p.history || []).length;
   const hist = p.history || [];
+  // 未读高亮：ai_changes 本身只含用户没看过的改动（ts > 已读时间戳），所以全表加高亮
   box.innerHTML = rows.length
     ? `<table class="hist"><tbody>${rows.map(x => {
         // 回滚到"这条改动之前"：历史按旧→新存，1-based 倒序序号 = total - 位置。
@@ -1898,15 +2154,34 @@ function renderAiChanges(ov){
         const seq = pos >= 0 ? Math.max(1, total - pos) : null;
         const btn = seq ? `<button class="ghost mini" data-rollback="${seq}">回滚</button>`
                         : `<span class="sub">—</span>`;
-        return renderHistoryRow({
+        const row = renderHistoryRow({
           time: new Date(x.ts * 1000).toLocaleString("zh-CN").slice(5, 16),
           field: x.field,
           change: `${x.from} → ${typeof x.to === "object" ? JSON.stringify(x.to) : x.to}`,
           why: (x.why || "") + (x.source ? ` · ${x.source}` : "")
         }, btn);
+        return row.replace("<tr>", `<tr class="unread">`);
       }).join("")}</tbody></table>`
     : `<div class="sub">近 7 天 AI 没有主动改过人格。做梦微调 traits 会先在漂移账本累积，过门限才会真正改动。</div>`;
+  // 未读高亮常驻：不在这里标已读，由 markAiChangesViewed()（切走/刷新时）统一处理
 }
+// 标已读：切走页签或刷新/关闭页面时调用。
+// 注意不能用 navigator.sendBeacon——它无法带 Authorization 头，服务端一律 403，
+// 控制台每次切页都刷一条红字，重复回退请求还会打两次。用 fetch + keepalive
+// 取得同样的"关页也不丢请求"语义，同时补上 token。
+function markAiChangesViewed(){
+  try {
+    fetch("/api/persona/changes-viewed", {
+      method: "POST", keepalive: true,
+      headers: {"Content-Type": "application/json", Authorization: "Bearer " + PANEL_TOKEN},
+      body: "{}"
+    }).catch(() => {});
+  } catch (_) { /* 老浏览器不支持 keepalive：放弃上报，不影响页面 */ }
+}
+// 刷新/关闭页面：只要人格页有未读高亮，离开时就标已读
+window.addEventListener("beforeunload", () => {
+  if (S.tab === "persona" && document.querySelector("#ai-changes tr.unread")) markAiChangesViewed();
+});
 
 // 人格漂移 diff：最早一张快照 vs 当前人格的逐字段对比表（后端 persona_diff）。
 // 点按钮才请求（数据不多但没必要每次刷新都拉），再点一次收起。
@@ -1933,6 +2208,61 @@ async function togglePersonaDiff(){
     btn.textContent = "查看变化明细";
   }
 }
+
+// ---- 画像归纳建议卡（B 清单 b1）----
+// pending 条目：{kind:"like"/"dislike"/"relation", text, evidence:[...], ...}
+async function loadPersonaSuggest() {
+  const box = $("persona-suggest");
+  if (!box) return;
+  const r = await api("/api/persona/suggest");
+  // 兼容两种返回：{suggestions:[...]}（列表/扫描结果）与 {pending:[...]}（旧口径）
+  const arr = (r && Array.isArray(r.suggestions)) ? r.suggestions : (r && Array.isArray(r.pending)) ? r.pending : [];
+  S.suggest = arr;
+  const rows = S.suggest;
+  if (!rows.length) {
+    box.innerHTML = `<div class="sub">暂无候选。点「扫描最近记忆」从最近的对话里归纳，或等每晚例行自动归纳。</div>`;
+    return;
+  }
+  box.innerHTML = rows.map((s, i) => `
+    <div class="mem" style="align-items:center;padding:10px 14px">
+      <span class="badge ${s.field === "likes" ? "hippo" : s.field === "dislikes" ? "dust" : "cortex"}">${esc(s.field === "likes" ? "喜欢" : s.field === "dislikes" ? "讨厌" : s.field || "画像")}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px">${esc(s.text || "")}</div>
+        ${(s.source_ids && s.source_ids.length) ? `<div class="sub">证据记忆：${esc(s.source_ids.join("、"))}</div>` : ""}
+      </div>
+      <button class="btn mini" data-suggest-adopt="${i}">采纳</button>
+      <button class="ghost" style="padding:3px 9px;font-size:11px" data-suggest-discard="${i}">忽略</button>
+    </div>`).join("");
+}
+
+async function personaSuggestAct(idx, action) {
+  // idx 是列表里的 0 起下标；后端 adopt/discard 按 1 起序号取（与 CLI persona suggest adopt 同口径）
+  const s = (S.suggest || [])[idx];
+  if (!s) return;
+  const r = await api("/api/persona/suggest", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({action, index: idx + 1})});
+  if (r && r.ok) {
+    toast(action === "adopt" ? "已采纳（写进「长出来的部分」，带证据链）" : "已忽略");
+    loadPersonaSuggest();
+    load();  // 刷新人格页其余区块
+  } else toast((r && r.error) || "操作失败", true);
+}
+
+$("btn-suggest-scan").addEventListener("click", async (e) => {
+  const b = e.currentTarget;
+  b.disabled = true;
+  $("persona-suggest").innerHTML = `<div class="sub">正在扫描最近记忆……</div>`;
+  const r = await api("/api/persona/suggest", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({action: "scan"})});
+  if (!(r && r.ok)) toast((r && r.error) || "扫描失败", true);
+  b.disabled = false;
+  loadPersonaSuggest();
+});
+$("btn-suggest-refresh").addEventListener("click", loadPersonaSuggest);
+
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("[data-suggest-adopt]"), d = e.target.closest("[data-suggest-discard]");
+  if (a) personaSuggestAct(+a.dataset.suggestAdopt, "adopt");
+  if (d) personaSuggestAct(+d.dataset.suggestDiscard, "discard");
+});
 
 function dreamBlankTemplate(pend){
   return {
@@ -2142,19 +2472,30 @@ function renderSkills(out){
   const roots = S.ws.skill_roots || [];
   const rootBox = $("skill-root-list");
   if (rootBox) {
-    rootBox.innerHTML = roots.length ? roots.map(r => `<div class="mem" style="padding:8px 12px">
+    const rootRow = r => `<div class="mem" style="padding:8px 12px">
       <div class="mem-body w100">
         <div class="row" style="gap:8px;align-items:center">
           <span class="badge ${r.custom ? "archive" : "hippo"}">${esc(r.label)}</span>
           <code class="sub ellip" style="flex:1">${esc(r.path)}</code>
           ${r.exists
-            ? `<span class="badge" style="background:rgba(95,168,160,.12);color:#9fd2cb">${r.count} 个技能</span>`
-            : `<span class="badge" style="background:rgba(201,107,95,.12);color:#dda49b">目录不存在</span>`}
+            ? `<span class="badge" style="background:rgba(95,168,160,.12);color:var(--teal-text)">${r.count} 个技能</span>`
+            : `<span class="badge" style="background:rgba(201,107,95,.12);color:var(--red-text)">目录不存在</span>`}
           ${r.custom ? `<button class="iconbtn" title="移除此自定义目录" data-rootrm="${esc(r.path)}" style="margin-left:auto">✕</button>` : ""}
         </div>
       </div>
-    </div>`).join("")
-      : `<div class="sub">未发现任何技能目录。</div>`;
+    </div>`;
+    // 宿主越多，"目录不存在"的行越多（常见 10+ 行红字）。只把**真的有技能**的目录和
+    // 用户自己加的目录平铺展示，剩下的收进一行折叠摘要——不删除、不影响重新扫描。
+    const live = roots.filter(r => r.exists || r.custom);
+    const missing = roots.filter(r => !r.exists && !r.custom);
+    rootBox.innerHTML = !roots.length ? `<div class="sub">未发现任何技能目录。</div>`
+      : (live.length ? live.map(rootRow).join("")
+         : `<div class="sub">还没有任何宿主技能目录存在。</div>`)
+        + (missing.length
+          ? `<details class="root-more"><summary class="sub">另有 ${missing.length} 个宿主技能目录不存在（点开查看路径）</summary>
+               <div style="margin-top:6px">${missing.map(rootRow).join("")}</div>
+             </details>`
+          : "");
   }
   // 跨宿主扫描到的技能（只读，可直接用/借用；灵枢本体自身除外）
   const scan = (S.ws.skill_scan || []).filter(s => !s.self);
@@ -2207,6 +2548,42 @@ function renderGrowth(){
     : "还没有做过成长复盘。生成素材包，让 AI 写第一篇。") + (evo ? `\n最近进化：${evo}` : "");
   $("growth-last").style.whiteSpace = "pre-wrap";
   renderEvolution();
+  loadGrowthTimeline();
+}
+
+// 五-G：成长时间线（性格跳变 / 成形时刻 / 被纠正节点），纯展示
+function renderGrowthTimeline(rows){
+  const box = $("growth-timeline");
+  if (!box) return;
+  const state = $("timeline-state");
+  if (!rows || !rows.length){
+    box.innerHTML = `<div class="empty">还没有明显的转折点。再相处一段，这里会自己长出节点。</div>`;
+    if (state) state.textContent = "0 个节点";
+    return;
+  }
+  const label = {trait: "性格", emotion: "成形时刻", correction: "被纠正"};
+  const badge = {trait: "cortex", emotion: "hippo", correction: "archive"};
+  box.innerHTML = rows.map(r => {
+    const date = r.ts ? new Date(r.ts * 1000).toLocaleDateString("zh-CN") : "";
+    return `<div class="mem" style="padding:10px 12px">
+      <div class="mem-body w100">
+        <div class="mem-top">
+          <span class="badge ${badge[r.kind] || "cortex"}">${esc(label[r.kind] || r.kind || "")}</span>
+          <b class="ellip">${esc(r.title || "")}</b>
+          <span class="date ellip" style="margin-left:auto">${date}</span>
+        </div>
+        <p>${esc(r.detail || "")}</p>
+      </div>
+    </div>`;
+  }).join("");
+  if (state) state.textContent = `${rows.length} 个节点`;
+}
+
+async function loadGrowthTimeline(){
+  try {
+    const r = await api("/api/growth/timeline?days=365&limit=60");
+    renderGrowthTimeline(r.events || []);
+  } catch (e) { console.error("成长时间线:", e); }
 }
 
 const EVO_KIND_LABEL = {persona: "人格", thinking: "思考", skill: "技能", knowledge: "知识", self: "其他"};
@@ -2339,11 +2716,18 @@ function memDay(m){
 }
 function renderMemRows(rows){
   if (!rows.length) {
-    $("mem-list").innerHTML = `<div class="empty">没有匹配的记忆。放宽筛选，或者按回车做一次模糊回忆。</div>`;
+    // 空库时上面的分层条已经在说「记忆库还是空的」，这里再摆一个虚线空态就是两个空盒子叠着；
+    // 只有"库里有记忆、只是筛选没命中"才需要提示放宽筛选。
+    const total = Number((S.ov && S.ov.stats && S.ov.stats.total) || 0);
+    $("mem-list").innerHTML = total > 0
+      ? `<div class="empty">没有匹配的记忆。放宽筛选，或者按回车做一次模糊回忆。</div>` : "";
+    bulkUpdateCount();
     return;
   }
   if (S.memView !== "timeline") {
-    $("mem-list").innerHTML = rows.map(memCard).join("");
+    // 几千条一次性 innerHTML 会卡死主线程：>120 条交给分块懒渲染（保留卡片高度）
+    if (window.LSVirtual && rows.length > 120) window.LSVirtual.render("mem-list", rows, memCard);
+    else $("mem-list").innerHTML = rows.map(memCard).join("");
     bulkUpdateCount();
     return;
   }
@@ -2371,7 +2755,7 @@ function renderLayerBar(){
     ["cortex", "长期记忆", "var(--amber)"],
     ["hippo", "短期记忆", "var(--teal)"],
     ["dust", "淡忘区", "var(--faint)"],
-    ["archive", "归档层", "#8f92b8"]
+    ["archive", "归档层", "var(--violet)"]
   ];
   const total = defs.reduce((s, [k]) => s + (Number(lc[k]) || 0), 0);
   if (!total) { bar.innerHTML = `<span class="sub">记忆库还是空的，先写一条吧。</span>`; return; }
@@ -2459,8 +2843,14 @@ async function runInject(){
 
 function switchTab(tab){
   S.tab = tab || "overview";
+  // 从人格页切走且还有未读高亮 → 看过即已读，下次进来不再闪
+  if (S.tab !== "persona" && document.querySelector("#ai-changes tr.unread")) markAiChangesViewed();
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + tab));
+  // 页签写进地址栏：刷新/收藏回到同一页，发给别人也直接落到这一页（replaceState 不污染后退键）
+  if (location.hash.slice(1) !== S.tab) {
+    try { history.replaceState(null, "", "#" + S.tab); } catch (_) { /* file:// 等环境不支持时忽略 */ }
+  }
   const titles = {
     overview: ["概览", "它现在记得什么，是什么状态"],
     memories: ["记忆", "分层存储与模糊回忆"],
@@ -2474,17 +2864,22 @@ function switchTab(tab){
     dream: ["梦", "把经历压缩成长期记忆"],
     logs: ["日志", "运行记录：锁冲突 / 内部异常 / 解析报错"],
     diag: ["自诊断", "归因异常：死链 / 冲突未裁决 / 数据膨胀 / 来源归属"],
-    store: ["拓展商店", "AstrBot / cordis 等宿主适配插件，点安装导出后接入宿主"]
+    store: ["插件商店", "AstrBot / cordis 等宿主适配插件，点安装导出后接入宿主"],
+    ext: ["本地能力", "本地能力一键安装：Ollama 语义召回等"]
   };
   const t = titles[tab] || titles.overview;   // 未知 tab（旧缓存/坏链接）兜底，别在标题上抛 TypeError
   $("pageTitle").textContent = t[0];
   $("pageSub").textContent = t[1];
   if (tab === "memories") renderMemoryList();
   if (tab === "store") renderStore();
+  if (tab === "ext") loadExtensionOllama();
   if (tab === "graph") loadGraph(Number($("graph-limit").value || 300));
   else { stopPhysics(); stopGraphAnim(); }   // 离开联想页即停模拟，不空耗 CPU
   if (tab === "logs") loadLogs();
-  if (tab === "diag") loadDiagnostics();
+  // 诊断页有两张随时间变化的卡：体检结果 + 数据目录位置，进页面时一起刷（以前只刷体检，
+  // 数据目录卡靠一段 class 判断写错的 MutationObserver，永远停在「加载中…」）
+  if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); }
+  if (tab === "persona") { loadSnapshots(); loadPersonaSuggest(); }  // 切到人格页时顺手刷快照列表与画像归纳建议
   if (["knowledge", "notes", "skills", "growth"].includes(tab)) {
     if (S.ws) { renderKnowledge(); renderNotes(); renderSkills(); renderDshPlugins(); renderGrowth(); renderOnboarding(); }
     else loadWS();
@@ -2493,6 +2888,92 @@ function switchTab(tab){
 
 // ---- 事件绑定
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+
+// ---- 扩展页：Ollama 一键安装（状态机 idle→downloading→downloaded→extracting→starting→pulling→done / error）
+let _ollamaPollTimer = null;   // 轮询句柄：离开页面或到终态即停，不空转
+
+function extBadge(text, color){
+  return `<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;` +
+         `background:${color}22;color:${color};border:1px solid ${color}55">${text}</span>`;
+}
+
+function renderExtOllama(st){
+  const box = $("ext-ollama");
+  const sub = st.installed || st.serving ? "本地向量检索，记忆语义召回增强" : "本地向量检索，记忆语义召回增强（未安装）";
+  let badges = "";
+  if (st.serving) badges += " " + extBadge("服务运行中", "#38a169");
+  if (st.model_ready) badges += " " + extBadge("模型就绪", "#38a169");
+  if (st.embed_configured) badges += " " + extBadge("已接入灵枢", "#38a169");
+  if (st.fallback_enabled) badges += " " + extBadge("降级向量兜底开启", "#3182ce");
+  let body = "", btn = "";
+  // 下载/安装进行中：进度条
+  if (["downloading", "extracting", "starting", "pulling"].includes(st.stage)) {
+    const pct = st.stage === "downloading" ? (st.percent || 0) : 100;
+    const label = {downloading: "下载中", extracting: "解压中", starting: "启动服务中", pulling: "拉取模型中"}[st.stage];
+    body = `<div style="margin-top:10px">
+      <div style="font-size:13px;margin-bottom:6px">${label}… ${pct}% ${st.detail ? "（" + esc(st.detail) + "）" : ""}</div>
+      <div style="height:8px;border-radius:4px;background:var(--line,#8884);overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:#3182ce;transition:width .4s"></div></div></div>`;
+  } else if (st.stage === "error") {
+    body = `<div style="margin-top:10px;color:#c53030;font-size:13px">✕ ${esc(st.detail || "操作失败")}</div>`;
+  } else if (st.installed && st.serving && st.model_ready) {
+    body = `<div style="margin-top:10px;color:#38a169;font-size:13px">✓ 已就绪：语义召回已启用</div>`;
+  } else if (!st.installed && st.fallback_enabled) {
+    body = `<div style="margin-top:10px;font-size:13px;color:var(--muted)">未安装 Ollama：语义召回由纯 Python 降级向量兜底（无需安装即可用）；安装 Ollama 可获得真模型向量，召回更准。</div>`;
+  }
+  // 按钮：v2.99 一键化——不管装没装，统一一个「一键开启向量记忆」按钮，
+  // 服务端 setup 端点自己判断「已装跳过/未装先下载→解压→起服务→拉模型→写配置」
+  if (!["downloading", "extracting", "starting", "pulling"].includes(st.stage)) {
+    if (st.semantic_ready && st.embed_configured) {
+      // 全就绪：不需要按钮（右上角徽章已表达状态）
+    } else {
+      // 主行动按钮统一 .btn 样式（.primary 在样式表里没有定义，会退化成浏览器默认灰按钮）
+      btn = `<button class="btn" id="btn-ollama-setup">一键开启向量记忆</button>`;
+    }
+  }
+  box.innerHTML = `
+    <div class="row" style="flex-wrap:wrap">
+      <div>
+        <strong>Ollama</strong> <span class="sub" style="margin-left:8px">${sub}</span>${badges}
+        ${body}
+      </div>
+      <div class="row" style="margin-left:auto;align-items:center">${btn}</div>
+    </div>`;
+  const setup = $("btn-ollama-setup");
+  if (setup) setup.addEventListener("click", async () => {
+    if (!st.installed && !st.serving) {
+      if (!confirm("将自动下载并安装 Ollama（约1GB）+ 拉取向量模型，全程自动，请耐心等待。确认？")) return;
+    }
+    try {
+      await post("/api/extensions/ollama/setup", {});
+      pollExtOllama();   // 立即开始轮询进度（setup 端点秒回，长活在后台线程）
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+async function pollExtOllama(){
+  if (_ollamaPollTimer) { clearTimeout(_ollamaPollTimer); _ollamaPollTimer = null; }
+  // 只在扩展页时继续轮询，切走即停
+  if (S.tab !== "ext") return;
+  const busy = ["downloading", "extracting", "starting", "pulling"];
+  try {
+    const st = await api("/api/extensions/ollama/status");
+    renderExtOllama(st);
+    if (busy.includes(st.stage)) _ollamaPollTimer = setTimeout(pollExtOllama, 1500);
+  } catch (err) { /* 轮询失败静默，下次手动刷新 */ }
+}
+
+async function loadExtensionOllama(){
+  try {
+    const st = await api("/api/extensions/ollama/status");
+    renderExtOllama(st);
+    if (["downloading", "extracting", "starting", "pulling"].includes(st.stage)) pollExtOllama();
+  } catch (err) {
+    $("ext-ollama").innerHTML = `<div class="empty">状态获取失败：${esc(err.message)}</div>`;
+  }
+}
+
+$("btn-ext-refresh").addEventListener("click", loadExtensionOllama);
 
 // 告警卡「去处理 →」链接：切到对应页签（事件委托，卡片内容每次重渲染）
 document.addEventListener("click", (e) => {
@@ -2558,7 +3039,9 @@ $("edit-save").addEventListener("click", () => {
 document.addEventListener("click", async (e) => {
   const pin = e.target.closest("[data-pin]"), ed = e.target.closest("[data-edit]"), fg = e.target.closest("[data-forget]");
   const rv = e.target.closest("[data-review]");
-  if (!pin && !ed && !fg && !rv) return;
+  const bo = e.target.closest("[data-boost]");
+  const fz = e.target.closest("[data-freeze]");
+  if (!pin && !ed && !fg && !rv && !bo && !fz) return;
   const findMem = id => (S.memIndex && S.memIndex[id]) || (S.ov && S.ov.memories.find(x => x.id === id));
   // 写操作按钮 loading + disabled：防止网络慢时连点造成重复提交
   const busy = btn => { btn.disabled = true; btn.classList.add("loading"); };
@@ -2585,6 +3068,21 @@ document.addEventListener("click", async (e) => {
       if (r.ok) { toast("已淡忘"); load(); }
       else toast(r.error || "淡忘失败（可能已被删/不存在）", true);
     }
+    if (bo) {
+      busy(bo);
+      const r = await api("/api/memory/boost", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: bo.dataset.boost})});
+      if (r.ok) { toast("已纠正遗忘：这条记忆稳定度提升、访问时间刷新"); load(); }
+      else toast(r.error || "纠正失败", true);
+    }
+    if (fz) {
+      const m = findMem(fz.dataset.freeze);
+      if (!m) { toast("数据已变化，请刷新", true); return; }
+      const toFreeze = !m.frozen;
+      busy(fz);
+      await post("/api/memory/bulk", {ids: [m.id], action: toFreeze ? "freeze" : "unfreeze"});
+      toast(toFreeze ? "已冻结：不参与召回/注入/做梦，仍可查看" : "已解冻：恢复参与召回/注入");
+      load();
+    }
     if (ed) {
       const m = findMem(ed.dataset.edit);
       if (!m) { toast("数据已变化，请刷新", true); return; }
@@ -2606,6 +3104,7 @@ document.addEventListener("click", async (e) => {
     if (rv) idle(rv);
     if (pin) idle(pin);
     if (fg) idle(fg);
+    if (bo) idle(bo);
   }
 });
 
@@ -2697,6 +3196,54 @@ document.addEventListener("click", async (e) => {
 
 const pdBtn = $("btn-persona-diff");
 if (pdBtn) pdBtn.addEventListener("click", togglePersonaDiff);
+
+// 「标记已读」手动按钮：不想等切走/刷新，当场确认这批改动看过
+const cvBtn = $("btn-changes-viewed");
+if (cvBtn) cvBtn.addEventListener("click", async () => {
+  markAiChangesViewed();
+  document.querySelectorAll("#ai-changes tr.unread").forEach(tr => tr.classList.remove("unread"));
+  cvBtn.disabled = true; cvBtn.textContent = "已标记";
+  setTimeout(() => { cvBtn.disabled = false; cvBtn.textContent = "标记已读"; }, 2500);
+});
+
+// ---- 自动快照：列出 + 按版本回滚（对应 persona_snapshots.jsonl）
+async function loadSnapshots(){
+  const box = $("snapshots");
+  if (!box) return;
+  try {
+    const rows = await api("/api/persona/snapshots?limit=50");
+    if (!rows.length){ box.innerHTML = `<div class="sub">还没有快照——改一次人格就会有了</div>`; return; }
+    box.innerHTML = rows.map(s => `
+      <div class="mem" style="padding:9px 12px">
+        <div class="mem-body">
+          <div class="mem-top">
+            <span class="badge">${esc("v" + s.version)}</span>
+            <span class="badge">${esc(s.action || "update")}</span>
+            ${s.source ? `<span class="badge">${esc(s.source)}</span>` : ""}
+            <span class="date">${s.ts ? new Date(s.ts * 1000).toLocaleString("zh-CN").slice(5, 17) : "??"}</span>
+          </div>
+          ${s.why ? `<p style="font-size:12.5px;color:var(--muted)">${esc(s.why)}</p>` : ""}
+        </div>
+        <button class="ghost" style="padding:3px 10px;font-size:11.5px;flex-shrink:0" data-snap-rollback="${esc(s.version)}">回滚到此</button>
+      </div>`).join("");
+  } catch (e) { box.innerHTML = `<div class="sub">${esc(e.message)}</div>`; }
+}
+const snapBtn = $("btn-snapshots");
+if (snapBtn) snapBtn.addEventListener("click", loadSnapshots);
+document.addEventListener("click", async (e) => {
+  const b = e.target && e.target.closest && e.target.closest("[data-snap-rollback]");
+  if (!b) return;
+  const version = Number(b.dataset.snapRollback);
+  if (!confirm(`确定回滚到快照 v${version} 吗？回滚前会先存一份"回滚前"快照，改坏了还能再回回。`)) return;
+  b.disabled = true;
+  try {
+    await api("/api/persona/snapshots/rollback", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({version})});
+    toast(`已回到 v${version} 那一刻`);
+    loadSnapshots();
+    load();  // 刷新人格表单等显示
+  } catch (err) { console.error("快照回滚:", err); toast(err.message, true); b.disabled = false; }
+});
 
 const emoBtn = $("btn-emo-feel");
 if (emoBtn) emoBtn.addEventListener("click", async () => {
@@ -2867,6 +3414,23 @@ $("graph-search").addEventListener("keydown", e => {
   if (e.key === "Escape"){ e.target.value = ""; graphSearch("", false); e.target.blur(); }
 });
 $("graph-layer").addEventListener("change", graphLayerFilter);
+// 关联路径查找：在当前已加载子图上 BFS，路径渲染成可点节点链 + 边高亮
+$("btn-graph-path").addEventListener("click", () => {
+  if (!GRAPH.loaded || !GRAPH.data){ toast("图谱还没加载完", true); return; }
+  const qa = $("path-a").value, qb = $("path-b").value;
+  const out = $("graph-path-out");
+  const r = findGraphPath(qa, qb);
+  if (!r){ GRAPH.pathEdges = null; renderGraph(); return; }
+  GRAPH.pathEdges = r.pathEdges;
+  const nodes = GRAPH.data.nodes;
+  // 节点链渲染成可点元素：点一下 pickGraphNode 聚焦，和邻居卡片的跳转手感一致
+  out.innerHTML = `<div class="sub" style="margin-bottom:4px">找到 ${r.chain.length - 1} 跳的联想链（基于当前加载的 ${nodes.length} 节点子图）：</div>`
+    + `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">` + r.chain.map((j, k) =>
+      `<span class="mem" data-node="${j}" style="display:inline-block;padding:4px 10px;cursor:pointer;font-size:12px">${esc(nodes[j].gist || nodes[j].id || ("#" + j))}</span>`
+      + (k + 1 < r.chain.length ? `<span class="sub">→</span>` : "")
+    ).join("") + `</div>`;
+  renderGraph();
+});
 // 邻居明细卡片：点卡片=跳到那个节点（不在图里就提示去记忆页搜）
 $("graph-neighbors").addEventListener("click", e => {
   const card = e.target.closest(".mem[data-node]");
@@ -2880,6 +3444,13 @@ $("graph-neighbors").addEventListener("click", e => {
   } else if (card.dataset.mid){
     toast("该记忆不在当前图中（不在前 " + $("graph-limit").value + " 条），去「记忆」页搜索它的 id 查看");
   }
+});
+// 路径链上的节点可点：复用邻居卡片的跳转逻辑（点一下聚焦那条记忆）
+$("graph-path-out").addEventListener("click", e => {
+  const el = e.target.closest(".mem[data-node]");
+  if (!el || !GRAPH.data) return;
+  const j = Number(el.dataset.node);
+  if (GRAPH.data.nodes[j]) pickGraphNode(j);
 });
 
 $("btn-dream").addEventListener("click", async () => {
@@ -2975,6 +3546,15 @@ function bulkUpdateCount(){
     all.checked = total > 0 && n === total;
     all.indeterminate = n > 0 && n < total;
   }
+  // 没选中时不摆一整排危险按钮：只留「全选 + 提示」，选中后展开全部操作。
+  // 空库（一条记忆都没有）连整条都收起来，别占一屏空白。
+  const acts = $("bulk-acts"), hint = $("bulk-hint"), bar = $("bulk-bar");
+  if (acts) acts.classList.toggle("hidden", n === 0);
+  if (hint) hint.classList.toggle("hidden", n > 0);
+  if (bar) {
+    const st = (S.ov && S.ov.stats) || {};
+    bar.classList.toggle("hidden", !(Number(st.total) > 0));
+  }
 }
 $("mem-list").addEventListener("change", e => {
   if (e.target.classList && e.target.classList.contains("mem-check")) bulkUpdateCount();
@@ -3011,6 +3591,8 @@ $("bulk-tag-add").addEventListener("click", () => bulkTags(false));
 $("bulk-tag-rm").addEventListener("click", () => bulkTags(true));
 $("bulk-pin").addEventListener("click", () => bulkRun("pin", null, null));
 $("bulk-unpin").addEventListener("click", () => bulkRun("unpin", null, null));
+$("bulk-freeze").addEventListener("click", () => bulkRun("freeze", null, "冻结选中的记忆？冻结后不参与召回/注入/做梦，但仍可查看与解冻。"));
+$("bulk-unfreeze").addEventListener("click", () => bulkRun("unfreeze", null, null));
 $("bulk-delete").addEventListener("click", () => bulkRun("delete", null, "把选中的记忆全部移入淡忘区？可从淡忘区回捞。"));
 
 // ---- "/" 快捷键：非输入框聚焦时，聚焦记忆页搜索框
@@ -3101,6 +3683,8 @@ async function loadDiagnostics(){
   box.innerHTML = `<div class="sub">体检中…</div>`;
   try {
     const d = await api("/api/diagnostics");
+    const fixBtn = $("btn-diag-fixlinks");
+    if (fixBtn) fixBtn.style.display = (d.dead_links && d.dead_links.length) ? "" : "none";
     if (sum) sum.innerHTML = d.ok
       ? `<span class="chip good">✔ 体检通过：没有发现异常</span>`
       : d.problems.map(p => `<div class="chip bad" style="display:block;margin-bottom:6px;padding:7px 12px">⚠ ${esc(p)}</div>`).join("");
@@ -3133,6 +3717,16 @@ async function loadDiagnostics(){
   }
 }
 $("btn-diag-refresh") && $("btn-diag-refresh").addEventListener("click", loadDiagnostics);
+$("btn-diag-fixlinks") && $("btn-diag-fixlinks").addEventListener("click", async () => {
+  if (!confirm("一键清理死链：摘除指向不存在 id 的引用（只清链、不删记忆，数据零损失）。继续？")) return;
+  try {
+    const r = await api("/api/diagnostics/fix-links", {});
+    window.alert(`已清理 ${r.fixed_records} 条记忆里的 ${r.removed_refs} 个断链引用。`);
+  } catch (e) {
+    window.alert(`清理失败：${e.message}`);
+  }
+  loadDiagnostics();
+});
 
 // ---- 数据目录（查看 / 迁移）
 const _fmtBytes = (b) => b > 1073741824 ? (b/1073741824).toFixed(2) + " GB"
@@ -3156,7 +3750,7 @@ async function migrateHome(){
   if (!confirm(`把整个记忆库复制到 ${target} ？\n\n旧目录原样保留，迁移后需重启面板/新会话才生效。`)) return;
   msg.innerHTML = `<span class="chip">迁移中…（数据量大时会稍慢）</span>`;
   try {
-    const r = await api("/api/home/migrate", { target });
+    const r = await api("/api/home/migrate", { target, timeoutMs: 600000 }); // 整库复制放宽到 10 分钟
     msg.innerHTML = `<span class="chip good">✔ ${esc(r.note)}</span>`;
     loadHomeInfo();
   } catch (e) {
@@ -3165,13 +3759,31 @@ async function migrateHome(){
 }
 $("btn-home-refresh") && $("btn-home-refresh").addEventListener("click", loadHomeInfo);
 $("btn-home-migrate") && $("btn-home-migrate").addEventListener("click", migrateHome);
-// 进诊断页时顺带刷新数据目录卡
-if ($("view-diag")) new MutationObserver(() => {
-  if ($("view-diag").classList.contains("on")) loadHomeInfo();
-}).observe($("view-diag"), { attributes: true, attributeFilter: ["class"] });
+// 进诊断页由 switchTab 统一触发（以前这里观察的是 class "on"，而页签用的是 "active"，
+// 条件永远不成立 → 数据目录卡一直停在「加载中…」）
 
-// ---- 淡忘可逆（fold / unfold / revive）：事件委托到记忆卡片按钮
+// ---- 淡忘可逆（fold / unfold / revive）+ #34 物理删除：事件委托到记忆卡片按钮
+// 冷却期口径与 memory._PURGE_COOLDOWN_DAYS 保持一致：dust 满 7 天才显示 🗑 按钮
+const PURGE_COOLDOWN_MS = 7 * 86400 * 1000;
+function dustCooldownOver(m) {
+  const at = Number(m.forgotten_at || 0);
+  return at > 0 && (Date.now() - at * 1000) >= PURGE_COOLDOWN_MS;
+}
 document.addEventListener("click", async e => {
+  const pbtn = e.target.closest("[data-purge]");
+  if (pbtn) {
+    const mid = pbtn.dataset.purge || "";
+    const ans = prompt("物理删除不可恢复！请输入该记忆 id 的前 8 位确认：", "");
+    if (ans === null) return;
+    if (ans.trim() !== mid.slice(0, 8)) { toast("确认码不匹配，未删除。", true); return; }
+    pbtn.disabled = true;
+    try {
+      await post("/api/memory/purge", {id: mid, confirm: ans.trim()});
+      toast("已物理删除（关联边与归档副本一并清理）");
+      renderMemoryList();
+    } catch (err) { console.error("物理删除失败:", err); toast(err.message, true); pbtn.disabled = false; }
+    return;
+  }
   const btn = e.target.closest("[data-dustact]");
   if (!btn) return;
   const act = btn.dataset.dustact;
@@ -3186,7 +3798,7 @@ document.addEventListener("click", async e => {
   } catch (err) { console.error(verb + "失败:", err); toast(err.message, true); btn.disabled = false; }
 });
 
-// ---- 拓展商店
+// ---- 插件商店
 async function renderStore(){
   const box = $("store-list"); if (!box) return;
   box.innerHTML = `<div class="sub">加载中…</div>`;
@@ -3201,7 +3813,7 @@ async function renderStore(){
       const badge = x.source === "builtin" ? "内置" : x.source === "cloud" ? "云端" : x.source === "cloud-error" ? "提示" : "自定义";
       const ver = x.version && x.version !== "?" ? ` <span class="badge">${esc(x.version)}</span>` : "";
       const host = x.source === "cloud-error" ? "" :
-        `<span class="badge" style="background:rgba(95,168,160,.12);color:#9fd2cb">${esc(x.host || "?")}</span>`;
+        `<span class="badge" style="background:rgba(95,168,160,.12);color:var(--teal-text)">${esc(x.host || "?")}</span>`;
       let act = "";
       if (x.source === "cloud-error") {
         act = "";
@@ -3579,7 +4191,15 @@ $("skill-list").addEventListener("click", async (e) => {
     if (ins) {
       let r;
       try {
-        r = await post("/api/skill", {action: "install", name: ins.dataset.skinstall, force: false});
+        try {
+          r = await post("/api/skill", {action: "install", name: ins.dataset.skinstall, force: false},
+                        {signal: AbortSignal.timeout(630000)});   // 整包安装超时对齐更新（> 后端 600s）
+        } catch (netErr) {
+          // 网络抖动/限流重试一次：原子部署保证重试不会装到一半
+          if (!confirm("安装请求失败：" + (netErr.message || "网络错误") + "\n\n要自动重试一次吗？")) throw netErr;
+          r = await post("/api/skill", {action: "install", name: ins.dataset.skinstall, force: false},
+                        {signal: AbortSignal.timeout(630000)});
+        }
       } catch (err) {
         // 只对"已存在/冲突"弹覆盖确认，403 readonly、文件占用等直接 toast
         if (!/已存在|exists|already/.test(err.message || "")) {
@@ -3734,7 +4354,21 @@ setInterval(async () => {
 }, 30000);
 let pollFailCount = 0;   // 后台轮询连续失败计数（离线横幅用）
 
-load();
+// 地址栏 #页签 深链：首屏数据到位后再切（renderMemoryList 依赖 S.ov，早切会渲染空列表）
+const PANEL_TAB_IDS = ["overview", "memories", "persona", "knowledge", "notes", "skills",
+                       "emotion", "graph", "growth", "dream", "logs", "diag", "store", "ext"];
+function tabFromHash(){
+  const t = (location.hash || "").slice(1);
+  return PANEL_TAB_IDS.includes(t) ? t : "overview";
+}
+load().then(() => {
+  const t = tabFromHash();
+  if (t !== "overview") switchTab(t);
+});
+window.addEventListener("hashchange", () => {
+  const t = tabFromHash();
+  if (t !== S.tab) switchTab(t);
+});
 
 // ---- 灵枢本体更新：检测只在面板服务启动时后台做一次（结果写缓存），
 // 这里刷新面板只读缓存点亮红点；右上角按钮手动查才重新联网检测
@@ -3751,6 +4385,10 @@ async function checkUpdate(auto){
   // 注意：按钮里嵌了 upd-dot 红点 span，绝不能 btn.textContent=…（会把红点整个抹掉，
   // 之后 $("upd-dot") 变 null 报 "Cannot read properties of null"）——只改 upd-label。
   const setLabel = (t) => { const l = $("upd-label"); if (l) l.textContent = t; };
+  // 并发互斥：手动检查与开面板自动检查撞车时（auto 检查 1.2s 后触发，用户手快点了按钮），
+  // auto 让位于手动；手动检查进行中再点按钮直接忽略，防止两次 refresh=1 叠加把拉取链路跑两遍
+  if (checkUpdate._busy) { if (auto) return; return; }
+  checkUpdate._busy = true;
   try {
     if (!auto) { btn.disabled = true; btn.classList.add("loading"); setLabel("检查中…"); }
     // auto=开面板静默检查：只读服务启动时检测好的缓存（服务启动才真正联网检测，
@@ -3798,8 +4436,11 @@ async function checkUpdate(auto){
         detail = (lines.join("\n\n") || "内容与全局副本不一致。") + "\n\n更新会以本地最新内容镜像同步到全局技能目录，记忆数据不受影响。";
       }
       // 标题里的两个版本语义必须分清：installed_version=已装，source_version=源里的
-      // （兼容旧字段 version，但字段名不能让人误以为是已装版本）
-      showUpdModal("灵枢本体有更新（v" + esc(r.installed_version || "?") + " → v" + esc(r.source_version || r.version) + "）", detail, true);
+      // （兼容旧字段 version，但字段名不能让人误以为是已装版本）。
+      // 版本号相等时（理论上 outdated 不会为 true，防旧缓存/旧后端兜底）不显示"vX → vX"怪文案。
+      const sameV = String(r.installed_version) === String(r.source_version || r.version);
+      showUpdModal(sameV ? "灵枢本体内容有变化（v" + esc(r.installed_version || "?") + "）"
+                         : "灵枢本体有更新（v" + esc(r.installed_version || "?") + " → v" + esc(r.source_version || r.version) + "）", detail, true);
     } else {
       dot.style.display = "none";
       if (!auto) {
@@ -3825,10 +4466,15 @@ async function checkUpdate(auto){
         }
       }
     }
+    // DSH 副本健康检查：不管本体有没有更新，只要 DSH 里的 lingshu-skill 残缺
+    // （商店更新时被占用导致清空）就显示修复区块，让用户一键补回文件与声明。
+    renderDshCopies(r.dsh_copies);
   } catch (e) {
     console.error("检查更新:", e);
     progress.done();
     if (!auto) { btn.disabled = false; btn.classList.remove("loading"); setLabel("检查更新"); toast(e.message, true); }
+  } finally {
+    checkUpdate._busy = false;   // 无论成败都释放互斥，绝不能卡死后续检查
   }
 }
 function showUpdModal(title, detail, canApply){
@@ -3845,8 +4491,99 @@ $("upd-close").addEventListener("click", () => {
   $("upd-modal").classList.add("hidden");
 });
 $("btn-self-update").addEventListener("click", () => checkUpdate(false));
+// DSH 副本修复：把商店更新时被清空的 lingshu-skill 目录补回文件 + 恢复 profile 声明
+const DSH_STATE_LABEL = {
+  ok: "正常", empty: "空壳（已被清空）", partial: "残缺（缺关键文件）",
+  missing_bundle: "未在 bundles 声明", missing_dep: "未在 dependencies 声明",
+  not_installed: "未安装",
+};
+function renderDshCopies(copies){
+  const sec = $("upd-dsh-section");
+  if (!sec) return;
+  const broken = (copies || []).filter(c => c.state !== "ok" && c.state !== "not_installed");
+  if (!broken.length) { sec.style.display = "none"; return; }
+  const lines = broken.map(c => {
+    const ver = c.version ? " v" + esc(c.version) : "";
+    return "· <b>" + esc(c.profile) + "</b>：" + DSH_STATE_LABEL[c.state] + ver
+      + (c.file_count != null ? "（" + c.file_count + " 个文件）" : "");
+  });
+  $("upd-dsh-detail").innerHTML = lines.join("<br>") +
+    "<br><i>商店在 DSH 运行时更新会留下空壳目录。点下方按钮从本机源补全文件并恢复声明，"
+    + "DSH 下次启动自动加载，无需手动退出重装。</i>";
+  sec.style.display = "block";
+  // 强制更新按钮：与修复按钮同显隐（有异常副本即显示，补版本落后的场景）；只读模式禁用
+  const forceBtn = $("upd-dsh-force");
+  if (forceBtn) {
+    forceBtn.classList.toggle("hidden", !broken.length);
+    if (S.ov && S.ov.readonly) forceBtn.disabled = true;
+  }
+}
+$("upd-dsh-repair").addEventListener("click", async () => {
+  const btn = $("upd-dsh-repair");
+  try {
+    btn.disabled = true;
+    btn.classList.add("loading");
+    btn.textContent = "修复中…";
+    const r = await post("/api/skill/dsh-repair", {});
+    const res = r.result || {};
+    const ok = (res.repaired || []).length;
+    const errs = res.errors || [];
+    if (errs.length) {
+      const detail = errs.map(e => "· " + esc(e.profile) + "：" + (e.errors || []).map(esc).join("；")).join("<br>");
+      toast("修复完成，" + ok + " 个 profile 成功，" + errs.length + " 个有错误", true);
+      $("upd-dsh-detail").innerHTML += "<br><br><b>修复结果：</b><br>" +
+        (ok ? "成功：" + res.repaired.map(esc).join("、") + "<br>" : "") + detail;
+    } else {
+      toast("修复完成：" + (res.repaired || []).join("、") + " 已恢复，重启 DSH 即可生效");
+      $("upd-dsh-section").style.display = "none";
+    }
+  } catch (e) {
+    toast("修复失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("loading");
+    btn.textContent = "一键修复 DSH 副本";
+  }
+});
+// DSH 副本强制在线更新：先停灵枢后台子进程（解决文件占用），再拉最新源原地覆盖，
+// 无需"完全退出 DSH"。超时放宽到 10 分钟（远程拉取 + 整包覆盖都很耗时）。
+$("upd-dsh-force").addEventListener("click", async () => {
+  const btn = $("upd-dsh-force");
+  if (!confirm("强制更新会先停止灵枢后台子进程，再按最新版本原地覆盖各 DSH profile 的副本。\n\n完成后需重启 DSH 生效。继续吗？")) return;
+  try {
+    btn.disabled = true;
+    btn.classList.add("loading");
+    btn.textContent = "更新中…";
+    const r = await post("/api/skill/dsh-force-update", {}, {timeoutMs: 600000});
+    const killed = (r.killed || []).length;
+    const profs = (r.profiles || []).map(p =>
+      "· " + esc(p.profile) + "：" + DSH_STATE_LABEL[p.state_after] +
+      "（覆盖 " + (p.updated_files || 0) + " 个文件，更新前 " + DSH_STATE_LABEL[p.state_before] + "）"
+    ).join("<br>");
+    $("upd-dsh-detail").innerHTML += "<br><br><b>强制更新结果：</b><br>" +
+      "已停止灵枢子进程 " + killed + " 个<br>" + (profs || "无 profile 变更") +
+      "<br><br><i>" + esc(r.note || "已原地更新，重启 DSH 生效") + "</i>";
+    if (r.ok) {
+      toast("DSH 副本已强制更新（停子进程 " + killed + " 个），重启 DSH 生效");
+      $("upd-dsh-section").style.display = "none";
+    } else {
+      toast("强制更新未完全成功，详见弹窗详情", true);
+    }
+  } catch (e) {
+    toast("强制更新失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("loading");
+    btn.textContent = "强制更新 DSH 副本";
+  }
+});
+// 更新互斥标志（模块级）：apply 进行中不允许重复点击（弹窗关了请求还在跑的情况也会被拦住）
+let updApplyBusy = false;
 $("upd-apply").addEventListener("click", async () => {
   const btn = $("upd-apply");
+  // 注意不能用 updApply._busy：updApply 不是已声明的全局变量，浏览器严格模式直接 ReferenceError。
+  if (updApplyBusy) return;
+  updApplyBusy = true;
   try {
     // 更新前确认：明确标注来源类型与目标路径，杜绝"有更新但点了无响应"的疑虑
     const kindTxt = updLastCheck.source_kind === "dev" ? "从本地开发仓库同步"
@@ -3859,21 +4596,36 @@ $("upd-apply").addEventListener("click", async () => {
                  + "\n\n（更新采用原子化部署：先备份再替换，失败自动回滚，记忆数据不受影响）")) return;
     btn.disabled = true;
     btn.classList.add("loading");
-    btn.textContent = "下载中…";
+    btn.textContent = "更新中…";
     progress.fake(5, 85);   // 后端整包返回拿不到真实进度，用缓慢爬升假进度告诉用户"在动"
-    // 第一次不带 yes：风险告知未接受时后端返回 risk_required，弹窗展示风险后
-    // 第二次点击才带 yes=true 真正继续——不让风险确认被静默跳过
-    // 更新是"下载整包+备份+替换"的大动作，远超 api() 默认 15s 兜底，单独放宽到 5 分钟
-    const r = await post("/api/skill", {action: "install", name: "lingshu",
-                                        force: true, yes: updRiskAccepted ? true : undefined},
-                        {signal: AbortSignal.timeout(300000)});
+    // 前端超时必须 > 后端安装子进程超时（600s）：前端先断的话后台还在装，
+    // 状态就不一致了。这里 10 分钟（600s）+ 30s 缓冲，覆盖最坏路径。
+    const APPLY_TIMEOUT = 630000;
+    let r;
+    try {
+      r = await post("/api/skill", {action: "install", name: "lingshu",
+                                    force: true, yes: updRiskAccepted ? true : undefined},
+                    {signal: AbortSignal.timeout(APPLY_TIMEOUT)});
+    } catch (netErr) {
+      // 网络层失败（超时/断连）：给一次自动重试的机会——远程源拉取对匿名风控
+      // 很敏感，偶发抖动重试常能过。成功后端是原子替换，重试不会装到一半。
+      if (!confirm("更新请求失败：" + (netErr.message || "网络错误") +
+                   "\n\n可能是网络抖动或匿名限流。要自动重试一次吗？（点取消放弃本次更新）")) throw netErr;
+      btn.textContent = "重试中…";
+      r = await post("/api/skill", {action: "install", name: "lingshu",
+                                    force: true, yes: updRiskAccepted ? true : undefined},
+                    {signal: AbortSignal.timeout(APPLY_TIMEOUT)});
+    }
     const st = r.result && r.result.state;
     if (st === "risk_required") {
+      // 风险告知分支：不是失败——按钮必须恢复可点，让用户看完风险后点「立即更新」继续
       progress.done();
       updRiskAccepted = true;
       const risks = (r.result.risks || []).map(x => "  · " + esc(x)).join("\n");
       $("upd-detail").innerHTML = "首次更新灵枢本体前请先了解它能做什么：<br><br>" +
-        (risks || "灵枢会自动读写记忆数据目录。") + "<br><br>确认接受并继续更新吗？";
+        (risks || "灵枢会自动读写记忆数据目录。") + "<br><br>确认接受并继续更新吗？<br>" +
+        "<i>看完后点下方「立即更新」继续。</i>";
+      $("upd-apply").textContent = "立即更新";
       return;
     }
     if (st === "failed" || r.ok === false) throw new Error((r.result && r.result.error) || "更新失败");
@@ -3886,12 +4638,19 @@ $("upd-apply").addEventListener("click", async () => {
     checkUpdate(false);        // 更新完复查一次：确认显示"已是最新"而非靠猜
   } catch (e) {
     console.error("执行更新:", e);
-    toast(e.message || "更新失败", true);
+    const msg = e.message || "更新失败";
+    // 失败提示要留给用户看清（toast 只活 2.4s），同时常驻写进弹窗详情区
+    toast(msg, true);
+    $("upd-detail").innerHTML = "<b style='color:var(--red-text)'>✗ 更新失败</b><br><br>" +
+      esc(msg) + "<br><br><i>更新采用原子化部署，失败已自动回滚，现有版本与数据不受影响。" +
+      "可关闭本窗口后点右上角「检查更新」重试。</i>";
+    $("upd-modal").classList.remove("hidden");
   } finally {
     progress.done();
     btn.disabled = false;
     btn.classList.remove("loading");
     btn.textContent = "立即更新";
+    updApplyBusy = false;
   }
 });
 // 开面板 1.2s 后自动查一次（避开启动时的并发请求高峰）
@@ -3959,6 +4718,12 @@ setTimeout(() => checkUpdate(true), 1200);
   }
   function close(){ const ov = $id("pm-overlay"); if (ov) ov.classList.add("hidden"); }
   $id("btn-panels").onclick = open;
+  // Esc 关闭：其它浮层（弹窗/命令面板）都认 Esc，这里不认会显得半截
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    const ov = $id("pm-overlay");
+    if (ov && !ov.classList.contains("hidden")) close();
+  });
 
   async function ppost(action, extra){
     return api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
@@ -3983,7 +4748,7 @@ setTimeout(() => checkUpdate(true), 1200);
           btns += `<button class="btn mini" data-pm-act="upload" data-id="${esc(p.name)}">上传到市场</button>`;
         if (p.name !== "default")
           btns += `<button class="btn mini" data-pm-act="delete" data-id="${esc(p.name)}"
-            style="background:rgba(201,107,95,.14);color:#dda49b">删除</button>`;
+            style="background:rgba(201,107,95,.14);color:var(--red-text)">删除</button>`;
         return `<div class="pm-item">
           <div class="grow"><div class="nm">${esc(p.title)}<small>v${esc(p.version)} · ${esc(p.name)}</small>
             ${act}${src}${err}</div>
@@ -4270,23 +5035,23 @@ setTimeout(() => checkUpdate(true), 1200);
     fr.addEventListener("load", () => { ok = true; });
     setTimeout(() => { if (!ok) fallback(pname, "加载超时"); }, 3000);
     // 悬浮逃生口：永远能一键回到默认面板
-    const esc = document.createElement("button");
-    esc.id = "panel-escape";
-    esc.textContent = "⇱ 返回默认面板";
-    esc.style.cssText = "position:fixed;right:14px;top:14px;z-index:850;cursor:pointer;" +
+    const escBtn = document.createElement("button");
+    escBtn.id = "panel-escape";
+    escBtn.textContent = "⇱ 返回默认面板";
+    escBtn.style.cssText = "position:fixed;right:14px;top:14px;z-index:850;cursor:pointer;" +
       "background:#1b2028;color:#e6e1d5;border:1px solid #2a3140;border-radius:9px;padding:7px 14px;font-size:12px";
-    esc.onclick = async () => {
+    escBtn.onclick = async () => {
       try{ await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({action:"deactivate"})}); }catch(e){}
       location.reload();
     };
-    document.body.appendChild(esc);
+    document.body.appendChild(escBtn);
   }
   async function fallback(pname, why){
     const fr = document.getElementById("custom-panel-frame");
     if (fr) fr.remove();
-    const esc = document.getElementById("panel-escape");
-    if (esc) esc.remove();
+    const escEl = document.getElementById("panel-escape");
+    if (escEl) escEl.remove();
     try{ await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({action:"deactivate"})}); }catch(e){}
     toast(`自定义面板「${pname}」${why}，已回退默认面板`, true);
@@ -4309,4 +5074,513 @@ setTimeout(() => checkUpdate(true), 1200);
 </script>
 
 
+
+<!-- ls-enhance v3.36 -->
+<style id="ls-enhance-style">
+  :root[data-theme="light"]{
+    --bg:#f6f4ef; --surface:#fffdf8; --surface2:#f0ede5; --line:#ddd6c8;
+    --text:#23201a; --muted:#554f44; --faint:#6f6858;
+    --amber:#a9741c; --amber-soft:rgba(169,116,28,.12);
+    --teal:#2f7d72; --red:#a8453a; --violet:#5b52a3;
+    --green:#2f7d4f; --blue:#2f5f9e;
+    --teal-text:#2f7d72; --red-text:#a8453a; --amber-text:#8a5d13;
+    --node-persona:201,162,39; --node-high:192,57,43; --node-mid:169,116,28;
+    --node-low:47,125,114; --node-min:91,102,115;
+    --edge:96,112,132; --path:169,116,28; --search:47,125,114;
+    --graph-label:45,40,32; --graph-focus:35,32,26; --graph-focus-ring:255,253,248;
+  }
+  /* 浅色主题覆盖层：base.css 里有大量为深色底硬编码的颜色，这里统一翻成浅色版本 */
+  :root[data-theme="light"] aside{background:linear-gradient(180deg,#f1ebdf,#e6e0d1)}
+  :root[data-theme="light"] nav button:hover{background:rgba(0,0,0,.055)}
+  :root[data-theme="light"] .mood{background:rgba(47,125,114,.1);border:1px solid rgba(47,125,114,.3);color:var(--teal-text)}
+  :root[data-theme="light"] .mood-badge{background:rgba(255,255,255,.55);border:1px solid var(--line)}
+  :root[data-theme="light"] .bar{background:#ddd5c4}
+  :root[data-theme="light"] .chip{background:var(--surface2);color:var(--muted)}
+  :root[data-theme="light"] .chip.good{border-color:rgba(47,125,114,.3);color:var(--teal-text);background:rgba(47,125,114,.08)}
+  :root[data-theme="light"] .chip.bad{border-color:rgba(168,69,58,.3);color:var(--red-text);background:rgba(168,69,58,.08)}
+  :root[data-theme="light"] .mem:hover{border-color:#b8ab92}
+  :root[data-theme="light"] .mem p{color:var(--text)}
+  :root[data-theme="light"] .layer-bar-track{background:#ddd5c4}
+  :root[data-theme="light"] .ring{background:conic-gradient(var(--amber) calc(var(--p) * 1%), #ddd5c4 0)}
+  :root[data-theme="light"] .badge{background:var(--surface2);color:var(--muted)}
+  :root[data-theme="light"] .badge.cortex{background:rgba(169,116,28,.14);color:var(--amber-text)}
+  :root[data-theme="light"] .badge.hippo{background:rgba(47,125,114,.12);color:var(--teal-text)}
+  :root[data-theme="light"] .badge.dust{background:#ddd5c4;color:var(--faint)}
+  :root[data-theme="light"] .badge.archive{background:rgba(91,82,163,.1);color:var(--violet)}
+  :root[data-theme="light"] .iconbtn:hover{background:var(--surface2);color:var(--text)}
+  :root[data-theme="light"] .list li{border-bottom-color:rgba(0,0,0,.06);color:var(--text)}
+  :root[data-theme="light"] .hist td{border-bottom-color:rgba(0,0,0,.06)}
+  :root[data-theme="light"] .statline{border-bottom-color:rgba(0,0,0,.06)}
+  :root[data-theme="light"] button.ghost:hover{border-color:#b8ab92}
+  :root[data-theme="light"] button.danger{background:rgba(168,69,58,.1);border-color:rgba(168,69,58,.3);color:var(--red-text)}
+  :root[data-theme="light"] .pm-tag.err{border-color:rgba(168,69,58,.4);color:var(--red-text)}
+  :root[data-theme="light"] .pre{background:#efe9dc;color:#3f3a33}
+  :root[data-theme="light"] #toast{border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.12)}
+  :root[data-density="compact"] body{font-size:13px;line-height:1.5}
+  :root[data-density="compact"] .card{padding:10px 12px}
+  :root[data-density="compact"] nav button{padding:5px 8px}
+  #ls-dock{position:fixed;right:18px;bottom:18px;width:340px;max-height:72vh;z-index:9999;
+    display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);
+    border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.45);overflow:hidden;
+    font:13px/1.55 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:var(--text)}
+  #ls-dock.ls-collapsed{width:auto}
+  #ls-dock.ls-collapsed .ls-body{display:none}
+  .ls-head{display:flex;align-items:center;gap:8px;padding:10px 12px;
+    background:var(--surface2);border-bottom:1px solid var(--line);cursor:grab;
+    touch-action:none;user-select:none}
+  #ls-dock.ls-dragging .ls-head{cursor:grabbing}
+  #ls-dock.ls-dragging{box-shadow:0 26px 70px rgba(0,0,0,.55);opacity:.96}
+  /* 收起态只留标题条：整块高度变了，拖拽后的位置要重新夹进视口（JS 里做） */
+  #ls-dock.ls-collapsed .ls-head{border-bottom:none}
+  .ls-head b{font-weight:600;letter-spacing:.3px;flex:1}
+  .ls-head .ls-dot{width:7px;height:7px;border-radius:50%;background:var(--teal)}
+  .ls-head .ls-dot.bad{background:var(--red)}
+  .ls-head button{background:none;border:1px solid var(--line);color:var(--muted);
+    border-radius:7px;padding:2px 7px;font-size:12px;cursor:pointer}
+  .ls-head button:hover{color:var(--text);border-color:var(--amber)}
+  .ls-body{padding:10px 12px 12px;overflow:auto}
+  .ls-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px}
+  .ls-kpi{background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .ls-kpi .k{color:var(--faint);font-size:11px;letter-spacing:.4px}
+  .ls-kpi .v{font-size:17px;font-weight:600;margin-top:2px;color:var(--amber)}
+  .ls-kpi .s{color:var(--muted);font-size:11px;margin-top:2px}
+  .ls-row{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px dashed var(--line)}
+  .ls-row:first-of-type{border-top:0}
+  .ls-row .k{color:var(--faint);min-width:58px;font-size:12px}
+  .ls-row .v{flex:1;color:var(--text);font-size:12px;word-break:break-word}
+  .ls-tools{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+  .ls-tools select,.ls-tools button{background:var(--surface2);border:1px solid var(--line);
+    color:var(--text);border-radius:8px;padding:4px 8px;font-size:12px}
+  .ls-tools button{cursor:pointer}
+  .ls-tools button:hover{border-color:var(--amber)}
+  .ls-empty{color:var(--muted);font-size:12px;padding:8px 0}
+  @media (prefers-reduced-motion:no-preference){
+    #ls-dock{transition:box-shadow .2s ease,transform .2s ease}
+  }
+  @media (max-width:760px){#ls-dock{width:calc(100vw - 24px);right:12px;bottom:12px}}
+</style>
+<script>
+(function(){
+  "use strict";
+  var KEY = "lingshu.panel.prefs";
+  var prefs = {theme:"auto", density:"cozy", refresh:60, open:true};
+  var firstVisit = false;
+  try { firstVisit = !localStorage.getItem(KEY); } catch(e){}
+  try { Object.assign(prefs, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch(e){}
+  // 窄屏（手机/小窗）默认收起：展开态要占掉大半个视口，把正文全遮住。
+  // 只在"用户从没调过"时这么定，之后尊重他自己的选择。
+  if (firstVisit && window.innerWidth && window.innerWidth <= 760) prefs.open = false;
+  function save(){ try{ localStorage.setItem(KEY, JSON.stringify(prefs)); }catch(e){} }
+  function apply(){
+    var t = prefs.theme;
+    if (t === "auto") t = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", t);
+    document.documentElement.setAttribute("data-density", prefs.density === "compact" ? "compact" : "cozy");
+  }
+  apply();
+
+  var dock = document.createElement("section");
+  dock.id = "ls-dock";
+  if (!prefs.open) dock.className = "ls-collapsed";
+  dock.innerHTML =
+    '<div class="ls-head"><span class="ls-dot" id="ls-dot"></span><b>运行洞察</b>' +
+    '<button id="ls-refresh" title="立即刷新">刷新</button>' +
+    '<button id="ls-toggle" title="收起/展开（双击标题栏同样可收起）">－</button></div>' +
+    '<div class="ls-body">' +
+    '<div class="ls-kpis" id="ls-kpis"><div class="ls-empty">加载中…</div></div>' +
+    '<div id="ls-rows"></div>' +
+    '<div class="ls-tools">' +
+    '<select id="ls-theme"><option value="auto">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select>' +
+    '<select id="ls-density"><option value="cozy">标准密度</option><option value="compact">紧凑密度</option></select>' +
+    '<select id="ls-refresh-interval"><option value="0">不自动刷新</option><option value="30">30 秒</option><option value="60">60 秒</option><option value="300">5 分钟</option></select>' +
+    '</div></div>';
+  document.body.appendChild(dock);
+
+  /* ---------------------------------------------------------------- 拖拽 + 位置记忆
+     浮窗是 position:fixed，默认停在右下角，会盖住正文（尤其是窄屏和长卡片）。
+     这里把标题栏做成真的可拖：拖走、松手记位置、下次打开还在那；也能双击收起。
+     位置一律夹在视口内，避免拖到屏幕外就再也抓不回来。 */
+  var positioned = false;   // 是否已被换成 left/top 绝对定位（false = 还在用 CSS 贴右下角）
+  function dockSize(){
+    var r = dock.getBoundingClientRect();
+    return {w: r.width || 340, h: r.height || 60};
+  }
+  function clampPos(x, y){
+    var s = dockSize();
+    var maxX = Math.max(0, (window.innerWidth || 0) - s.w - 4);
+    var maxY = Math.max(0, (window.innerHeight || 0) - s.h - 4);
+    return {x: Math.min(Math.max(0, x), maxX), y: Math.min(Math.max(0, y), maxY)};
+  }
+  function place(x, y){
+    var p = clampPos(x, y);
+    dock.style.left = p.x + "px";
+    dock.style.top = p.y + "px";
+    dock.style.right = "auto";
+    dock.style.bottom = "auto";
+    positioned = true;
+    return p;
+  }
+  // 首次：没存过位置就**保留 CSS 的 right/bottom 定位**（内容还在加载，此时量高度会偏小，
+  // 算出来的 top 会把浮窗顶出视口）；等真的开始拖了，再把当前矩形换算成 left/top。
+  if (prefs.pos && isFinite(prefs.pos.x) && isFinite(prefs.pos.y)) place(prefs.pos.x, prefs.pos.y);
+
+  var drag = null;
+  var head = dock.querySelector(".ls-head");
+  head.addEventListener("pointerdown", function(e){
+    if (e.button !== 0 || (e.target.closest && e.target.closest("button"))) return;
+    var r = dock.getBoundingClientRect();
+    place(r.left, r.top);                  // 固定成 left/top（数值不变，不会跳）
+    drag = {dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId};
+    try { head.setPointerCapture(e.pointerId); } catch (_) {}
+    dock.classList.add("ls-dragging");
+    // 不要在这里 preventDefault：Chrome 会随之取消 mousedown/click/dblclick 这些
+    // 兼容事件，"双击标题栏收起"就永远收不到。禁止选中与滚动交给 CSS
+    // （.ls-head 的 user-select:none / touch-action:none）。
+  });
+  head.addEventListener("pointermove", function(e){
+    if (!drag || e.pointerId !== drag.id) return;
+    place(e.clientX - drag.dx, e.clientY - drag.dy);
+  });
+  function endDrag(e){
+    if (!drag || (e && e.pointerId !== drag.id)) return;
+    var r = dock.getBoundingClientRect();
+    var p = place(r.left, r.top);          // 松手时再夹一次：拖动中滚动/缩放都可能越界
+    prefs.pos = {x: Math.round(p.x), y: Math.round(p.y)};
+    save();
+    dock.classList.remove("ls-dragging");
+    drag = null;
+  }
+  head.addEventListener("pointerup", endDrag);
+  head.addEventListener("pointercancel", endDrag);
+  head.addEventListener("dblclick", function(e){
+    if (e.target.closest && e.target.closest("button")) return;
+    $("ls-toggle").onclick();
+  });
+  // 窗口变小/收起展开都会改变尺寸：把浮窗重新夹回视口内（位置也顺手纠正，避免下次打开跑出去）。
+  // 还没被拖动过（仍由 CSS 贴右下角）就什么都不做——CSS 自己会跟着视口走。
+  function reflow(){
+    if (!positioned) return;
+    var r = dock.getBoundingClientRect();
+    var p = place(r.left, r.top);
+    prefs.pos = {x: Math.round(p.x), y: Math.round(p.y)};
+    save();
+  }
+  window.addEventListener("resize", reflow);
+
+
+  var $ = function(id){ return document.getElementById(id); };
+  $("ls-theme").value = prefs.theme;
+  $("ls-density").value = prefs.density;
+  $("ls-refresh-interval").value = String(prefs.refresh);
+  $("ls-theme").onchange = function(){ prefs.theme = this.value; save(); apply(); };
+  $("ls-density").onchange = function(){ prefs.density = this.value; save(); apply(); };
+  $("ls-refresh-interval").onchange = function(){ prefs.refresh = Number(this.value) || 0; save(); schedule(); };
+  $("ls-toggle").onclick = function(){
+    prefs.open = dock.classList.toggle("ls-collapsed") ? false : true;
+    this.textContent = prefs.open ? "－" : "＋"; save();
+    reflow();   // 收起/展开会改变尺寸，位置要重新夹回视口
+  };
+  if (!prefs.open) $("ls-toggle").textContent = "＋";
+
+  function el(tag, cls, text){
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function kpi(k, v, s){
+    var box = el("div","ls-kpi");
+    box.appendChild(el("div","k",k));
+    box.appendChild(el("div","v",v));
+    if (s) box.appendChild(el("div","s",s));
+    return box;
+  }
+  function row(k, v){
+    var r = el("div","ls-row");
+    r.appendChild(el("div","k",k));
+    r.appendChild(el("div","v",v));
+    return r;
+  }
+  function fmtTokens(n){ return (n == null) ? "—" : (n >= 1000 ? (n/1000).toFixed(1)+"k" : String(n)); }
+
+  var timer = null;
+  function schedule(){
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (prefs.refresh > 0) timer = setTimeout(load, prefs.refresh * 1000);
+  }
+
+  async function load(){
+    var dot = $("ls-dot"), kpis = $("ls-kpis"), rows = $("ls-rows");
+    try {
+      var fn = (typeof api === "function") ? function(p){ return api(p); }
+                                             : function(p){ return fetch(p).then(function(r){ return r.json(); }); };
+      var res = await fn("/api/insights?light=1");
+      if (!res || !res.ok || !res.data) throw new Error((res && (res.error || "bad response")) || "bad response");
+      var d = res.data;
+      dot.className = "ls-dot" + (res.warnings && res.warnings.length ? " bad" : "");
+      kpis.innerHTML = "";
+      kpis.appendChild(kpi("版本", d.version || "—", "灵枢"));
+      kpis.appendChild(kpi("原文库", (d.rag && d.rag.messages != null) ? d.rag.messages : "—",
+                           (d.rag && d.rag.sessions != null) ? d.rag.sessions + " 个会话" : "未建库"));
+      kpis.appendChild(kpi("收尾清点", (d.checkpoints && d.checkpoints.count) || 0, "个仓库有记录"));
+      kpis.appendChild(kpi("群聊鉴权", d.guard ? (d.guard.enabled ? (d.guard.shadow ? "影子" : "拦截中") : "关闭") : "—",
+                           d.guard && d.guard.events ? ("最近 " + d.guard.events.length + " 条") : ""));
+      rows.innerHTML = "";
+      if (d.rag) rows.appendChild(row("检索库", d.rag.path || "—"));
+      if (d.embed) rows.appendChild(row("嵌入", (d.embed.url || "未配置（走降级向量）") +
+        (d.embed.cooldown_sec ? "  · 冷却 " + d.embed.cooldown_sec + "s" : "")));
+      if (d.checkpoints && d.checkpoints.last) {
+        var c = d.checkpoints.last;
+        rows.appendChild(row("上次收尾", (c.repo || "") + " @ " + (c.head || "") + (c.version ? " · v" + c.version : "")));
+      }
+      if (d.guard && d.guard.events && d.guard.events.length) {
+        var e = d.guard.events[d.guard.events.length - 1];
+        rows.appendChild(row("最近鉴权", (e.action || "") + " · " + (e.tool || "") + " · " + (e.sender || "")));
+      }
+      if (d.failures && d.failures.total) {
+        var f = d.failures.top && d.failures.top[0];
+        rows.appendChild(row("近24h异常", d.failures.total + " 次" +
+          (f ? (" · " + f.kind + " ×" + f.count) : "")));
+      }
+      if (d.ab) {
+        var ab = d.ab, abMode = ab.mode || "legacy";
+        var abText = ab.total
+          ? (ab.total + " 次 · 均值节省 " +
+             (ab.mean_saved_pct == null ? "—" : ab.mean_saved_pct + "%"))
+          : "未采样";
+        rows.appendChild(row("A/B 样本", abText + " · 当前模式 " + abMode));
+      }
+      if (res.warnings && res.warnings.length) rows.appendChild(row("降级", res.warnings.join("；")));
+      if (!rows.children.length) rows.appendChild(el("div","ls-empty","暂无更多数据"));
+    } catch (err) {
+      dot.className = "ls-dot bad";
+      kpis.innerHTML = "";
+      kpis.appendChild(el("div","ls-empty","读取失败：" + (err && err.message ? err.message : err)));
+    }
+    schedule();
+  }
+
+  $("ls-refresh").onclick = function(){ if (timer) clearTimeout(timer); load(); };
+  load();
+})();
+</script>
+<script>/* 虚拟列表（分块懒渲染，保留卡片自然高度）。
+ * 为什么不做定高窗口：记忆卡长短不一，强行定高会把内容裁掉。
+ * 做法：先渲 80 条，底部放哨兵；滚动接近时再追加 80 条。
+ * 对几千条记忆足够消除"一次性 innerHTML 卡死主线程"的问题。
+ */
+(function () {
+  "use strict";
+  if (window.LSVirtual) return;
+  var CHUNK = 80;
+
+  function render(containerId, rows, htmlFn, opts) {
+    var box = document.getElementById(containerId);
+    if (!box || !Array.isArray(rows)) return false;
+    opts = opts || {};
+    var chunk = opts.chunk || CHUNK;
+    box.innerHTML = "";
+    var i = 0, sentinel = document.createElement("div");
+    sentinel.className = "ls-more";
+    sentinel.style.cssText = "padding:10px 12px;color:var(--muted);font-size:12px;text-align:center";
+    box.appendChild(sentinel);
+
+    function more() {
+      if (i >= rows.length) { sentinel.textContent = ""; return; }
+      var frag = document.createDocumentFragment();
+      var end = Math.min(i + chunk, rows.length);
+      for (; i < end; i++) {
+        var tpl = document.createElement("template");
+        tpl.innerHTML = htmlFn(rows[i]);
+        frag.appendChild(tpl.content);
+      }
+      box.insertBefore(frag, sentinel);
+      sentinel.textContent = i < rows.length ? "继续滚动加载…（" + i + "/" + rows.length + "）" : "";
+    }
+
+    if (!box._lsObserver) {
+      box._lsObserver = new IntersectionObserver(function (es) {
+        if (es[0] && es[0].isIntersecting) more();
+      }, { rootMargin: "600px" });
+    }
+    box._lsObserver.disconnect();
+    box._lsObserver.observe(sentinel);
+    more();
+    return true;
+  }
+
+  window.LSVirtual = { render: render, chunk: CHUNK };
+})();
+</script>
+<script>/* 全局搜索 / 命令面板（Ctrl/⌘ + K）。
+ * 命令来源：左侧导航页 + 固定动作；输入 ≥2 字时并查 /api/search（记忆原文）。
+ * 渲染一律 textContent；结果列表是静态骨架 + 文本节点。
+ */
+(function () {
+  "use strict";
+  if (window.LSCommand) return;
+
+  var ACTIONS = [
+    { label: "刷新页面", hint: "reload", run: function () { location.reload(); } },
+    { label: "打开运行洞察", hint: "insights", run: function () { var d = document.getElementById("ls-dock"); if (d) { d.classList.remove("ls-collapsed"); d.scrollIntoView({ block: "nearest" }); } } },
+    { label: "切换主题（深/浅/跟随）", hint: "theme", run: function () { var s = document.getElementById("ls-theme"); if (s) { s.value = s.value === "light" ? "dark" : s.value === "dark" ? "auto" : "light"; s.onchange(); } } },
+    { label: "切换密度（标准/紧凑）", hint: "density", run: function () { var s = document.getElementById("ls-density"); if (s) { s.value = s.value === "compact" ? "cozy" : "compact"; s.onchange(); } } }
+  ];
+
+  var overlay = null, input = null, list = null, items = [], active = 0, searchSeq = 0;
+
+  function build() {
+    overlay = document.createElement("div");
+    overlay.id = "ls-cmd";
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.45);display:none;" +
+      "align-items:flex-start;justify-content:center;padding-top:12vh";
+    var box = document.createElement("div");
+    box.style.cssText =
+      "width:min(620px,92vw);background:var(--surface);border:1px solid var(--line);" +
+      "border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.5);overflow:hidden";
+    var head = document.createElement("div");
+    head.style.cssText = "padding:10px 12px;border-bottom:1px solid var(--line)";
+    input = document.createElement("input");
+    input.placeholder = "搜索记忆、跳转页面、执行动作…（Esc 关闭）";
+    input.style.cssText = "width:100%;background:transparent;border:0;outline:0;color:var(--text);font-size:15px;padding:4px";
+    head.appendChild(input);
+    list = document.createElement("div");
+    list.style.cssText = "max-height:52vh;overflow:auto;padding:6px";
+    box.appendChild(head);
+    box.appendChild(list);
+    overlay.appendChild(box);
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) close(); });
+    document.body.appendChild(overlay);
+    input.addEventListener("input", function () { query(input.value); });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { close(); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+      else if (e.key === "Enter") { e.preventDefault(); runActive(); }
+    });
+  }
+
+  function row(text, hint, onPick) {
+    var d = document.createElement("div");
+    d.style.cssText = "display:flex;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;align-items:baseline";
+    var t = document.createElement("div");
+    t.textContent = text;
+    t.style.cssText = "flex:1;color:var(--text);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+    d.appendChild(t);
+    if (hint) {
+      var h = document.createElement("div");
+      h.textContent = hint;
+      h.style.cssText = "color:var(--faint);font-size:11px";
+      d.appendChild(h);
+    }
+    d.addEventListener("mouseenter", function () { setActive(items.indexOf(onPick)); });
+    d.addEventListener("click", function () { onPick.run(); });
+    return d;
+  }
+
+  function renderList() {
+    list.innerHTML = "";
+    if (!items.length) {
+      var e = document.createElement("div");
+      e.textContent = "没有匹配项";
+      e.style.cssText = "padding:12px;color:var(--muted);font-size:12px";
+      list.appendChild(e);
+      return;
+    }
+    items.forEach(function (it, i) {
+      var el = row(it.label, it.hint, it);
+      el.dataset.idx = String(i);
+      if (i === active) el.style.background = "var(--surface2)";
+      list.appendChild(el);
+    });
+  }
+
+  function setActive(i) {
+    active = i;
+    Array.prototype.forEach.call(list.children, function (el, k) {
+      el.style.background = k === i ? "var(--surface2)" : "";
+    });
+  }
+
+  function move(d) {
+    if (!items.length) return;
+    active = (active + d + items.length) % items.length;
+    setActive(active);
+    var el = list.children[active];
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+  }
+
+  function runActive() {
+    var it = items[active];
+    if (it) it.run();
+  }
+
+  function navItems(q) {
+    var out = [];
+    document.querySelectorAll("nav button[data-tab]").forEach(function (b) {
+      var label = (b.textContent || "").replace(/\s+/g, " ").trim();
+      var tab = b.dataset.tab;
+      out.push({
+        label: "跳转：" + label, hint: "页面", text: label + " " + tab,
+        run: function () { close(); if (typeof switchTab === "function") switchTab(tab); }
+      });
+    });
+    ACTIONS.forEach(function (a) { out.push({ label: a.label, hint: a.hint, text: a.label + " " + a.hint, run: function () { close(); a.run(); } }); });
+    return out.filter(function (x) { return !q || x.text.toLowerCase().indexOf(q.toLowerCase()) >= 0; });
+  }
+
+  function query(q) {
+    q = (q || "").trim();
+    active = 0;
+    items = navItems(q);
+    renderList();
+    if (q.length < 2) return;
+    var seq = ++searchSeq;
+    if (typeof api !== "function") return;
+    api("/api/search?q=" + encodeURIComponent(q) + "&k=8").then(function (rows) {
+      if (seq !== searchSeq) return;
+      var extra = (rows || []).map(function (r) {
+        var m = r.memory || r;
+        var txt = String(m.text || "").slice(0, 90);
+        return {
+          label: "记忆：" + txt, hint: "打开并筛选记忆", text: txt,
+          run: function () {
+            close();
+            // 落到记忆页后把搜索框填成这条记忆的原文片段，而不是只停在列表顶部。
+            // 先填再切页：switchTab 自己会拉一次列表，避免重复请求。
+            var box = document.getElementById("search");
+            if (box) box.value = txt.slice(0, 24);
+            if (typeof switchTab === "function") switchTab("memories");
+          }
+        };
+      });
+      items = navItems(q).slice(0, 6).concat(extra);
+      renderList();
+    }).catch(function () {});
+  }
+
+  function open() {
+    if (!overlay) build();
+    overlay.style.display = "flex";
+    input.value = "";
+    query("");
+    setTimeout(function () { input.focus(); }, 0);
+  }
+
+  function close() {
+    if (overlay) overlay.style.display = "none";
+    searchSeq++;
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (overlay && overlay.style.display === "flex") close(); else open();
+    }
+  });
+
+  window.LSCommand = { open: open, close: close };
+})();
+</script>
 </body></html>

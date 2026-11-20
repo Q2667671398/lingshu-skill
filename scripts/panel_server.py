@@ -91,11 +91,27 @@ def memory_view(m: dict) -> dict:
 
 
 def _repo_version() -> str:
-    """本服务代码副本的版本号：读仓库 manifest.json（多副本错位排查的锚点）。"""
+    """本服务代码副本的版本号：优先仓库 manifest.json，退一步读 SKILL.md 的 version。
+
+    面板如今也随 AstrBot 插件发布（engine/scripts/panel_server.py + engine/assets/panel.html），
+    但插件里没有 manifest.json —— 只读 manifest 会让插件版面板的「代码版本」永远空着。
+    SKILL.md 一定随副本走，用它兜底；两处都没有才返回空串（页面照常显示，不报错）。
+    """
+    root = ASSETS.parent
     try:
-        mf = ASSETS.parent / "manifest.json"
+        mf = root / "manifest.json"
         import json as _json
-        return str(_json.loads(mf.read_text(encoding="utf-8-sig")).get("version", ""))
+        v = str(_json.loads(mf.read_text(encoding="utf-8-sig")).get("version", "") or "")
+        if v:
+            return v
+    except Exception:
+        pass
+    try:
+        import re as _re
+        m = _re.search(r"^version:\s*([0-9][0-9a-zA-Z.\-]*)",
+                       (root / "SKILL.md").read_text(encoding="utf-8-sig"),
+                       _re.MULTILINE)
+        return m.group(1) if m else ""
     except Exception:
         return ""
 
@@ -1940,6 +1956,11 @@ _OLLAMA_INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA")
                            or str(Path.home() / "AppData/Local")) / "Programs/Ollama"
 _OLLAMA_PORT = 11434
 _OLLAMA_MODEL = "nomic-embed-text"
+# 探测用地址写死 127.0.0.1，不要用 localhost：Windows 上 localhost 先解析成 ::1、
+# 失败再试 IPv4，端口没人听时每次探测要等满两倍超时才返回（实测 4.0s vs 2.0s）。
+# 面板打开「本地能力」页的第一屏就卡在这上面，所以这里只要 1 秒。
+_OLLAMA_PROBE_URL = f"http://127.0.0.1:{_OLLAMA_PORT}/api/tags"
+_OLLAMA_PROBE_TIMEOUT = 1.0
 
 
 def _ollama_state_path() -> Path:
@@ -2043,20 +2064,34 @@ def _ollama_exe() -> Path | None:
     return None
 
 
-def _ollama_serving() -> bool:
-    """11434 是否已有服务在跑（GET /api/tags，2 秒超时）。"""
+def _ollama_probe() -> tuple[bool, set]:
+    """一次探测 11434：返回 (服务是否在跑, 已拉取的模型名集合)。
+
+    只发一次 HTTP：以前 status 里 serving / model_ready 各探一次、外加一个独立
+    `/api/tags` 读取，本地没起 Ollama 时三连超时，面板「本地能力」要等 8 秒才出结果。
+    连接失败和“起来了但没模型”必须区分开，所以用返回值而不是空列表表达。
+    """
     try:
-        with urllib.request.urlopen(
-                f"http://localhost:{_OLLAMA_PORT}/api/tags", timeout=2) as resp:
-            return resp.status == 200
+        with urllib.request.urlopen(_OLLAMA_PROBE_URL,
+                                    timeout=_OLLAMA_PROBE_TIMEOUT) as resp:
+            if resp.status != 200:
+                return False, set()
+            data = json.loads(resp.read().decode("utf-8"))
+        names = {str(m.get("name") or "") for m in data.get("models") or []}
+        return True, names
     except Exception:
-        return False
+        return False, set()
+
+
+def _ollama_serving() -> bool:
+    """11434 是否已有服务在跑（1 秒超时）。"""
+    return _ollama_probe()[0]
 
 
 def _ollama_tags() -> list:
     try:
-        with urllib.request.urlopen(
-                f"http://localhost:{_OLLAMA_PORT}/api/tags", timeout=2) as resp:
+        with urllib.request.urlopen(_OLLAMA_PROBE_URL,
+                                    timeout=_OLLAMA_PROBE_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return [str(m.get("name") or "") for m in data.get("models") or []]
     except Exception:
@@ -2065,13 +2100,7 @@ def _ollama_tags() -> list:
 
 def _ollama_model_names() -> set:
     """已拉取的模型名集合（精确匹配，避免子串误判）。"""
-    try:
-        return {str(m.get("name") or "") for m in (
-            json.loads(urllib.request.urlopen(
-                f"http://localhost:{_OLLAMA_PORT}/api/tags", timeout=2
-            ).read().decode("utf-8")).get("models") or [])}
-    except Exception:
-        return set()
+    return _ollama_probe()[1]
 
 
 def _ollama_safe_extractall(zf: zipfile.ZipFile, dest: Path) -> None:
@@ -2109,11 +2138,13 @@ def ollama_status() -> dict:
     """状态汇总（GET）：installed/serving/model_ready/embed_configured + 下载安装进度。
     附带降级向量兜底（fallback_embed）开关状态：无 Ollama 时语义召回靠它兜底。"""
     state = _ollama_state_read()
+    # 只探一次 11434：serving 与 model_ready 共用同一次结果（见 _ollama_probe）
+    serving, models = _ollama_probe()
     st = {
         "ok": True,
         "installed": _ollama_exe() is not None,
-        "serving": _ollama_serving(),
-        "model_ready": _OLLAMA_MODEL in _ollama_model_names(),
+        "serving": serving,
+        "model_ready": _OLLAMA_MODEL in models,
         "embed_configured": _ollama_embed_configured(),
         "zip_exists": _ollama_zip_path().is_file(),
         "stage": str(state.get("stage") or "idle"),

@@ -26,6 +26,10 @@
 | 人格历史/回滚 | `persona history [--limit N]` → 看来源与依据 → `persona rollback <序号>` |
 | 人格快照/漂移 | `persona snapshot --label "基准"` / `persona snapshots` / `persona restore <名字>` / `persona drift [--days 7] [--json]` |
 | 人格自检 | `persona check [--json]`（校验 traits 溯源结构/数值越界/history 溯源；FAIL 退出码 1） |
+| 画像归纳 | `persona suggest [list\|scan\|adopt <序号>\|discard <序号>]`（从最近记忆归纳候选，采纳时写证据链） |
+| 人格审计链 | `persona audit [--days 30] [--json]`（时间线回看谁改了什么、证据是哪条记忆） |
+| 变动已读 | `persona viewed`（把「先生效后告知」的未读人格变动标为已读） |
+| 遗忘纠正 | `memory boost <记忆id>`（恢复被遗忘/低稳定度的记忆，稳定度×1.5） |
 | 人格编辑 | `persona set traits.幽默=70`（逐字段改，写进历史可回滚） |
 | 初识 | `persona interview [--name ... --traits ...\|--unsure]` → `persona self [--name ... --traits ... --likes ... --dislikes ... --habits ...]` |
 | 理智/好奇 | `mind [state\|weigh "事" --benefit 7 --cost 3\|tune --curiosity +5 --reason -3 --why "..."]` |
@@ -62,7 +66,35 @@
 | 列表 / 忘记 | `list` / `forget <id>` |
 | 配置 | `config show` / `config set <key> <value>` / `config unset <key>` |
 | 记忆冲突检查 | `detect-conflicts [--json] [--limit 50]` |
+| 聊天平台通道 | `channel remember "内容" --channel qq --group 群号 --user qq:10001 [--kind fact] [--importance 7] [--tags a,b] [--source user\|ai\|dream] [--layer hippo\|cortex]` |
+| 通道召回 | `channel recall "关键词" --channel qq --group 群号 --user qq:10001 [--k 8] [--json] [--asker 发起者 --target 目标]` |
+| 跨群画像 | `channel user qq:10001 [--k 20] [--asker 发起者]`（asker == 目标 → 全量；否则要求目标已 grant） |
+| 群友隐私 | `channel privacy grant\|revoke\|status\|capture-on\|capture-off --user qq:10001 [--expires-days N]`（只能操作自己的授权；群内 grant 只对该群可见，`--expires-days` 0/不填为永久，到期自动失效） |
+| 主人白名单 | `channel owner add\|remove\|list [qq:10001] [--caller 身份]`（owner add/remove 仅限本机或已有 owner；通道内必须带 `--caller` 且其为 owner） |
 | 可视化面板 | `serve` → http://127.0.0.1:8765 |
+
+### channel 召回的可见性规则（通道三元组）
+
+`--channel/--group/--user` 任一给出即进入通道上下文，召回范围被物理过滤：
+
+- 其他群 / 其他 channel 的记忆**不可见**（即使已授权）；
+- 同群记忆：本人的全可见；他人的需其 `consent`（群内授权只对该群，`*` 全域授权在所有群生效）；
+- `user` 为空的全局/群公共记忆：可见；
+- 私聊（`--group` 留空）：本人记忆 + 全局记忆可见。
+
+### 退出码
+
+| 码 | 含义 |
+|---|---|
+| 0 | 正常 |
+| 2 | 未初始化 / 命令错误（startup 只认 `--query`） |
+| 3 | 鉴权拒绝（通道上下文执行 owner/forget/dream/backup/restore/sync 等敏感命令，非 owner/admin） |
+| 4 | 隐私拒绝（`recall --asker/--target` 或 `channel user --asker`：目标未 grant；消息不回显目标完整标识） |
+| 10 | 只读降级 |
+
+### 自动写回（AstrBot 桥接 `auto_capture`）
+
+默认**关闭**。开启后群友消息写回 `channel remember --source user`（用户原话立即取代旧说法），但有三道闸：敏感词拦截 → 用户 consent 门控（`lingshu 拒绝` 即停）→ 节流。详见[插件 README](../scripts/astrbot_plugin_lingshu/README.md)。
 
 ## 可视化面板
 
@@ -107,3 +139,19 @@ Windows 可双击 `<本技能目录>/start-panel.bat` 启动。
 
 **Q：哪些场景别用灵枢？**
 纯一次性聊天、只想要临时算力不需要记忆、宿主不支持执行脚本、用户明确只想要"记一句话"但不想建库——这些场合灵枢是负担，直接不用。
+
+**Q：dsh-market 更新 lingshu-skill 报 `connection to github.com timed out after 5000ms`？**
+宿主在安装前会自己预检 GitHub 连通性，5 秒连不上就放弃——通常网络本身是通的（`git ls-remote https://github.com/Q2667671398/lingshu-skill.git` 能返回），只是宿主阈值太短。两招任选：① 调大宿主 cordis.yml 里的 `githubConnectionTimeoutMs`（建议 15000–30000）；② v2.85 起 `index.json` 的 `repo` 已指向 gitee 主仓库，更新走 gitee 不再碰 GitHub 预检。
+
+**Q：dsh-market 更新报「profile 声明了这些插件，但它们没有安装： dsh-lingshu-startup, dsh-lingshu-cron」？**
+上次更新时 DSH 还在运行、占用着技能目录文件，pnpm 换不动目录导致安装残缺，市场为防下次启动卡死把这两个 cordis 插件从 profile 移除了（目录还在）。修法：**完全退出 DSH**（不是最小化，确保进程全退）→ 在市场里重新安装 lingshu-skill → 启动 DSH 验证。记忆数据在 `~/.brain-memory/`，重装不会丢。
+
+**Q：退出 DSH 重装后仍报同样警告（残留旧 profile 条目）？**
+这两个插件在旧版（≤v2.7x）是独立 tgz 子包，装过会把 `dsh-lingshu-startup` / `dsh-lingshu-cron` 写进 profile 的 `dsh.profile.bundles`；新版根包已内置挂载它们，商店只装根包，旧条目成了"幽灵声明"永远等不到安装。**删掉残留条目即可**：
+1. 完全退出 DSH；
+2. 编辑 `%USERPROFILE%\.dsh\profile\package.json`（或宿主实际 profile 目录），在 `dsh.profile.bundles` 数组里删除 `"dsh-lingshu-startup"` 和 `"dsh-lingshu-cron"` 两行（保留其他条目）；
+3. 同时在 pnpm store/profile 的 `node_modules` 下若还有 `dsh-lingshu-startup` / `dsh-lingshu-cron` 残留目录，一并删掉；
+4. 重启 DSH → dsh-market 更新 lingshu-skill。新版只声明根包，不会再出现这两个名字。
+
+**Q：dsh-market 报 `installation rejected: Cannot validate installed package lingshu-skill: SyntaxError: Unexpected token '﻿'`？**
+根 package.json 文件头带 UTF-8 BOM，DSH 严格 JSON.parse 读不了。v2.87 起已去除，更新到 ≥v2.87 即可；若手头是旧版，用记事本「另存为 UTF-8（无 BOM）」重存 package.json 也能临时解决。

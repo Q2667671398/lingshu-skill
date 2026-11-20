@@ -1068,13 +1068,18 @@ function renderAiChanges(ov){
     : `<div class="sub">近 7 天 AI 没有主动改过人格。做梦微调 traits 会先在漂移账本累积，过门限才会真正改动。</div>`;
   // 未读高亮常驻：不在这里标已读，由 markAiChangesViewed()（切走/刷新时）统一处理
 }
-// 标已读：切走页签或刷新/关闭页面时调用。navigator.sendBeacon 保证关页也不丢请求。
+// 标已读：切走页签或刷新/关闭页面时调用。
+// 注意不能用 navigator.sendBeacon——它无法带 Authorization 头，服务端一律 403，
+// 控制台每次切页都刷一条红字，重复回退请求还会打两次。用 fetch + keepalive
+// 取得同样的"关页也不丢请求"语义，同时补上 token。
 function markAiChangesViewed(){
   try {
-    navigator.sendBeacon("/api/persona/changes-viewed", new Blob(["{}"], {type: "application/json"}));
-  } catch (_) {
-    api("/api/persona/changes-viewed", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}).catch(() => {});
-  }
+    fetch("/api/persona/changes-viewed", {
+      method: "POST", keepalive: true,
+      headers: {"Content-Type": "application/json", Authorization: "Bearer " + PANEL_TOKEN},
+      body: "{}"
+    }).catch(() => {});
+  } catch (_) { /* 老浏览器不支持 keepalive：放弃上报，不影响页面 */ }
 }
 // 刷新/关闭页面：只要人格页有未读高亮，离开时就标已读
 window.addEventListener("beforeunload", () => {
@@ -1370,7 +1375,7 @@ function renderSkills(out){
   const roots = S.ws.skill_roots || [];
   const rootBox = $("skill-root-list");
   if (rootBox) {
-    rootBox.innerHTML = roots.length ? roots.map(r => `<div class="mem" style="padding:8px 12px">
+    const rootRow = r => `<div class="mem" style="padding:8px 12px">
       <div class="mem-body w100">
         <div class="row" style="gap:8px;align-items:center">
           <span class="badge ${r.custom ? "archive" : "hippo"}">${esc(r.label)}</span>
@@ -1381,8 +1386,19 @@ function renderSkills(out){
           ${r.custom ? `<button class="iconbtn" title="移除此自定义目录" data-rootrm="${esc(r.path)}" style="margin-left:auto">✕</button>` : ""}
         </div>
       </div>
-    </div>`).join("")
-      : `<div class="sub">未发现任何技能目录。</div>`;
+    </div>`;
+    // 宿主越多，"目录不存在"的行越多（常见 10+ 行红字）。只把**真的有技能**的目录和
+    // 用户自己加的目录平铺展示，剩下的收进一行折叠摘要——不删除、不影响重新扫描。
+    const live = roots.filter(r => r.exists || r.custom);
+    const missing = roots.filter(r => !r.exists && !r.custom);
+    rootBox.innerHTML = !roots.length ? `<div class="sub">未发现任何技能目录。</div>`
+      : (live.length ? live.map(rootRow).join("")
+         : `<div class="sub">还没有任何宿主技能目录存在。</div>`)
+        + (missing.length
+          ? `<details class="root-more"><summary class="sub">另有 ${missing.length} 个宿主技能目录不存在（点开查看路径）</summary>
+               <div style="margin-top:6px">${missing.map(rootRow).join("")}</div>
+             </details>`
+          : "");
   }
   // 跨宿主扫描到的技能（只读，可直接用/借用；灵枢本体自身除外）
   const scan = (S.ws.skill_scan || []).filter(s => !s.self);
@@ -1603,7 +1619,12 @@ function memDay(m){
 }
 function renderMemRows(rows){
   if (!rows.length) {
-    $("mem-list").innerHTML = `<div class="empty">没有匹配的记忆。放宽筛选，或者按回车做一次模糊回忆。</div>`;
+    // 空库时上面的分层条已经在说「记忆库还是空的」，这里再摆一个虚线空态就是两个空盒子叠着；
+    // 只有"库里有记忆、只是筛选没命中"才需要提示放宽筛选。
+    const total = Number((S.ov && S.ov.stats && S.ov.stats.total) || 0);
+    $("mem-list").innerHTML = total > 0
+      ? `<div class="empty">没有匹配的记忆。放宽筛选，或者按回车做一次模糊回忆。</div>` : "";
+    bulkUpdateCount();
     return;
   }
   if (S.memView !== "timeline") {
@@ -1729,6 +1750,10 @@ function switchTab(tab){
   if (S.tab !== "persona" && document.querySelector("#ai-changes tr.unread")) markAiChangesViewed();
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + tab));
+  // 页签写进地址栏：刷新/收藏回到同一页，发给别人也直接落到这一页（replaceState 不污染后退键）
+  if (location.hash.slice(1) !== S.tab) {
+    try { history.replaceState(null, "", "#" + S.tab); } catch (_) { /* file:// 等环境不支持时忽略 */ }
+  }
   const titles = {
     overview: ["概览", "它现在记得什么，是什么状态"],
     memories: ["记忆", "分层存储与模糊回忆"],
@@ -1754,7 +1779,9 @@ function switchTab(tab){
   if (tab === "graph") loadGraph(Number($("graph-limit").value || 300));
   else { stopPhysics(); stopGraphAnim(); }   // 离开联想页即停模拟，不空耗 CPU
   if (tab === "logs") loadLogs();
-  if (tab === "diag") loadDiagnostics();
+  // 诊断页有两张随时间变化的卡：体检结果 + 数据目录位置，进页面时一起刷（以前只刷体检，
+  // 数据目录卡靠一段 class 判断写错的 MutationObserver，永远停在「加载中…」）
+  if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); }
   if (tab === "persona") { loadSnapshots(); loadPersonaSuggest(); }  // 切到人格页时顺手刷快照列表与画像归纳建议
   if (["knowledge", "notes", "skills", "growth"].includes(tab)) {
     if (S.ws) { renderKnowledge(); renderNotes(); renderSkills(); renderDshPlugins(); renderGrowth(); renderOnboarding(); }
@@ -1795,7 +1822,7 @@ function renderExtOllama(st){
   } else if (st.installed && st.serving && st.model_ready) {
     body = `<div style="margin-top:10px;color:#38a169;font-size:13px">✓ 已就绪：语义召回已启用</div>`;
   } else if (!st.installed && st.fallback_enabled) {
-    body = `<div style="margin-top:10px;font-size:13px;color:var(--sub,#888)">未安装 Ollama：语义召回由纯 Python 降级向量兜底（无需安装即可用）；安装 Ollama 可获得真模型向量，召回更准。</div>`;
+    body = `<div style="margin-top:10px;font-size:13px;color:var(--muted)">未安装 Ollama：语义召回由纯 Python 降级向量兜底（无需安装即可用）；安装 Ollama 可获得真模型向量，召回更准。</div>`;
   }
   // 按钮：v2.99 一键化——不管装没装，统一一个「一键开启向量记忆」按钮，
   // 服务端 setup 端点自己判断「已装跳过/未装先下载→解压→起服务→拉模型→写配置」
@@ -1803,7 +1830,8 @@ function renderExtOllama(st){
     if (st.semantic_ready && st.embed_configured) {
       // 全就绪：不需要按钮（右上角徽章已表达状态）
     } else {
-      btn = `<button class="primary" id="btn-ollama-setup">一键开启向量记忆</button>`;
+      // 主行动按钮统一 .btn 样式（.primary 在样式表里没有定义，会退化成浏览器默认灰按钮）
+      btn = `<button class="btn" id="btn-ollama-setup">一键开启向量记忆</button>`;
     }
   }
   box.innerHTML = `
@@ -2421,6 +2449,15 @@ function bulkUpdateCount(){
     all.checked = total > 0 && n === total;
     all.indeterminate = n > 0 && n < total;
   }
+  // 没选中时不摆一整排危险按钮：只留「全选 + 提示」，选中后展开全部操作。
+  // 空库（一条记忆都没有）连整条都收起来，别占一屏空白。
+  const acts = $("bulk-acts"), hint = $("bulk-hint"), bar = $("bulk-bar");
+  if (acts) acts.classList.toggle("hidden", n === 0);
+  if (hint) hint.classList.toggle("hidden", n > 0);
+  if (bar) {
+    const st = (S.ov && S.ov.stats) || {};
+    bar.classList.toggle("hidden", !(Number(st.total) > 0));
+  }
 }
 $("mem-list").addEventListener("change", e => {
   if (e.target.classList && e.target.classList.contains("mem-check")) bulkUpdateCount();
@@ -2625,10 +2662,8 @@ async function migrateHome(){
 }
 $("btn-home-refresh") && $("btn-home-refresh").addEventListener("click", loadHomeInfo);
 $("btn-home-migrate") && $("btn-home-migrate").addEventListener("click", migrateHome);
-// 进诊断页时顺带刷新数据目录卡
-if ($("view-diag")) new MutationObserver(() => {
-  if ($("view-diag").classList.contains("on")) loadHomeInfo();
-}).observe($("view-diag"), { attributes: true, attributeFilter: ["class"] });
+// 进诊断页由 switchTab 统一触发（以前这里观察的是 class "on"，而页签用的是 "active"，
+// 条件永远不成立 → 数据目录卡一直停在「加载中…」）
 
 // ---- 淡忘可逆（fold / unfold / revive）+ #34 物理删除：事件委托到记忆卡片按钮
 // 冷却期口径与 memory._PURGE_COOLDOWN_DAYS 保持一致：dust 满 7 天才显示 🗑 按钮
@@ -3222,7 +3257,21 @@ setInterval(async () => {
 }, 30000);
 let pollFailCount = 0;   // 后台轮询连续失败计数（离线横幅用）
 
-load();
+// 地址栏 #页签 深链：首屏数据到位后再切（renderMemoryList 依赖 S.ov，早切会渲染空列表）
+const PANEL_TAB_IDS = ["overview", "memories", "persona", "knowledge", "notes", "skills",
+                       "emotion", "graph", "growth", "dream", "logs", "diag", "store", "ext"];
+function tabFromHash(){
+  const t = (location.hash || "").slice(1);
+  return PANEL_TAB_IDS.includes(t) ? t : "overview";
+}
+load().then(() => {
+  const t = tabFromHash();
+  if (t !== "overview") switchTab(t);
+});
+window.addEventListener("hashchange", () => {
+  const t = tabFromHash();
+  if (t !== S.tab) switchTab(t);
+});
 
 // ---- 灵枢本体更新：检测只在面板服务启动时后台做一次（结果写缓存），
 // 这里刷新面板只读缓存点亮红点；右上角按钮手动查才重新联网检测

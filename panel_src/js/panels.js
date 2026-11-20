@@ -33,6 +33,12 @@
   }
   function close(){ const ov = $id("pm-overlay"); if (ov) ov.classList.add("hidden"); }
   $id("btn-panels").onclick = open;
+  // Esc 关闭：其它浮层（弹窗/命令面板）都认 Esc，这里不认会显得半截
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    const ov = $id("pm-overlay");
+    if (ov && !ov.classList.contains("hidden")) close();
+  });
 
   async function ppost(action, extra){
     return api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},

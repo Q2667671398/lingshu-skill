@@ -3036,6 +3036,133 @@ def dsh_lingshu_copy_state() -> list:
     return out
 
 
+# ---------------------------------------------------------------- 发布漂移自检
+
+def _ver_tuple(v: str) -> tuple:
+    """版本归一成可比较元组：3.46 / 3.46.0 / 3.44.1 → (3,46) / (3,46) / (3,44,1)。
+
+    末尾的 0 去掉（3.46.0 与 3.46 是同一版本），非数字段直接丢（预发布后缀不参与比较）。
+    读不出数字 → 空元组，调用方按"未知"处理，绝不猜。
+    """
+    parts = [p for p in re.split(r"[.\-+]", str(v or "").strip()) if p.isdigit()]
+    while len(parts) > 2 and parts[-1] == "0":
+        parts.pop()
+    return tuple(int(p) for p in parts)
+
+
+def _copy_version(d: Path) -> str:
+    """读一个灵枢副本的版本：优先 SKILL.md 的 version（能力文件的契约），退回 package.json。"""
+    try:
+        m = re.search(r"^version:\s*([0-9][0-9a-zA-Z.\-]*)",
+                      (d / "SKILL.md").read_text(encoding="utf-8-sig"), re.MULTILINE)
+        if m:
+            return m.group(1)
+    except (OSError, UnicodeDecodeError):
+        pass
+    try:
+        return str(json.loads((d / "package.json").read_text(encoding="utf-8-sig"))
+                   .get("version", "") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def installed_copies() -> list:
+    """本机所有"已安装的灵枢副本"（不含当前源码目录）。
+
+    两类来源：
+      - DSH profile 的插件副本（node_modules/lingshu-skill）——宿主真正加载的那份；
+      - 各全局技能目录里的 lingshu/ 副本——`skill install` 拷出去的那份。
+    空壳/没装的状态跳过（那是"副本残缺"，doctor 的 dsh-repair 负责，不在这里重复判）。
+    返回 [{kind, label, path, version}]。
+    """
+    out = []
+    try:
+        for st in dsh_lingshu_copy_state():
+            if st.get("state") in (None, "empty", "not_installed"):
+                continue
+            d = Path(st.get("path") or "")
+            out.append({
+                "kind": "dsh",
+                "label": f"DSH/{st.get('profile') or '?'}",
+                "path": str(d),
+                "version": _copy_version(d) or str(st.get("version") or ""),
+            })
+    except Exception as exc:  # noqa: BLE001 —— 自检失败降级为"查不到"，不能拖垮 doctor
+        brain.log_event("growth", f"扫描 DSH 副本失败：{exc}", level="warn")
+    try:
+        for label, root in _skill_roots():
+            d = Path(root) / "lingshu"
+            if (d / "SKILL.md").is_file():
+                out.append({"kind": "skill", "label": f"技能/{label}",
+                            "path": str(d), "version": _copy_version(d)})
+    except Exception as exc:  # noqa: BLE001
+        brain.log_event("growth", f"扫描全局技能副本失败：{exc}", level="warn")
+    return out
+
+
+def _upgrade_hint(c: dict) -> str:
+    """按副本种类给"怎么升级"的确切做法——给错命令比不给更糟。"""
+    if c.get("kind") == "dsh":
+        return ("面板「检查更新 → 修复 DSH 副本」或 "
+                "powershell -ExecutionPolicy Bypass -File scripts\\update_dsh_copy.ps1")
+    return 'python scripts/brain.py skill install lingshu --from "<当前目录>" --force --yes'
+
+
+def release_drift() -> dict:
+    """发布漂移自检：**源码版本 vs 本机已安装副本**（doctor 用）。
+
+    为什么要有这一项：v3.45 写好的护栏/空库熔断在本机根本没生效，装着的还是 v3.44——
+    代码里有、运行时没有，却一路没人发现，因为 doctor 只查"包内自洽"（SKILL.md /
+    package.json / metadata.yaml 三处互相对账），从不问"这台机器上跑的那份是哪一版"。
+
+    返回 {source_version, copies, stale, ahead, unknown, drift, message}；
+    doctor 只认 message 与 drift，其余给 --json 用。
+    """
+    src_ver = _copy_version(_panel_root()) or "未知"
+    src_t = _ver_tuple(src_ver)
+    copies = installed_copies()
+    stale, ahead, unknown = [], [], []
+    for c in copies:
+        t = _ver_tuple(c.get("version"))
+        if not t or not src_t:
+            c["status"] = "unknown"
+            unknown.append(c)
+        elif t < src_t:
+            c["status"] = "stale"
+            stale.append(c)
+        elif t > src_t:
+            c["status"] = "ahead"
+            ahead.append(c)
+        else:
+            c["status"] = "current"
+    if not copies:
+        msg = "未检测到已安装副本（这台机器只跑源码）"
+    elif stale:
+        c = stale[0]
+        more = f" 等 {len(stale)} 个" if len(stale) > 1 else ""
+        msg = (f"{c['label']} 装着 v{c['version']}、源码 v{src_ver}{more}——运行时用的是旧版；"
+               f"升级：{_upgrade_hint(c)}")
+    elif ahead:
+        c = ahead[0]
+        msg = (f"{c['label']} 装着 v{c['version']}，比源码 v{src_ver} 还新"
+               f"（当前这份检出是旧的？确认一下在哪跑）")
+    elif unknown:
+        c = unknown[0]
+        msg = (f"{c['label']} 版本读不出来（副本可能残缺）——"
+               f"面板「检查更新 → 修复 DSH 副本」可补回交付物")
+    else:
+        msg = f"{len(copies)} 个已安装副本均为 v{src_ver}"
+    return {
+        "source_version": src_ver,
+        "copies": copies,
+        "stale": stale,
+        "ahead": ahead,
+        "unknown": unknown,
+        "drift": bool(stale or ahead or unknown),
+        "message": msg,
+    }
+
+
 def repair_dsh_lingshu_copy(profile_name: str | None = None,
                             force: bool = False) -> dict:
     """修复 DSH 里残缺的 lingshu-skill 副本（空壳目录 + 被移除的声明）。
