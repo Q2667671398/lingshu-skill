@@ -110,8 +110,13 @@ def test_read_logs_merges_rotated():
         rows = core.read_logs(limit=10)
         msgs = [r["msg"] for r in rows]
         assert "new" in msgs and "old1" in msgs and "old2" in msgs
-        # 最新在前
-        assert msgs[0] == "new"
+        # 最新在前 —— 只比较这三条自己人的相对顺序，别断言"整个结果的第一行"。
+        # 原因（2026-11-20 实测偶发失败）：别的测试起的 embed 后台线程会在任意时刻
+        # 往 core.LOG_FILE 写一条 warn（"embedding 回写失败…"）；本测试刚把 LOG_FILE
+        # 重定向到临时目录，那行就会插在 new 前面 → msgs[0] 偶发不是 "new"。
+        # 这是测试隔离问题，不是 read_logs 的顺序错误：它只保证「越靠前越新」。
+        own = [m for m in msgs if m in ("new", "old1", "old2")]
+        assert own[:3] == ["new", "old2", "old1"], own[:5]
 
 
 # ---------------------------------------------------------------- #5 metrics.jsonl

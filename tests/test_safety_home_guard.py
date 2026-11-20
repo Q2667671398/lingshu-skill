@@ -67,9 +67,20 @@ class _raises:
 
 # ------------------------------------------------------------------ 危险目录判定
 
+def _danger_root() -> Path:
+    """当前平台上"绝对不能当记忆库"的根路径。
+
+    Windows 用盘符根；POSIX 用 `/`。**不能硬写 `Path("C:\\\\")`**：在 Linux 上它只是
+    一个名叫 `C:\` 的相对目录（`Path("C:\\").parent != Path("C:\\")`），判定当然不危险——
+    CI 就是跑在 ubuntu 上的，这类断言在那里必挂（v3.47 的 CI 红就是这个）。
+    """
+    return Path("C:\\") if sys.platform == "win32" else Path("/")
+
+
 def test_drive_root_is_dangerous():
-    assert safety.dangerous_reason(Path("C:\\"))
-    assert safety.dangerous_reason(Path("D:\\"))
+    assert safety.dangerous_reason(_danger_root())
+    if sys.platform == "win32":
+        assert safety.dangerous_reason(Path("D:\\"))
 
 
 def test_user_home_itself_is_dangerous():
@@ -94,7 +105,7 @@ def test_assert_safe_home_raises():
     old = os.environ.pop("BRAIN_MEMORY_ALLOW_UNSAFE_HOME", None)
     try:
         with _raises(safety.UnsafeHomeError):
-            safety.assert_safe_home(Path("C:\\"), action="初始化")
+            safety.assert_safe_home(_danger_root(), action="初始化")
         safety.assert_safe_home(_tmp())  # 正常目录不抛
     finally:
         if old is not None:
@@ -105,7 +116,7 @@ def test_escape_hatch_allows_but_warns():
     old = os.environ.get("BRAIN_MEMORY_ALLOW_UNSAFE_HOME")
     os.environ["BRAIN_MEMORY_ALLOW_UNSAFE_HOME"] = "1"
     try:
-        safety.assert_safe_home(Path("C:\\"), action="初始化")  # 不抛
+        safety.assert_safe_home(_danger_root(), action="初始化")  # 不抛
     finally:
         if old is None:
             os.environ.pop("BRAIN_MEMORY_ALLOW_UNSAFE_HOME", None)

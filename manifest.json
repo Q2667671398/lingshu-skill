@@ -1,12 +1,12 @@
 {
-  "version": "3.47",
+  "version": "3.48",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "e7eb9156af1681d5d97890150ab1556e391f616a49480104e1d2ef045c41881a",
-      "size": 207283
+      "sha256": "043079d33d33e07809bbf3e51387039433e2129755c17ec4084b6437c8499807",
+      "size": 210146
     },
     "README.md": {
-      "sha256": "696c066a2f7ce993877a6b48ba1ac4dc59ab196434bc94f6d34d734ff74fc94a",
+      "sha256": "93ba8c637940b8a46f9219acea23860f2a7c3a8a8df9207085dc4b35e8ed26be",
       "size": 62363
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "37df7e6d68e1f2abf8e0eab97d2b1df15d54e07312bf44cc8c8fd99aad103cab",
+      "sha256": "ef2c90dbce8a648b6bd176a7505ae87741e93400e7c2d4c409fa0f9e9c8168a0",
       "size": 34497
     },
     "assets/panel.html": {
@@ -94,15 +94,19 @@
       "size": 4017
     },
     "docs/灵枢改进方案-20261120.md": {
-      "sha256": "80536052d1d6a766f8c03bb13d6040074f648053dba655f6b16d5e01e2af72af",
-      "size": 24769
+      "sha256": "ebd8c97489319d3dc7632ac47effc70a494ffd5f9dc2f7e33a679656c3abc62c",
+      "size": 25043
+    },
+    "docs/进展与待办.md": {
+      "sha256": "c2a46d833f7bc60c056da3e0f6d2188c7b62ab3d80d60105dc2401b8e9e8ba05",
+      "size": 7896
     },
     "index.js": {
       "sha256": "8ff6557e0dc342df7a5d9c1f5e357e9ea9858246381817ef2285c2b7f9115ed5",
       "size": 5217
     },
     "package.json": {
-      "sha256": "873ac7646c4a51586aa292825b55206a3e2f72067d4c32e98a28c0f14a8650f4",
+      "sha256": "082e153c8cf0bd87e9d73195b89a46ff5a1a9a58d39536e2a37d11b42a68f857",
       "size": 1032
     },
     "scripts/assembler.py": {
@@ -178,8 +182,8 @@
       "size": 4523
     },
     "scripts/make_manifest.py": {
-      "sha256": "346ebceb5cc00d448f4309d6701b7684e8b09f347d09964a3179eb88904db7eb",
-      "size": 9504
+      "sha256": "cc432fa70e4afe64747ed50c6b66b93aded3ab87fb2896bc22ea450a434de853",
+      "size": 11359
     },
     "scripts/make_plugin_zip.py": {
       "sha256": "f6752d29179dd0a371d56b01656e02b1d5c956fff7f7b4d64b23eaa8006441a3",

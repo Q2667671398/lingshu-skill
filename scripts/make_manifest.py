@@ -114,6 +114,31 @@ def _tracked_files(root: Path) -> set[str] | None:
     return {p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p}
 
 
+def _untracked_candidates(root: Path = ROOT) -> list[str]:
+    """扫描范围内、**还没 git add**、也没被 .gitignore 忽略的文件。
+
+    清单只收被跟踪文件（见 _tracked_files），所以"新建文件忘了 git add"会让清单
+    静默少收一条：本地 --check 绿、CI 干净检出后报"清单与工作区不一致"。v3.45 就
+    是这么红的；v3.48 新增 docs 文件时又差点重演（差一步就把 64 项的清单带上去）。
+    这里把这类文件显式找出来：生成时警告，--check 时直接判红。
+    """
+    try:
+        r = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--others",
+                            "--exclude-standard"], capture_output=True)
+    except OSError:
+        return []
+    if r.returncode != 0:
+        return []
+    out = []
+    for name in sorted(p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p):
+        if name not in SCAN_FILES and not any(name.startswith(d + "/") for d in SCAN_DIRS):
+            continue
+        if _excluded(name, Path(name).name):
+            continue
+        out.append(name)
+    return out
+
+
 def scan_files(root: Path = ROOT) -> dict:
     """返回 {相对路径(posix): {"sha256":…, "size":…}}，键已排序。"""
     files: dict[str, dict] = {}
@@ -163,6 +188,12 @@ def check(root: Path = ROOT) -> int:
         print(f"[manifest] manifest.json 与工作区不一致（如 {drift}）。"
               "重新运行 python scripts/make_manifest.py。", file=sys.stderr)
         return 1
+    # 新建文件忘了 git add：清单会静默少收（本地绿、CI 红）。这里直接判红，别等 CI。
+    loose = _untracked_candidates(root)
+    if loose:
+        print(f"[manifest] 拒绝：{len(loose)} 个发布范围内的文件还没 git add，"
+              f"清单必然漏收（如 {loose[:3]}）。先 git add 再重跑本检查。", file=sys.stderr)
+        return 1
     # 覆盖面自检（#73：逐文件比对）：发布目录里每个"应发布"的磁盘文件都必须在
     # 清单里；反向清单里也不该有磁盘上不存在的 key。整目录漏扫（如 cordis-plugin
     # 没进 SCAN_DIRS）会让该目录全部文件报"漏"，部分漏（10 进 1）也能检出。
@@ -204,6 +235,11 @@ def build(root: Path = ROOT) -> int:
     out.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                    encoding="utf-8")
     print(f"[manifest] 已生成 {out}：v{data['version']}，{len(data['files'])} 个文件")
+    loose = _untracked_candidates(root)
+    if loose:
+        print(f"[manifest] 警告：{len(loose)} 个发布范围内的文件还没 git add，"
+              f"本次清单没收它们（{loose[:3]}{' …' if len(loose) > 3 else ''}）。"
+              "git add 之后重新生成一次。", file=sys.stderr)
     return 0
 
 

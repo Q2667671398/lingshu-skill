@@ -38,6 +38,8 @@ jobs:
 
       # 隐私与功能单测：逐个直接运行（纯标准库，无 pytest 依赖）
       # 隔离 HOME：BRAIN_MEMORY_HOME/LINGSHU_GLOBAL_SKILLS 指向临时目录，不碰真实记忆库
+      # 失败时额外打一行 ::error（带文件名）——这样 check-runs/annotations 里能直接看到
+      # 是哪个测试挂的；否则公开仓库只留一句 "Process completed with exit code 1"。
       - name: tests
         env:
           BRAIN_MEMORY_HOME: ${{ runner.temp }}/ls-ci-home
@@ -46,10 +48,16 @@ jobs:
         run: |
           set -e
           mkdir -p "$BRAIN_MEMORY_HOME" "$LINGSHU_GLOBAL_SKILLS"
+          echo "python: $(python -V 2>&1) · $(uname -a)"
           fail=0
           for t in tests/test_*.py; do
             echo "::group::$t"
-            python "$t" || fail=1
+            if python "$t"; then
+              :
+            else
+              echo "::error file=$t,title=测试失败::$(basename "$t") 在 CI（$(uname -s)）上失败；本地绿不等于 CI 绿"
+              fail=1
+            fi
             echo "::endgroup::"
           done
           exit $fail

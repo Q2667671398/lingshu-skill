@@ -1,5 +1,16 @@
 # 更新日志
 
+## v3.48（2026-11-20）
+
+> 主题：**CI 在 Linux 上的真红**。v3.47 推上去之后 `ci / consistency` 挂在 `tests` 这一步，前五步（版本 / 清单 / 副本 / 校验和 / 编译）全绿——是一次只在 ubuntu 上暴露的测试缺陷，不是发布物的问题。
+
+- **`tests/test_safety_home_guard.py` 的平台假设错了**：它把 `Path("C:\\")` / `Path("D:\\")` 当"危险目录"来断言，可 Linux 上那只是个名叫 `C:\` 的相对目录，`safety._is_drive_root()` 判它当然不危险 → 两条断言必挂（`test_drive_root_is_dangerous` / `test_assert_safe_home_raises`），而 CI 正好跑在 ubuntu。改为按平台取根：Windows 用盘符根、POSIX 用 `/`，两者都必须被判定为危险。这个测试是 v3.45 新增的，那一次 CI 死在更早的 `manifest --check` 上，所以从没真正跑过 Linux。
+- **CI 失败现在能一眼定位**：`tests` 步骤失败时额外打 `::error file=<测试文件>::`，公开仓库的 check-runs annotations 里直接看得到是哪个测试挂的（此前只剩一句 "Process completed with exit code 1"，公开 API 拿日志还要鉴权，等于查不动）。日志头部同时打印 python 与内核版本，跨平台问题时能立刻对上。
+- 顺带确认：v3.45 那次 CI 红是 `manifest --check`（清单过期），已被 v3.46 的清单重建修掉；v3.47 的五项一致性检查在 ubuntu 上是绿的。
+- **文档：新增 `docs/进展与待办.md` 作为唯一活台账**（已完成 / 待办 / 已知问题 / 验证入口四节，逐条标版本与验证方式）；`docs/灵枢改进方案-20261120.md` 顶部加了状态说明——它是当日体检快照，不再当进度表用。
+- **`make_manifest.py` 补上"未跟踪文件"守卫**（改进文档 §二·问题一的推荐做法二）：清单只收 git 已跟踪的文件，新建文件忘了 `git add` 时清单会静默少收一条——本地 `--check` 绿、CI 干净检出必红。v3.45 就是这么红的，v3.48 加 `docs/` 新文件时又差点重演（差一步就把 64 项清单带上去了）。现在生成时警告、`--check` 直接判红并列出文件名；被 `.gitignore` 忽略的草稿与仓库根的本地笔记不受影响。随附 `tests/test_manifest_untracked_guard.py`（7 条断言）。
+- **修掉一个偶发测试（约 1/8 概率）**：`test_v302_batch2.test_read_logs_merges_rotated` 断言"整个结果的第一行是 new"，但别的测试起的 embed 后台线程会在任意时刻往 `core.LOG_FILE` 写一条 `warn`（"embedding 回写失败…"），而本测试刚把 `LOG_FILE` 重定向到临时目录，那行就插到 new 前面。改为只断言三条自有标记的相对顺序（新→旧），并在注释里写明这是测试隔离问题、不是 `read_logs` 排序错误。修前 8 轮复现 1 次，修后 12 轮 0 次。
+
 ## v3.47（2026-11-20）
 
 > 主题：**面板 UI 收尾 + 发布漂移自检**。v3.46 那批（安全默认值 / 审核闭环 / XSS）是独立的一批，这里不混写；本批逐条都在本机跑过真实浏览器与真实解释器。
@@ -18,13 +29,13 @@
 - **`doctor` 新增「发布漂移」自检**（对应改进文档结构性债第 4 条）：`growth.release_drift()` 把**本机已安装副本的版本**（DSH 各 profile 的 `node_modules/lingshu-skill` + 各宿主全局技能目录里的 `lingshu/`）与当前源码版本对账，落后/超前/版本读不出都报 WARN，并给出**该副本种类对应的**升级命令（DSH 走 `update_dsh_copy.ps1`，全局技能走 `skill install lingshu --from`）。这一项补的正是「v3.45 的护栏写好了、本机跑的却还是 v3.44」那个没人发现的洞——doctor 原先只查包内三处版本自洽，从不问运行时用的是哪一版。随附 `tests/test_release_drift.py`（17 条断言：同版本 / 落后 / 超前 / 未知 / 无副本 / 空壳跳过 / 技能副本 / 扫描异常回落）。
 - **`sync_engine.py` 把文档副本也纳入校验**：AstrBot 插件里随包发 `SKILL.md` / `README` / `CHANGELOG` / `docs/`，但旧版同步只管 `*.py`，实测 `engine/SKILL.md` 还停在 **v2.87**（主仓库 v3.47，差 60 个版本）——AstrBot 用户手里的能力说明书是半年前的，而且没有任何检查会红。现在这 10 份文档与脚本一起按「换行归一化后逐字比较」校验、可一键同步；主仓库删掉的文档，副本同步时一并删除，不给插件留过期页面。随附 `tests/test_engine_sync_docs.py`（13 条断言，含 CRLF/LF 不算漂移、删文档能同步删副本）。`doctor` 的 `engine-sync` 项因此也覆盖了文档。
 - **`panel_build.py --check` 不再"检查时顺手改文件"，也不再被行尾骗红**：以前它会先 `build()`（写盘）再比对字节，所以一次 `--check` 就把产物重写一遍；而且比较是裸字节，Windows 上 `core.autocrlf` 把源码写成 CRLF、产物是 LF 时会假红（实测在 `git checkout` 之后反复报"源码与产物不同步"，内容其实一字不差）。现在检查走 `build(out=None)` 纯内存重建，比较按「去 BOM + CRLF→LF」归一，与 manifest / sync_engine / checksums 三个检查器同一口径。
-- 版本口径：v3.46 的改动仍是独立一批；本批只加不取，不改变 v3.46 的任何代码行为。
 - **AstrBot 插件自带的面板现在真能用了**（上一轮列为待决策的 B 方案，用户选定）：
   - `panel_server.py` 从 `sync_engine` 的 `SKIP` 移除，随插件副本发布——它只依赖标准库与同目录模块，`ASSETS` 按 `__file__` 的父父目录解析，天然指向 `engine/assets`，零改码；
   - `assets/panel.html` 纳入同步清单：`panel_build --check` 保证「源码 ↔ 主产物」，`sync_engine --check` 保证「主产物 ↔ 插件副本」，两道闸合起来插件里的面板不会再停在旧代（此前那份是 2026-11-05 的一次性快照，缺「运行洞察」浮窗 / Ctrl・⌘K 命令面板 / 批量操作条，与当前版差 +1381 / −107 行）；
   - `_repo_version()` 增加 `SKILL.md` 兜底：插件里没有 `manifest.json`，面板的「代码版本」以前会空着，现在显示 3.47；
   - 实测（真解释器）：从 `engine/scripts/panel_server.py` 启动 → `GET /` 200（标题「灵枢 · 类脑记忆」，一次性 token 正常注入）、`/api/overview` / `/api/panels` / `/api/insights` 全部 200，浏览器截图 0 控制台错误；改之前这条命令直接 `ModuleNotFoundError: No module named 'panel_server'`；
   - 插件 README 开头的「打开面板 → 拓展商店 → 一键导出」流程由此成立，文案未改。
+- 版本口径：v3.46 的改动仍是独立一批；本批只加不取，不改变 v3.46 的任何代码行为。
 
 ## v3.46（2026-11-20）
 
