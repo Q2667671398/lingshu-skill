@@ -71,7 +71,22 @@
 | 跨群画像 | `channel user qq:10001 [--k 20] [--asker 发起者]`（asker == 目标 → 全量；否则要求目标已 grant） |
 | 群友隐私 | `channel privacy grant\|revoke\|status\|capture-on\|capture-off --user qq:10001 [--expires-days N]`（只能操作自己的授权；群内 grant 只对该群可见，`--expires-days` 0/不填为永久，到期自动失效） |
 | 主人白名单 | `channel owner add\|remove\|list [qq:10001] [--caller 身份]`（owner add/remove 仅限本机或已有 owner；通道内必须带 `--caller` 且其为 owner） |
-| 可视化面板 | `serve` → http://127.0.0.1:8765 |
+| 体检 / 水位 | `doctor [--json]`（11 项，见下节）/ `status [--used 68] [--json]`（各层条数 + 距上次做梦/交接 + 阈值，唯一水位数据源） |
+| 上下文账单 | `context-stats [--budget 1400]`（注入包按段算字符/token 占预算比例） |
+| 五段式装配 | `context-plan [--budget ...]`（按预算试排 stable/summary/retrieved/recent/current）/ `summarize`（模型优先，失败回退离线抽取）/ `session-summary [status\|make\|show\|rollback]` |
+| 检索服务（RAG） | `rag init` / `rag ingest <目录或文件>` / `rag search "词"` / `rag stats` / `rag serve`（SQLite + FTS5；`retrieve "词"` 优先走它，失败回退本地召回） |
+| 失败可见化 | `failures [--limit 20] [--json]`（被吞异常按类聚合，每 512KB 自动轮转）/ `ab-stats [--days 7]`（上下文装配 A/B 节省比例） |
+| 注入自检 | `inject-drift`（连渲染几次注入包，看稳定前缀是否稳，prompt 缓存友好度）/ `session-state [--clear]`（会话级注入快照，需 `config session_state_cache=true`） |
+| 解引用 | `deref <记忆id>`（取一条记忆的证据原文；注入时只给要点，全文按需取） |
+| 收尾清点 | `checkpoint [--repo 路径] [--json]`（用 git 证据写一条收尾记忆，幂等）/ `replay`（只读回放人格偏移与拐点）/ `saturation`（traits 距 0/100 余量，≥0.8 告警） |
+| 跨对话摄取 | `ingest-dialogues <文件…> [--dry-run]`（其他会话导出的 JSONL/MD/TXT 增量读成记忆）/ `extract <文件>`（静默即记即存，供调度插件后台调用） |
+| 教训库 | `lesson "教训" [--tags ...]`（一条命令三写：mistake 记忆 + pending 知识 + 笔记）/ `lessons [list\|add\|check]` |
+| 话题栈 | `topic [list\|add "话题"]`（拟人闲聊用，记聊过的话题与权重） |
+| 归档 | `archive [run\|list\|restore <id>]`（冷热归档，原文保留可回捞）/ `auto-archive`（pending 记忆按事实/事件沉淀进知识库或日记） |
+| 联想与向量 | `relink [--dry-run]`（按词面相似度补挂 links）/ `rebuild-embeds`（换模型/缓存坏/缺向量时重建）/ `drift [--days N]`（按近期情感倾向静默微调 mood_score） |
+| 记忆操作 | `memory dust fold\|unfold\|revive <id>`（淡忘可逆）/ `memory diagnose` / `memory fix-links` / `memory freeze\|unfreeze <id>` / `memory purge <id>`（物理删除，需 dust 满 7 天 + 手输 id 前 8 位） |
+| 审计 / 导出 | `auditlog [--limit N]`（敏感写/删/导出的最近记录）/ `export [--out 文件] [--layer ...] [--md]` |
+| 可视化面板 | `serve [--port 8765] [--no-browser]` → http://127.0.0.1:8765（面板细节见下节） |
 
 ### channel 召回的可见性规则（通道三元组）
 
@@ -95,6 +110,27 @@
 ### 自动写回（AstrBot 桥接 `auto_capture`）
 
 默认**关闭**。开启后群友消息写回 `channel remember --source user`（用户原话立即取代旧说法），但有三道闸：敏感词拦截 → 用户 consent 门控（`lingshu 拒绝` 即停）→ 节流。详见[插件 README](../scripts/astrbot_plugin_lingshu/README.md)。
+
+## 体检 doctor：11 项与处置
+
+`python scripts/brain.py doctor [--json]` 一次跑完下列检查。退出码：**0 = 没有 FAIL**、**1 = 只有 WARN**、**2 = 有 FAIL**（CI 用 `rc==2` 判红，warn 允许）。
+不带 `--json` 是给人看的逐行结果；`--json` 给脚本（`{"checks":[{name,status,detail}],"summary":{...}}`）。
+
+| # | 检查 | 在查什么 | 报 WARN/FAIL 时怎么办 |
+|---|---|---|---|
+| 1 | `audit` | 待审记忆 / 待审知识 / AI 改人格 / 疑似冲突 | `review` 过一遍；冲突用 `detect-conflicts` 看明细 |
+| 2 | `persona` | 人格完整性（traits 溯源结构、数值越界、history 溯源） | `persona check` 看具体问题；坏了从 `persona snapshots` 回滚 |
+| 3 | `diagnose` | 记忆库结构（死链、折叠态、来源归属完整率） | `memory fix-links` 清死链；其余按提示逐条处理 |
+| 4 | `writable` | 数据目录可写 | 权限/磁盘问题；只读降级下所有写命令返回码 10 |
+| 5 | `backup-sha` | `backups/` 里的副本与当前库 sha 是否一致 | 不一致通常是正常更新；长期不一致说明备份没跑成 |
+| 6 | `log-anomalies` | `lingshu.log` 里累计 warn/error 条数（≥10 告警） | 先 `logs --level error`；持续增长看 `failures` |
+| 7 | `version-matrix` | `SKILL.md` / `package.json` / 插件 `metadata.yaml` 三处版本互账 | 升版时三处一起改；`metadata.yaml` 是 AstrBot 独立版本线，不参与相等比较 |
+| 8 | `staging` | 被强杀的更新留下的临时目录（>1h 自动清） | 一般自愈；反复出现说明更新过程被杀 |
+| 9 | `writers` | 当前持锁的写入者（多机共享记忆库时能看见另一台） | 是别的会话在写就等；"已退出"仍占锁 → 删对应 `.lock` |
+| 10 | `engine-sync` | `scripts/` 与 AstrBot 插件里的 `engine/` 副本是否一致（33 脚本 + 11 文档，含 `assets/panel.html`） | `python scripts/sync_engine.py` 同步；漏跑会发出旧核心 |
+| 11 | `release-drift` | **本机已安装副本的版本 vs 源码版本**（DSH 各 profile 的 `node_modules/lingshu-skill` + 各宿主全局技能目录里的 `lingshu/`） | 落后 → 面板「检查更新 → 修复 DSH 副本」或 `powershell -ExecutionPolicy Bypass -File scripts\update_dsh_copy.ps1`；全局技能副本落后 → `skill install lingshu --from <当前目录> --force --yes`。**改完记得重启宿主/把插件关一次再开一次**，改文件不会自动重载 |
+
+> 第 11 项是 v3.47 新增的：它要防的就是「代码里已经修好、机器上跑的还是旧版」——v3.45 的护栏写好了，运行时却还是 v3.44，一路没人发现，因为旧版 doctor 只查包内自洽。
 
 ## 可视化面板
 
@@ -120,6 +156,23 @@ python scripts/brain.py serve
 
 Windows 可双击 `<本技能目录>/start-panel.bat` 启动。
 
+**v3.36 之后新增**
+
+- **运行洞察浮窗**（右下角）：版本 / 原文库 / 收尾清点 / 群聊鉴权四张 KPI，加检索库、嵌入、A/B、近 24h 异常；主题（跟随系统/深/浅）与密度（标准/紧凑）也在里面。
+- **浮窗可拖**（v3.47）：按住标题栏拖走，松手记住位置（存 `localStorage`），窗口缩放/收起都会把它夹回视口；双击标题栏收起；窄屏首次打开默认收成一小颗。
+- **页签深链**（v3.47）：地址栏带 `#memories` / `#diag` 这类 hash，刷新、收藏都回到同一页；`Ctrl/⌘K` 命令面板命中记忆时会先把搜索框填好再跳过去。
+- **批量条按需展开**（v3.47）：没勾选时只占一行，勾选后才展开那排批量操作；空库整条收起。
+- **诊断页 · 数据目录**：显示当前库位置与体积、是否只读；填一个空目录点「迁移」可整库复制过去（旧目录原样保留）。
+- **技能页**：跨宿主技能根目录（有不存在的会收进一行折叠摘要）、DSH 插件只读清单、其他宿主技能「▶ 使用 / ⇙ 借用」。
+
+**面板也能从 AstrBot 插件里开**（v3.47 起）：插件包里带了 `engine/scripts/panel_server.py` 与 `engine/assets/panel.html`，所以装完插件可以
+
+```bash
+python <插件目录>/engine/scripts/panel_server.py --no-browser
+```
+
+面板内容与主仓库那份同源（`panel_build --check` 守源码↔产物、`sync_engine --check` 守产物↔插件副本两道闸）。插件里没有 `manifest.json`，版本号改读 `SKILL.md`兜底，不会空着。
+
 ## 故障排查 FAQ
 
 **Q：模型总是忘走 `startup`，怎么办？**
@@ -139,6 +192,15 @@ Windows 可双击 `<本技能目录>/start-panel.bat` 启动。
 
 **Q：哪些场景别用灵枢？**
 纯一次性聊天、只想要临时算力不需要记忆、宿主不支持执行脚本、用户明确只想要"记一句话"但不想建库——这些场合灵枢是负担，直接不用。
+
+**Q：`doctor` 报 `release-drift`「装着 vX、源码 vY」怎么办？**
+说明你机器上跑的不是这份代码。DSH 的副本在 `~/.dsh/profiles/<profile>/node_modules/lingshu-skill`：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\update_dsh_copy.ps1   # robocopy 就地覆盖，不重启 DSH
+```
+
+然后**把插件关一次再开一次**（或重启 DSH）——改文件不会自动重载，不重载就还是在跑旧模块。全局技能目录里的副本用 `skill install lingshu --from <当前目录> --force --yes` 重装。修完再跑一次 `doctor` 确认该项转 PASS。
 
 **Q：dsh-market 更新 lingshu-skill 报 `connection to github.com timed out after 5000ms`？**
 宿主在安装前会自己预检 GitHub 连通性，5 秒连不上就放弃——通常网络本身是通的（`git ls-remote https://github.com/Q2667671398/lingshu-skill.git` 能返回），只是宿主阈值太短。两招任选：① 调大宿主 cordis.yml 里的 `githubConnectionTimeoutMs`（建议 15000–30000）；② v2.85 起 `index.json` 的 `repo` 已指向 gitee 主仓库，更新走 gitee 不再碰 GitHub 预检。

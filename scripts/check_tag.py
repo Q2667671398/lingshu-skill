@@ -14,8 +14,12 @@
 行为：
   · 推送到 main/master 时，若当前版本没有对应 tag → 自动在 HEAD 打一个
     带注释的 vX.Y tag，然后拒绝本次推送，并给出下一步命令；
+  · tag 存在但打在**更早的提交**上：只要它是 HEAD 的祖先、且那个提交里的
+    SKILL.md 版本就是当前版本 → 放行（v3.50 起）。打完 tag 再改文档/CI 是
+    正常收尾动作，旧规则要求"tag 必须正好指向 HEAD"，逼得人用 SKIP 绕过；
+  · tag 打在别的分支上、或打在另一个版本的提交上 → 拒绝；
   · 推送标签或其它分支 → 直接放行；
-  · 没有匹配 tag 时也可用 LINGSHU_SKIP_TAG_CHECK=1 临时跳过（不建议）。
+  · 真的要走捷径也可用 LINGSHU_SKIP_TAG_CHECK=1 临时跳过（不建议）。
 
 退出码：0 放行；1 拒绝（缺 tag / tag 指向不对）。
 """
@@ -72,6 +76,23 @@ def find_tag(version: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def is_ancestor(sha: str, head: str) -> bool:
+    """sha 是否是 head 的祖先（含相等）。"""
+    try:
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", sha, head],
+                           cwd=str(ROOT), capture_output=True)
+    except OSError:
+        return False
+    return r.returncode == 0
+
+
+def commit_version(sha: str) -> str | None:
+    """读某个提交里 SKILL.md 的 version（校验"tag 确实打在那个版本上"）。"""
+    text = _git(["show", f"{sha}:SKILL.md"])
+    m = VERSION_RE.search(text or "")
+    return m.group(1) if m else None
+
+
 def pushed_refs(stdin_text: str) -> list[str]:
     """pre-push 的 stdin：每行 <local ref> <local sha> <remote ref> <remote sha>"""
     refs = []
@@ -105,12 +126,27 @@ def check(create_if_missing: bool) -> int:
         print(f"[tag] OK：v{version} 已存在并指向 HEAD（{name}）")
         return 0
 
-    if name and sha and head and sha != head:
-        print(f"[tag] 拒绝：tag {name} 指向 {sha[:8]}，但 HEAD 是 {head[:8]}。"
-              f"发版 tag 必须打在要发布的那个提交上。", file=sys.stderr)
-        print(f"  修正：git tag -d {name} && git tag -a v{version} -m v{version} && "
-              f"git push --force <remote> v{version}", file=sys.stderr)
-        return 1
+    if name and sha and head:
+        # tag 在 HEAD 之前的老提交上：只要①它确实是 HEAD 的祖先（没跑到别的分支去）、
+        # ②那个提交里的 SKILL.md 版本就是这个版本，就放行。
+        # 为什么放宽（v3.50）：打完 tag 再改文档/CI 是很正常的收尾动作，旧规则要求
+        # "tag 必须正好指向 HEAD"，于是每次收尾都要么改 tag（公有 tag 不该动）、
+        # 要么用 LINGSHU_SKIP_TAG_CHECK=1 绕过——绕过一次就失去这道闸的意义。
+        # 语义没变：marketplace 的版本说明仍然来自「那一个 tag 指向的提交」。
+        if not is_ancestor(sha, head):
+            print(f"[tag] 拒绝：tag {name} 指向 {sha[:8]}，它不在当前分支上"
+                  f"（HEAD {head[:8]}）。发版 tag 必须打在这个版本所在的提交上。", file=sys.stderr)
+            print(f"  修正：git tag -d {name} && git tag -a v{version} -m v{version} && "
+                  f"git push --force <remote> v{version}", file=sys.stderr)
+            return 1
+        tagged_ver = commit_version(sha)
+        if tagged_ver != version:
+            print(f"[tag] 拒绝：tag {name} 打在 {sha[:8]} 上，但那个提交的 SKILL.md 版本是"
+                  f" {tagged_ver or '读不出'}，不是 v{version}。tag 打错了位置。", file=sys.stderr)
+            return 1
+        print(f"[tag] OK：v{version} 的 tag 在 {sha[:8]}（HEAD 的祖先），"
+              f"其后的提交不改版本 → 放行")
+        return 0
 
     if create_if_missing and head:
         created = create_tag(version)

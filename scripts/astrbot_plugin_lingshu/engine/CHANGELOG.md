@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.50（2026-11-20）
+
+> 主题：**文档补全 + 发版钩子放宽**。文档这边欠的账不小：`docs/commands.md` 里连 `doctor` 都没有条目，v3.x 新增的 28 个命令一个没写。
+
+- **`docs/commands.md` 补全**：
+  - 命令表补齐 28 个 v3.x 命令（`doctor` / `status` / `context-stats` / `context-plan` / `summarize` / `session-summary` / `rag` / `retrieve` / `failures` / `ab-stats` / `inject-drift` / `session-state` / `deref` / `checkpoint` / `replay` / `saturation` / `ingest-dialogues` / `extract` / `lesson` / `lessons` / `topic` / `archive` / `auto-archive` / `relink` / `rebuild-embeds` / `drift` / `memory` 子命令 / `auditlog` / `export`）；
+  - 新增整节「**体检 doctor：11 项与处置**」：每项在查什么、WARN/FAIL 时具体怎么办、退出码口径（0=无 FAIL / 1=只有 WARN / 2=有 FAIL）；
+  - 面板章节补上 v3.36–v3.47 的实际形态：运行洞察浮窗（可拖拽/位置记忆/窄屏收起）、页签深链 `#tab`、批量条按需展开、诊断页数据目录迁移、技能页跨宿主清单，以及**面板已随 AstrBot 插件发布**（`engine/scripts/panel_server.py`）；
+  - FAQ 增加 `release-drift` 的处置（含"改完要重启宿主/把插件关一次再开一次"这个最容易漏的步骤）。
+- **`check_tag.py` 放宽**：旧规则要求「当前版本的 tag 必须正好指向 HEAD」，于是打完 tag 再改文档/CI 就推不动，只能 `LINGSHU_SKIP_TAG_CHECK=1` 绕过——绕过一次这道闸就名存实亡（本次发版前它已经连挡两次）。新规则：tag 是 HEAD 的**祖先**、且那个提交里的 `SKILL.md` 版本就是当前版本 → 放行；tag 在别的分支、或打在另一个版本的提交上仍拒绝。语义不变：marketplace 的版本说明仍来自那个 tag 指向的提交。随附 `tests/test_check_tag.py`（7 条断言）。
+- 本版提交本身就是新规则的第一个受益者：打完 v3.50 tag 后继续改台账，不需要任何 SKIP。
+
 ## v3.49（2026-11-20）
 
 > 主题：**非 Windows 上"用户库文件夹"根本没被判危险**——v3.48 的 CI 红暴露出来的真 bug，不是测试写错。影响的是 v3.45 事故复盘后立的那条护栏：别把记忆库放进会被整片清理的目录。
