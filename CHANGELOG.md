@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.49（2026-11-20）
+
+> 主题：**非 Windows 上"用户库文件夹"根本没被判危险**——v3.48 的 CI 红暴露出来的真 bug，不是测试写错。影响的是 v3.45 事故复盘后立的那条护栏：别把记忆库放进会被整片清理的目录。
+
+- **`safety.dangerous_reason()` 大小写陷阱**：原先用 `r == Path.home() / name` 逐名比对，而 `LIBRARY_FOLDER_NAMES` 全是小写（`documents`/`desktop`…）。Windows 的路径比较不区分大小写，所以本机一直绿；POSIX 区分大小写，而 macOS 的真实目录名正是 `~/Documents`、Linux 上也常写大写 D → 这些目录**全部漏判**，护栏在 Linux/macOS 上等于没生效。改为按「相对主目录的第一段」不区分大小写比对（`rel_parts[0].lower() in LIBRARY_FOLDER_NAMES`），语义与 Windows 侧一致。顺带把 macOS 的 `~/Movies` 补进名单（原表只有 Windows 的 `videos`）。
+- **测试补强**：`test_library_folders_are_dangerous` 增加全小写/全大写两组断言——这个 bug 只有在大小写敏感的文件系统上才会暴露，Windows 上永远测不出来。v3.48 里那两条 drive-root 断言的平台化修复保留。
+- **CI 能自己说清楚是哪条挂了**：`tests` 步骤失败时把 `FAIL/ERROR/✗` 行也打成 annotation。这次就是靠它一眼读到 `FAIL test_library_folders_are_dangerous: Documents`——公开仓库的日志接口要鉴权，annotations 不用，等于给这条流水线装了个可远程读取的失败摘要。
+
 ## v3.48（2026-11-20）
 
 > 主题：**CI 在 Linux 上的真红**。v3.47 推上去之后 `ci / consistency` 挂在 `tests` 这一步，前五步（版本 / 清单 / 副本 / 校验和 / 编译）全绿——是一次只在 ubuntu 上暴露的测试缺陷，不是发布物的问题。

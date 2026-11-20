@@ -93,6 +93,10 @@ def test_library_folders_are_dangerous():
         assert safety.dangerous_reason(Path.home() / name), name
         # 库文件夹**里面**也不能当记忆库
         assert safety.dangerous_reason(Path.home() / name / "brain-memory"), name
+        # 大小写不能影响判定：macOS 的真实目录名是 ~/Documents，Linux 也常大写 D，
+        # 而 POSIX 路径比较区分大小写（Windows 不区分，所以这个坑只在非 Windows 暴露）。
+        assert safety.dangerous_reason(Path.home() / name.lower()), name + "（全小写）"
+        assert safety.dangerous_reason(Path.home() / name.upper()), name + "（全大写）"
 
 
 def test_normal_dir_is_fine():

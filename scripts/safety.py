@@ -44,7 +44,7 @@ __all__ = [
 # 用户库文件夹的**磁盘真名**（Windows 本地化只影响显示名，落盘永远是这些英文名）。
 # 刻意不收中文「文档/下载」：中文目录名太常见，会误伤 D:\文档\xxx 这种正常布局。
 LIBRARY_FOLDER_NAMES = frozenset({
-    "desktop", "documents", "downloads", "pictures", "videos", "music",
+    "desktop", "documents", "downloads", "pictures", "videos", "movies", "music",
     "onedrive", "favorites", "saved games", "searches", "links", "contacts",
 })
 
@@ -134,15 +134,22 @@ def dangerous_reason(home: Path | str) -> str | None:
     except OSError:
         pass
     # 用户库文件夹及其内部：~/Documents、~/Desktop/brain-memory …
+    # 按「相对主目录的第一段」比，且**不区分大小写**：
+    #   - Windows 的路径比较本来就不区分大小写，旧写法 `r == user_home / name` 在那边没问题；
+    #   - 但 POSIX 区分大小写，而 macOS 的真实目录名是 ~/Documents、Linux 上也常是大写 D，
+    #     旧写法只认全小写名 → 整个用户库文件夹在 Linux/macOS 上漏判（v3.48 的 CI 红）。
+    # 这条规则是"别把记忆库放在会被整片清理的地方"，大小写只是写法，不该影响判定。
     try:
         user_home = Path.home().resolve()
     except OSError:
         user_home = Path.home()
-    for name in LIBRARY_FOLDER_NAMES:
-        lib = user_home / name
-        if r == lib or lib in r.parents:
-            return (f"路径落在用户库文件夹「{lib.name}」里 —— 这类目录最容易被清理、"
-                    f"重装或误删整片带走，备份也会跟着一起没")
+    try:
+        rel_parts = r.relative_to(user_home).parts
+    except ValueError:
+        rel_parts = ()
+    if rel_parts and rel_parts[0].lower() in LIBRARY_FOLDER_NAMES:
+        return (f"路径落在用户库文件夹「{rel_parts[0]}」里 —— 这类目录最容易被清理、"
+                f"重装或误删整片带走，备份也会跟着一起没")
     return None
 
 
