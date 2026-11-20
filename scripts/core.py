@@ -1307,60 +1307,67 @@ def _locked(path: Path, timeout: float = 10.0):
     except OSError:
         pass
     deadline = time.time() + timeout
-    while True:
-        try:
-            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            # #24 多宿主可见：锁里同时记 pid 与主机名（空格分隔）。
-            # _lock_owner 只取 split()[0]，旧格式/新格式都兼容；
-            # 记忆库放在网盘/共享目录时，能看出是"另一台机器"在写。
-            os.write(fd, f"{os.getpid()} {_HOSTNAME}".encode())
-            os.close(fd)
-            _HELD_LOCKS.add((str(lock), threading.get_ident()))  # 记住"本线程已持锁"，read_jsonl 自愈时避免重复抢锁
-            break
-        except FileExistsError:
-            # 陈旧锁（持锁进程已死）：久到不可能是正常写盘（正常持锁 <2s）才接管。
-            # 阈值别设太小：dream 整理记忆时持锁会久一点，抢早了就是两个进程同时写。
-            try:
-                if time.time() - lock.stat().st_mtime > STALE_LOCK_SECONDS:
-                    # 再加一道 pid 探活：持锁进程还活着就别抢（work_flush/dream 可能持锁较久）。
-                    # 同进程（含本进程其它线程）持有的锁一律视为"活着"，绝不接管。
-                    owner = _lock_owner(lock)
-                    if owner is not None and _pid_alive(owner):
-                        pass  # 活着的持锁者：继续等，不接管
-                    else:
-                        try:
-                            lock.unlink()
-                        except OSError:
-                            pass
-                        continue
-            except OSError:
-                pass
-            if time.time() > deadline:
-                log_event("lock", f"等不到写锁：{path.name}（{timeout:.0f}s 超时）", level="error", path=path.name)
-                raise TimeoutError(f"等不到写锁：{path}")
-            time.sleep(0.05)
+    acquired = False
     _owns = False
     try:
+        while True:
+            try:
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                # #24 多宿主可见：锁里同时记 pid 与主机名（空格分隔）。
+                # _lock_owner 只取 split()[0]，旧格式/新格式都兼容；
+                # 记忆库放在网盘/共享目录时，能看出是"另一台机器"在写。
+                os.write(fd, f"{os.getpid()} {_HOSTNAME}".encode())
+                os.close(fd)
+                _HELD_LOCKS.add((str(lock), threading.get_ident()))  # 记住"本线程已持锁"，read_jsonl 自愈时避免重复抢锁
+                acquired = True
+                break
+            except FileExistsError:
+                # 陈旧锁（持锁进程已死）：久到不可能是正常写盘（正常持锁 <2s）才接管。
+                # 阈值别设太小：dream 整理记忆时持锁会久一点，抢早了就是两个进程同时写。
+                try:
+                    if time.time() - lock.stat().st_mtime > STALE_LOCK_SECONDS:
+                        # 再加一道 pid 探活：持锁进程还活着就别抢（work_flush/dream 可能持锁较久）。
+                        # 同进程（含本进程其它线程）持有的锁一律视为"活着"，绝不接管。
+                        owner = _lock_owner(lock)
+                        if owner is not None and _pid_alive(owner):
+                            pass  # 活着的持锁者：继续等，不接管
+                        else:
+                            try:
+                                lock.unlink()
+                            except OSError:
+                                pass
+                            continue
+                except OSError:
+                    pass
+                if time.time() > deadline:
+                    log_event("lock", f"等不到写锁：{path.name}（{timeout:.0f}s 超时）", level="error", path=path.name)
+                    raise TimeoutError(f"等不到写锁：{path}")
+                time.sleep(0.05)
         yield
     finally:
-        _HELD_LOCKS.discard((str(lock), threading.get_ident()))
+        # 持锁登记必须覆盖所有路径：正常释放、超时、异常都会回到这里。
+        # 只要登记过就清掉，避免长跑进程的锁表缓慢累积、同线程后续 _held()
+        # 误判"自己还持着锁"而跳过互斥。超时发生在登记之前（还没拿到锁），
+        # 此时没有登记可清；放进同一 try/finally 是为了让"登记→清理"边界不依赖后续改动。
+        if acquired:
+            _HELD_LOCKS.discard((str(lock), threading.get_ident()))
         # 只在"自己成功创建或接管了锁（写入了自己 pid）"时才释放。
         # 锁文件已不存在（被陈旧锁接管流程删掉）→ 直接跳过，不留告警也不误删。
-        if not lock.exists():
-            return
-        # _lock_owner 读不到内容返回 None 时不删——那可能是其他进程刚接管/正在写
-        # 锁文件，误删会让第三个进程立刻挤进来一起写。
-        if _lock_owner(lock) == os.getpid():
-            _owns = True  # 锁文件里确实记着自己是持有者
-        if _owns:
-            try:
-                lock.unlink()
-            except FileNotFoundError:
-                pass  # 锁文件刚被别的流程删掉：无需处理
-            except OSError:
-                pass
-        else:
-            log_event("lock", f"释放跳过：锁 {path.name} 不归本进程（pid 不符或读不到持有者）", path=path.name)
+        # 注意：finally 里不能再 return——那会把调用方正在向上抛的异常一起吞掉。
+        if acquired and lock.exists():
+            # _lock_owner 读不到内容返回 None 时不删——那可能是其他进程刚接管/正在写
+            # 锁文件，误删会让第三个进程立刻挤进来一起写。
+            if _lock_owner(lock) == os.getpid():
+                _owns = True  # 锁文件里确实记着自己是持有者
+            if _owns:
+                try:
+                    lock.unlink()
+                except FileNotFoundError:
+                    pass  # 锁文件刚被别的流程删掉：无需处理
+                except OSError:
+                    pass
+            else:
+                log_event("lock", f"释放跳过：锁 {path.name} 不归本进程（pid 不符或读不到持有者）", path=path.name)
 
 
 STALE_LOCK_SECONDS = 30.0

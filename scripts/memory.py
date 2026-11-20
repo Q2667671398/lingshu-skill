@@ -87,10 +87,53 @@ def detect_conflicts(limit: int = 50) -> list:
 
 # ---------------------------------------------------------------- 审核闸
 
-def pending_memory_reviews() -> list:
-    """AI（做梦等）整理出来、还没人工确认的记忆。"""
-    return [m for m in load_all()
-            if m.get("review") == "pending" and m.get("layer") != "dust"]
+def pending_memory_reviews(brief: bool = False) -> list:
+    """AI（做梦等）整理出来、还没人工确认的记忆。
+
+    brief=True 时 text 只留前 40 个字符（超出加省略号），其余字段不变——
+    注入层用它省 token（10 条全文≈+750 token，40 字摘要≈+200 token）；
+    review / audit 等给人看的路径保持默认全文。
+    """
+    out = [m for m in load_all()
+           if m.get("review") == "pending" and m.get("layer") != "dust"]
+    if not brief:
+        return out
+    res = []
+    for m in out:
+        m = dict(m)          # 派生摘要副本：绝不改原记录（调用方可能拿去落盘）
+        text = str(m.get("text") or "")
+        if len(text) > 40:   # 按字符截断（中文一字算一字符），不是按字节
+            m["text"] = text[:40] + "…"
+        res.append(m)
+    return res
+
+
+def mark_auto_review_pending(mem_ids, review_source: str = "auto") -> int:
+    """AI 自动整理写出的记忆默认进待审池：没有 review 字段的补 review="pending"。
+
+    只给自动写入路径（work flush / daily 自动做梦沉淀）调用：这是审核闭环的
+    "自动写入必待审"兜底。已有 review 的记录一律不覆盖（confirmed/discarded
+    不会被降级，用户手动 remember 也不经过这里，完全不受影响）。
+    review_source 仅在缺失时补一个来源约定值，已有来源照旧。
+    返回本次补标条数。
+    """
+    if READONLY:
+        return 0
+    want = {str(x) for x in (mem_ids or []) if x}
+    if not want:
+        return 0
+    marked = 0
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        for m in records:
+            if m.get("id") in want and not m.get("review"):
+                m["review"] = "pending"
+                if not m.get("review_source"):
+                    m["review_source"] = review_source
+                marked += 1
+        if marked:
+            save_all(records)
+    return marked
 
 
 def ai_persona_changes(days: int = 7) -> list:
@@ -2619,6 +2662,12 @@ def work_flush(why: str = "会话结束前决定留下", skip_done: bool = False
             saved.append({"id": rec["id"], "text": rec["text"], "how": how})
         # 已持锁：直接清空，不能再调 work_clear()（它会重复抢同一把锁→自锁超时）
         write_jsonl(WORKING_FILE, [])
+    # 审核闭环：work flush 是 AI 自动整理的写入路径，产出的记忆默认进待审池；
+    # 已有 review 的不覆盖（用户手动 remember 不经过这里，不受影响）。
+    try:
+        mark_auto_review_pending([s["id"] for s in saved], "work-flush")
+    except Exception as exc:  # noqa: BLE001
+        log_event("memory", f"work flush 标待审失败（不影响已转记忆）：{exc}", level="warn")
     if saved:
         try:
             import growth
@@ -4102,9 +4151,24 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
                 parts.append(f"{rc['knowledge']} 条待审核知识")
             if rc["persona"]:
                 parts.append(f"AI 改了人格 {rc['persona']} 次")
-            dyn.append(f"[待审核] 有{'、'.join(parts)}。"
-                       "先 `review` 过一遍：确认的 `review confirm <id>`，编造的 `review discard <id>`，"
-                       "人格来源用 `persona history` 查。别让幻觉沉淀成事实。")
+            _review_lines = [f"[待审核] 有{'、'.join(parts)}。"
+                             "先 `review` 过一遍：确认的 `review confirm <id>`，"
+                             "编造的 `review discard <id>`，"
+                             "人格来源用 `persona history` 查。别让幻觉沉淀成事实。"]
+            # 注入只带摘要（brief=True：id + 前 40 字），全文用 `recall <id>` 按需取——
+            # 10 条全文 ≈ +750 token，摘要 ≈ +200 token，别把注入预算翻倍。
+            # 与其它记忆段同一道通道可见性过滤：群聊/通道记忆不经 inject_channels 放行，
+            # 它的正文绝不能出现在本机会话注入里（摘要也不行）。
+            # review / audit 命令仍走默认全文（pending_memory_reviews() 不传 brief）。
+            _pend_brief = [m for m in pending_memory_reviews(brief=True)
+                           if _inject_memory_visible(m, cfg)][:10]
+            if _pend_brief:
+                _review_lines.append("待审记忆（只给要点，全文用 `recall <id>` 取）：")
+                for _pm in _pend_brief:
+                    _src = str(_pm.get("review_source") or "")
+                    _review_lines.append(f"- {_pm.get('id')} {_pm.get('text', '')}"
+                                         + (f"（{_src}）" if _src else ""))
+            dyn.append("\n".join(_review_lines))
     except Exception:
         pass
     # 人格漂移告警：微小偏移也要让用户看得见，不能等跑偏了才发现

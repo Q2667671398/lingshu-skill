@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 3.45
+version: 3.46
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -321,7 +321,7 @@ python scripts/brain.py rag init|ingest 文件.jsonl|search "词"|stats|serve  #
   # 通道记忆默认不进本机注入；要放行某个通道：config set inject_channels '["qq@bot:群号"]'
   # IM 桥接（dsh-im）：autoRecall/autoCapture 默认关；开在 ~/.brain-memory/config.json 的 im 段，
   #   或 profile patch 里给 lingshu-skill 传 {im:{"autoRecall":true}}（v3.25 起透传生效）
-  # 群聊鉴权：guard 段控制。出厂 shadow=true 只写日志；要真拦设 {"guard":{"shadow":false}}
+  # 群聊鉴权：guard 段控制。**出厂 shadow=false（默认拦截）**；要先观察误伤再收紧时显式设 {"guard":{"shadow":true}}，此时启动会打一条 warn"观察模式，敏感命令不会被拦截"。
   #   非 owner 只能用只读工具（read/grep/glob/web_search…），桌面端不受影响
 python scripts/brain.py daily [--feel "开心:0.7:原因"]  # 每日例行（顺手记情绪事件，可重复）
 python scripts/brain.py usage --reply "回复文本"       # 核对上一轮找回的记忆是否真被用上

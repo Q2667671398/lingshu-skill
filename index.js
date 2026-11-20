@@ -89,7 +89,7 @@ export function apply(ctx, config) {
   }
   // 群聊鉴权：IM 会话里非 owner 只能调只读工具；桌面会话不受影响。
   // 配置透传（profile/bundle 可写 { guard: { shadow, owners, readOnlyAllow, logPath } }），
-  // 没配时插件自己读 ~/.brain-memory/config.json 的 guard 段。默认 shadow=true（只记录不拦）。
+  // 没配时插件自己读 ~/.brain-memory/config.json 的 guard 段。默认 shadow=false（默认拦截）。
   try {
     guardPlugin.apply(ctx, cfg.guard || {})
   } catch (e) {

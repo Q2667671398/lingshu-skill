@@ -33,14 +33,16 @@
 //
 // 配置（~/.brain-memory/config.json 的 guard 段；支持 BRAIN_MEMORY_HOME 与 .home
 // 指针；宿主透传的 config 优先级更高）：
-//   { "guard": { "enabled": true, "shadow": true, "owners": [],
+//   { "guard": { "enabled": true, "shadow": false, "owners": [],
 //                "readOnlyAllow": ["read", ...], "logPath": "" } }
 //   * owners：缺省（未配或空数组）回退同文件顶层 owners 数组——与 CLI 的
 //     channel 身份编码一致（形如 "qq@qq_xxx:C858…"），不用再维护第二份名单。
-//   * shadow=true（默认）：只记日志不拦，先观察再收紧。
+//   * shadow=false（默认）：已启用拦截——非 owner 调用有副作用工具直接拒绝并记日志。
+//     显式设 shadow=true 进入观察模式：只记日志不拦，启动时会打一条明确的 warn。
 //
 // 日志：JSONL，默认 ~/.brain-memory/lingshu-guard.log，字段
 //   {ts, action:'allow'|'deny'|'shadow-deny', tool, sender, channel, group}
+//   deny = 已拦截；shadow-deny = 观察模式（shadow=true）下"本该拦截"只记账。
 // 只记录 IM 会话的判定；桌面会话不产生日志。
 
 import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
@@ -61,10 +63,11 @@ const DEFAULT_READ_ONLY = [
   'ask_user_question',
 ]
 
-// guard 段默认值。shadow 默认 true：先观察日志、确认不误伤，再手动关掉收紧。
+// guard 段默认值。shadow 默认 false：默认就拦（安全优先），不再"只记日志不拦"。
+// 需要先观察误伤时显式设 shadow=true，启动会打 warn（观察模式，敏感命令不拦）。
 const DEFAULT_GUARD = {
   enabled: true,
-  shadow: true,
+  shadow: false,
   readOnlyAllow: null, // null = 用 DEFAULT_READ_ONLY
   logPath: '',
 }
@@ -353,6 +356,15 @@ export function apply(ctx, config) {
     warned = true
     warnOnce(ctx, message, error)
   }
+
+  // shadow=true 是观察模式（只记日志不拦）。启动时明确警告一次，避免用户
+  // "以为已经开启鉴权、其实敏感命令全被放行"。默认 shadow=false 不触发。
+  try {
+    if (resolveGuardConfig(hostConfig).shadow) {
+      warnOnce(ctx, 'lingshu-guard: 当前处于观察模式（shadow=true），敏感命令不会被拦截，只记日志；'
+        + '确认不会误伤后请改为 shadow=false 以启用拦截')
+    }
+  } catch { /* 配置读取异常交给 checkTool 按 fail-closed 处理，这里不重复报错 */ }
 
   // dsh-im 绑定通告：只登记，不做 IO（事件在消息处理链路里同步发出）。
   ctx.on('dsh-im/session-pre-bind', (payload) => {

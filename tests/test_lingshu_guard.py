@@ -270,10 +270,11 @@ function record(name, payload) {
   })
 }
 
-// ---- 5) shadow（默认 true）：只记 shadow-deny，不拦 ----
+// ---- 5) shadow=true（显式观察模式）：只记 shadow-deny，不拦 ----
 {
   const home = scenarioDir('shadow')
-  writeConfig(home, { owners: [OWNER] })
+  // v3.46 起默认 shadow=false（默认就拦）；观察模式必须显式配置才生效
+  writeConfig(home, { owners: [OWNER], guard: { shadow: true } })
   useHome(home)
   const world = makeWorld({
     dshIm: {
@@ -457,7 +458,7 @@ def test_static_contract():
     for tool in ("'pwsh'", "'write'", "'subagent'"):
         assert tool not in src, f"只读白名单/策略里不该出现有副作用工具 {tool}"
     assert "enabled: true" in src, "guard 默认应 enabled=true"
-    assert "shadow: true" in src, "guard 默认应 shadow=true（先观察再拦）"
+    assert "shadow: false" in src, "guard 默认应 shadow=false（默认就拦，观察模式需显式开启）"
 
     index_src = INDEX.read_text(encoding="utf-8")
     assert "import * as guardPlugin from './cordis-plugin/lingshu-guard/plugin.js'" in index_src, \

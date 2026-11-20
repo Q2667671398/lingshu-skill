@@ -1787,11 +1787,11 @@ function renderExtOllama(st){
     const pct = st.stage === "downloading" ? (st.percent || 0) : 100;
     const label = {downloading: "下载中", extracting: "解压中", starting: "启动服务中", pulling: "拉取模型中"}[st.stage];
     body = `<div style="margin-top:10px">
-      <div style="font-size:13px;margin-bottom:6px">${label}… ${pct}% ${st.detail ? "（" + st.detail + "）" : ""}</div>
+      <div style="font-size:13px;margin-bottom:6px">${label}… ${pct}% ${st.detail ? "（" + esc(st.detail) + "）" : ""}</div>
       <div style="height:8px;border-radius:4px;background:var(--line,#8884);overflow:hidden">
         <div style="height:100%;width:${pct}%;background:#3182ce;transition:width .4s"></div></div></div>`;
   } else if (st.stage === "error") {
-    body = `<div style="margin-top:10px;color:#c53030;font-size:13px">✕ ${st.detail || "操作失败"}</div>`;
+    body = `<div style="margin-top:10px;color:#c53030;font-size:13px">✕ ${esc(st.detail || "操作失败")}</div>`;
   } else if (st.installed && st.serving && st.model_ready) {
     body = `<div style="margin-top:10px;color:#38a169;font-size:13px">✓ 已就绪：语义召回已启用</div>`;
   } else if (!st.installed && st.fallback_enabled) {
@@ -1844,7 +1844,7 @@ async function loadExtensionOllama(){
     renderExtOllama(st);
     if (["downloading", "extracting", "starting", "pulling"].includes(st.stage)) pollExtOllama();
   } catch (err) {
-    $("ext-ollama").innerHTML = `<div class="empty">状态获取失败：${err.message}</div>`;
+    $("ext-ollama").innerHTML = `<div class="empty">状态获取失败：${esc(err.message)}</div>`;
   }
 }
 
@@ -2099,7 +2099,7 @@ async function loadSnapshots(){
           </div>
           ${s.why ? `<p style="font-size:12.5px;color:var(--muted)">${esc(s.why)}</p>` : ""}
         </div>
-        <button class="ghost" style="padding:3px 10px;font-size:11.5px;flex-shrink:0" data-snap-rollback="${s.version}">回滚到此</button>
+        <button class="ghost" style="padding:3px 10px;font-size:11.5px;flex-shrink:0" data-snap-rollback="${esc(s.version)}">回滚到此</button>
       </div>`).join("");
   } catch (e) { box.innerHTML = `<div class="sub">${esc(e.message)}</div>`; }
 }
@@ -3383,10 +3383,10 @@ $("upd-dsh-repair").addEventListener("click", async () => {
     const ok = (res.repaired || []).length;
     const errs = res.errors || [];
     if (errs.length) {
-      const detail = errs.map(e => "· " + esc(e.profile) + "：" + (e.errors || []).join("；")).join("<br>");
+      const detail = errs.map(e => "· " + esc(e.profile) + "：" + (e.errors || []).map(esc).join("；")).join("<br>");
       toast("修复完成，" + ok + " 个 profile 成功，" + errs.length + " 个有错误", true);
       $("upd-dsh-detail").innerHTML += "<br><br><b>修复结果：</b><br>" +
-        (ok ? "成功：" + res.repaired.join("、") + "<br>" : "") + detail;
+        (ok ? "成功：" + res.repaired.map(esc).join("、") + "<br>" : "") + detail;
     } else {
       toast("修复完成：" + (res.repaired || []).join("、") + " 已恢复，重启 DSH 即可生效");
       $("upd-dsh-section").style.display = "none";

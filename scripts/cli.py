@@ -953,7 +953,19 @@ def auto_dream(trigger: str = "auto", dry_run: bool = False) -> dict:
     apply_doc["memories"] = memories
     if dry_run:
         return {"applied": False, "report": report, "preview": apply_doc}
+    _ids_before = {m.get("id") for m in load_all()}
     result = apply_dream(apply_doc)
+    # 审核闭环：daily / dream --auto 是 AI 自动整理的写入路径，产出的记忆默认进待审池。
+    # apply_dream 落盘时已标 pending（dream.py 内），这里再兜一层：本次新写入且没有
+    # review 字段的一律补 pending（已有 review 不覆盖；用户手动 remember 不经过这里）。
+    try:
+        _new_ids = [m.get("id") for m in load_all()
+                    if m.get("id") and m.get("id") not in _ids_before
+                    and str(m.get("source") or "") == "dream"]
+        if _new_ids:
+            mark_auto_review_pending(_new_ids, "dream")
+    except Exception as exc:  # noqa: BLE001
+        log_event("daily", f"自动做梦产物标待审失败（不影响沉淀）：{exc}", level="warn")
     result["applied"] = True
     result["clusters"] = len(report["clusters"])
     return result
@@ -1190,6 +1202,49 @@ def _print_mem(m: dict, score: float | None = None, parts: dict | None = None) -
     if m.get("tags") or m.get("entities"):
         print(f"  标签: {'、'.join(m.get('tags', []))}  实体: {'、'.join(m.get('entities', []))}")
     print()
+
+
+# ---------------------------------------------------------------- 审核建议（纯本地规则）
+def _review_suggestion(item: dict, records: list | None = None) -> str:
+    """给一条待审记忆一句"建议动作"：保留 / 丢弃 / 合并 / 人工判断。
+
+    全部走本地规则（词面 jaccard 相似度，与 remember 的近重复/冲突阈值同口径），
+    不调用模型：
+      - 无 id 或正文为空              → 丢弃（无效记录）
+      - 与近 7 天已有记忆 ≥0.86 相似  → 丢弃（跟已有记忆重复）
+      - 与近 7 天已有记忆 0.55~0.86  → 合并进最像的那条（可能是改写了旧说法）
+      - 0.40~0.55                     → 人工判断（沾边但不够确定）
+      - 其余                          → 保留
+    """
+    mid = str(item.get("id") or "").strip()
+    text = str(item.get("text") or "").strip()
+    if not mid or not text:
+        return "丢弃（无效记录：缺 id 或正文为空）"
+    if records is None:
+        records = load_all()
+    cutoff = now_ts() - 7 * DAY
+    mine = terms(text)
+    best_id, best_sim = "", 0.0
+    for m in records:
+        if str(m.get("id") or "") == mid or m.get("layer") == "dust":
+            continue                       # 不跟自己比；淡忘区不参与"已有记忆"对照
+        if _num(m.get("created"), 0) < cutoff:
+            continue                       # 只和近 7 天的已有记忆比
+        other = terms(str(m.get("text") or ""))
+        if not other:
+            continue
+        sim = jaccard(mine, other)
+        if sim > best_sim:
+            best_id, best_sim = str(m.get("id") or ""), sim
+    if best_sim >= 0.86:
+        return f"丢弃（与现有 {best_id} 重复）"
+    if best_sim >= 0.55:
+        return f"合并进 {best_id}（与现有记忆相似 {best_sim:.0%}）"
+    if best_sim >= 0.40:
+        return f"人工判断（与 {best_id} 相似 {best_sim:.0%}，是否重复需人看）"
+    if len(mine) <= 2 or len(text) < 6:
+        return "人工判断（正文太短，判不准）"
+    return "保留"
 
 
 class _BrainParser(argparse.ArgumentParser):
@@ -3851,8 +3906,11 @@ def _main(argv=None) -> int:
                 print(f"    review confirm {l['id']}   /   review discard {l['id']}")
         if rep["memories"]:
             print(f"待审核记忆 {len(rep['memories'])} 条（AI 做梦等整理出来的，确认前不当事实）：")
+            # 建议动作：本地规则判定（复用 jaccard 相似度），不调用模型；全文仍在上面打印
+            _recs = load_all()
             for m in rep["memories"]:
                 print(f"  · {m['id']}  {m['text'][:70]}")
+                print(f"  建议：{_review_suggestion(m, _recs)}")
                 print(f"    review confirm {m['id']}   /   review discard {m['id']}")
         if rep["knowledge"]:
             print(f"\n待审核知识 {len(rep['knowledge'])} 条：")
