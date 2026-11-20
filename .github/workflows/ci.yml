@@ -38,8 +38,8 @@ jobs:
 
       # 隐私与功能单测：逐个直接运行（纯标准库，无 pytest 依赖）
       # 隔离 HOME：BRAIN_MEMORY_HOME/LINGSHU_GLOBAL_SKILLS 指向临时目录，不碰真实记忆库
-      # 失败时额外打一行 ::error（带文件名）——这样 check-runs/annotations 里能直接看到
-      # 是哪个测试挂的；否则公开仓库只留一句 "Process completed with exit code 1"。
+      # 失败时把「哪一条测试挂了」直接打成 annotation（公开仓库可不带 token 读 annotations，
+      # 而日志接口要鉴权——不然只能看到一句 "Process completed with exit code 1"）。
       - name: tests
         env:
           BRAIN_MEMORY_HOME: ${{ runner.temp }}/ls-ci-home
@@ -52,12 +52,19 @@ jobs:
           fail=0
           for t in tests/test_*.py; do
             echo "::group::$t"
-            if python "$t"; then
-              :
+            out="$(mktemp)"
+            if python "$t" >"$out" 2>&1; then
+              tail -n 1 "$out" || true
             else
-              echo "::error file=$t,title=测试失败::$(basename "$t") 在 CI（$(uname -s)）上失败；本地绿不等于 CI 绿"
+              cat "$out"
+              echo "::error file=$t,title=测试文件失败::$(basename "$t") 在 CI（$(uname -s)）上失败；本地绿不等于 CI 绿"
+              # 测试脚本的约定输出：`FAIL test_x: 原因` / `ERROR test_x: 异常` / `✗ test_x: …`
+              grep -E '^[[:space:]]*(FAIL|ERROR|✗)' "$out" | head -n 20 | while IFS= read -r line; do
+                echo "::error file=$t::$(printf '%s' "$line" | tr -d '\r')"
+              done
               fail=1
             fi
+            rm -f "$out"
             echo "::endgroup::"
           done
           exit $fail
