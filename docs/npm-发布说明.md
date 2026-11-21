@@ -40,3 +40,10 @@ npm publish
 - **包名 `lingshu-skill` 已注册归你**：别人不能再占。首次 publish 后确认 `npm view lingshu-skill version` 返回你的版本。
 - **别把 token 写进包**：`.npmignore` + files 白名单已排除 config.json/.env；发布前 `npm pack --dry-run` 再扫一眼最稳。
 - **国内网络**：npm registry 国内可达（你朋友装别的插件就是走 npm），所以没问题。
+
+## 首次发布踩过的两个坑（2026-11-22）
+
+1. **token 少了 `npm_` 前缀**：从 npm 网页复制 token 时漏了开头 `npm_`，`.npmrc` 里是 `_p2P3...`（37 字符）→ `npm whoami` 401。完整 token 必须以 `npm_` 开头、约 40+ 字符。修复：`npm config set //registry.npmjs.org/:_authToken "npm_完整token"`（用引号，别漏前缀）。
+2. **whoami 成功 ≠ 能发布**：`npm whoami` 只需读权限（返回用户名即通过），但 `npm publish` 要求 **Bypass 2FA 的 Granular Token**。普通 token 或无 bypass 的 granular token 会让 publish 报 `E403 ... Two-factor authentication or granular access token with bypass 2fa enabled is required`。生成 token 时**必须勾选 "Bypass two-factor authentication"**，权限给 `lingshu-skill` 的 Read and write。
+3. **别用 `npm publish --otp`**：账号没开 2FA 时 `--otp` 无效，照样 403。走 bypass token 最直接。
+4. **token 一旦贴到聊天/日志即泄露**：立即去 npmjs.com → Access Tokens → Revoke，重新生成。绝不把 token 发给任何人或 AI。
