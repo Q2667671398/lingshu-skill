@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.60（2026-11-21）
+
+> 主题：**打包必须先造 engine 副本**（P1-1 的前置条件）。
+
+- **`make_plugin_zip.py` 打包前自动 `sync_engine.sync()`**：`scripts/astrbot_plugin_lingshu/engine/` 是根目录 `scripts/` 与 `docs/` 的纯派生物（`sync_engine.py` 第一行就 `DST.mkdir(parents=True, exist_ok=True)`，随后全量拷贝），但打包脚本原来直接压目录、**默认它已经是最新的**——一旦忘了同步，就会把陈旧核心打进市场包。现在改为每次打包都先从根目录重铺一遍，同步失败则拒绝出包；确实要跳过用 `--no-sync`。
+- 这是 P1-1（engine 双份维护收敛）的**前置条件**：只有先保证"打包必定生成 engine"，才敢把这个目录从版本库里移除。移除本身会牵动 CI、AstrBot 市场包与 `update_dsh_copy.ps1`，仍待单独决定，本版不做。
+
+**验证**：`python scripts/make_plugin_zip.py --out <临时路径>` → `[sync]…` 后产出 52 个文件（其中 45 个在 `engine/` 下）、773 KB、顶层目录 `astrbot_plugin_lingshu`；五项发布检查全 exit=0。
+
 ## v3.59（2026-11-21）
 
 > 主题：**中途重复注入的根治**。用户报障：「每次对话上下文注入完，在对话还会注入，上下文没有压缩但是灵枢还会注入上下文」。查下来是四个独立成因，其中两个直接违反提示词缓存的**前缀不变**原则——不是"多花点 token"，是让缓存从注入点往后全部失效。

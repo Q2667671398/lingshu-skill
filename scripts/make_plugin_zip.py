@@ -6,7 +6,12 @@
 scripts/astrbot_plugin_lingshu/ 整目录（顶层目录名 astrbot_plugin_lingshu/，
 AstrBot 可直接上传安装）。排除 __pycache__、.pyc、运行数据。
 
-用法：python scripts/make_plugin_zip.py [--out astrbot.zip]
+**打包前会先跑 sync_engine.sync()**（P1-1）：engine/ 是根目录 scripts/docs 的
+副本，两份都在 git 里维护代价太大，正解是"打包时生成、不打进版本库"。所以这里
+不再假设 engine/ 已就绪，而是每次都从根目录重新铺一遍，杜绝把陈旧副本打进包里。
+确实需要跳过（比如刚跑过、只想重新压一次）用 `--no-sync`。
+
+用法：python scripts/make_plugin_zip.py [--out astrbot.zip] [--no-sync]
 """
 
 from __future__ import annotations
@@ -15,6 +20,8 @@ import argparse
 import sys
 import zipfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "scripts" / "astrbot_plugin_lingshu"
@@ -52,8 +59,23 @@ def make(out: Path) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser(description="打包 AstrBot 插件 zip")
     ap.add_argument("--out", default=str(REPO / "astrbot.zip"))
+    ap.add_argument("--no-sync", action="store_true",
+                    help="跳过 engine 副本同步（默认打包前会从根目录重新生成）")
     args = ap.parse_args()
     out = Path(args.out).resolve()
+    if not args.no_sync:
+        try:
+            import sync_engine
+            if sync_engine.sync() != 0:
+                print("[错误] engine 副本同步失败，拒绝打出可能过期的包", file=sys.stderr)
+                return 1
+        except SystemExit as exc:  # sync_engine 里若有 sys.exit
+            if exc.code not in (0, None):
+                print(f"[错误] engine 同步异常退出：{exc.code}", file=sys.stderr)
+                return 1
+        except Exception as exc:  # noqa: BLE001  绝不让打包静默带着旧副本
+            print(f"[错误] engine 同步失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
     if out.exists():
         out.unlink()
     make(out)
