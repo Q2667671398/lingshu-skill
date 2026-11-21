@@ -23,7 +23,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 // 刻意零外部依赖：不 import @deepseek-ai/schemastery。原因——link: 安装时模块
@@ -32,6 +32,9 @@ import { fileURLToPath } from 'node:url'
 // 去掉依赖后 link 安装也能工作，改 plugin.js 即时生效，不必每次重打包。
 
 export const name = 'dsh-lingshu-startup'
+
+/** 注入消息的 source.name：与 cron 的 'lingshu-cron'、im 的 'lingshu-im' 区分开。 */
+const INJECT_SOURCE = 'lingshu-startup'
 
 // 本插件文件在 <包根>/cordis-plugin/lingshu-startup/plugin.js，
 // 往上一级是 cordis-plugin/，再上一级就是包根（含 scripts/brain.py 与 SKILL.md）。
@@ -63,6 +66,9 @@ const DEFAULTS = {
   python: '',      // python.exe 绝对路径；留空自动探测 DSH 自带运行时等位置（spawn 不解析 PATHEXT）
   budget: 1400,    // startup 注入 token 预算
   timeoutMs: 3000, // startup 子进程超时；agent/created 是串行事件，超时太久拖慢新会话
+  resumeBudget: 400,  // v3.59：resume 用极简版预算（人格+待办+水位，约 640 字符）。
+                      // 为什么：会话历史里已有一份完整记忆块，resume 再注入一整份
+                      // 就是同一段上下文出现两遍（实测 1214 tokens x 2）。
   injectResume: true, // resume 来源（续聊）是否也注入
 }
 
@@ -241,6 +247,11 @@ export function apply(ctx, config) {
   // pending：agent -> 注入文本。agent/created 只负责把文本存进来，
   // 真正投递在 agent/pre-step 里做（见下）。
   const pending = new Map()
+  // v3.59：每个 agent 已注入过的内容指纹（sha256 前 16 位）。
+  // 解决同一对话里注入第二份一模一样内容——resume、agent 重建、
+  // 宿主重复派发 agent/created 都可能触发重注入。同一份内容只进一次上下文，
+  // 这也正是提示词缓存友好的做法（只在末尾追加、不重复历史）。
+  const injectedDigests = new Map()
   // 配置类失败只告警一次：静默吞掉配置错误会让插件"看似在工作、实际没注入"
   let warnedOnce = false
 
@@ -266,7 +277,11 @@ export function apply(ctx, config) {
         return
       }
       const pythonExe = findPythonExe(cfg.python)
-      const text = await runStartup(pythonExe, cfg.python, brainPy, cfg.budget, cfg.timeoutMs)
+      // v3.59：resume 走极简版预算——历史里已有完整记忆块，不必再来一份
+      const budget = source === 'resume'
+        ? (Number(cfg.resumeBudget) > 0 ? Number(cfg.resumeBudget) : cfg.budget)
+        : cfg.budget
+      const text = await runStartup(pythonExe, cfg.python, brainPy, budget, cfg.timeoutMs)
       if (!text) {
         writeDiag('startup-no-output', {
           brainPy,
@@ -282,6 +297,21 @@ export function apply(ctx, config) {
         const base = process.env.APP_DSH || join(homedir(), '.dsh')
         rmSync(join(base, 'lingshu-diag.json'), { force: true })
       } catch {}
+      // v3.59：内容指纹去重——同一份文本在同一 agent 只注入一次。
+      // 场景：resume、agent 重建、宿主重复派发 agent/created。不加这道闸，
+      // 同一个对话里会出现两份一样的记忆块（实测 1214 tokens x 2），
+      // 既费 token 又让提示词缓存从重复处开始失效。
+      const digest = createHash('sha256').update(text).digest('hex').slice(0, 16)
+      let seen = injectedDigests.get(agent)
+      if (seen === undefined) {
+        seen = new Set()
+        injectedDigests.set(agent, seen)
+      }
+      if (seen.has(digest)) {
+        // 已经注入过一模一样的内容：直接跳过，不占上下文（也算成功，清掉旧 diag）
+        return
+      }
+      seen.add(digest)
       // 只存不投递：send/inject 走 inbox 都有生命周期坑（实测坐实），真正进模型
       // 上下文要在 agent/pre-step 里追加 messages（见下）。
       pending.set(agent, text)
@@ -309,7 +339,9 @@ export function apply(ctx, config) {
           id: randomUUID(),
           role: 'user',
           content: [{ type: 'text', text }],
-          source: { kind: 'skill-invocation', name: 'lingshu', form: 'instructions' },
+          // v3.59：用自己的 source.name，别和 cron 的 'lingshu-cron' 撞。
+          // 撞了会被 cron 的 pruneInjected 当成本插件自己的旧提醒删掉。
+          source: { kind: 'skill-invocation', name: INJECT_SOURCE, form: 'instructions' },
         }],
       }
     } catch (e) {

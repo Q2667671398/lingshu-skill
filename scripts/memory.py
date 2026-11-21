@@ -1135,7 +1135,10 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
              user: str | None = None,
              project: str | None = None, session: str | None = None,
              ttl_days: float | None = None, review_at: int | None = None,
-             correction: bool = False) -> tuple:
+             correction: bool = False,
+             fras: dict | None = None,
+             source_file: str | None = None,
+             avoid: bool = False) -> tuple:
     ensure_home()
     text = (text or "").strip()
     if not text:
@@ -1279,6 +1282,39 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
             rec["review_by"] = int(_num(review_at, 0))
         elif ttl_days is not None and _num(ttl_days, 0) > 0:
             rec["review_by"] = rec.get("expires_at")
+        # —— v3.58 三层元数据（借自 AOCI-CODE 的 Entry 规范，见 docs/进展与待办.md P4）——
+        # ① FRAS 四段：给"项目类知识"补上"改它之前还得知道什么"这层。
+        #    灵枢原来只有 text/gist/tags，记得事情但不记得坑；S（不明显约束）信息密度
+        #    最高，注入时优先展示。缺省不带 → 旧调用与旧数据行为完全不变。
+        _fras = {}
+        if isinstance(fras, dict):
+            for _k in ("f", "r", "a", "s"):
+                _v = str(fras.get(_k) or "").strip()
+                if _v:
+                    _fras[_k] = _v
+        if _fras:
+            rec["fras"] = _fras
+        # ② 源指纹：把这条记忆绑定到某个文件，存当次 sha256。
+        #    文件后来变了 → recall/注入时标「源已变，可能过期」并降权。
+        #    这是"这条记忆还成不成立"的信号，与 h/p_h 哈希链（防篡改）不是一回事。
+        if source_file:
+            _sf = os.path.expanduser(str(source_file).strip())
+            if not _sf:
+                pass
+            else:
+                try:
+                    _p = Path(_sf).resolve()
+                    rec["source_file"] = str(_p)
+                    rec["source_sha256"] = (hashlib.sha256(_p.read_bytes()).hexdigest()
+                                            if _p.is_file() else "")
+                except Exception as exc:  # 文件不可读不该拦住记事
+                    rec["source_file"] = _sf
+                    log_event("memory", f"源指纹读取失败（{_sf}）：{exc}", level="warn")
+        # ③ 负空间：显式记住「决定不做的东西」。
+        #    与普通记忆的区别是语义——注入时单独成块「已经排除的方向（别再提）」，
+        #    避免 AI 反复建议用户已经否掉的路（如"别再建议 DiskGenius 恢复"）。
+        if avoid:
+            rec["avoid"] = True
         # —— 记忆冲突裁决（Mem0 风格）——
         # 与某条旧记忆中度相似（jaccard 0.55~0.86）但文本不同 = 同一件事说法变了/事实更新。
         # 旧的不删：打上 superseded_by 指向新记忆（回忆默认跳过被取代者，仍可沿链回溯旧观念）。
@@ -3559,15 +3595,18 @@ def _inject_file_sig(path) -> str:
 
 
 
-def _inject_cache_key(query: str, budget: int, cfg: dict) -> str | None:
+def _inject_cache_key(query: str, budget: int, cfg: dict, pressure_tier: str = "full") -> str | None:
     """注入包缓存键：输入要素 + 非易失配置 + 关键数据文件 mtime 的哈希。
 
     通道许可、阈值等配置变化会改哈希；last_startup/wake_count 不参与，
     否则每次 startup 都会打穿缓存。返回 None 表示缓存不可用。
+
+    `pressure_tier`（v3.57）参与哈希：高压档位下的注入体更短，若不进键，
+    低压时写入的全文缓存会被高压请求命中，降档形同未做。
     """
     try:
         cfg_key = {k: v for k, v in cfg.items() if k not in _INJECT_CACHE_CONFIG_IGNORE}
-        parts = [str(query or ""), str(budget),
+        parts = [str(query or ""), str(budget), str(pressure_tier or "full"),
                  json.dumps(cfg_key, ensure_ascii=False, sort_keys=True,
                             separators=(",", ":"), default=str)]
         for name in _INJECT_CACHE_FILES:
@@ -3649,7 +3688,7 @@ def inject_cache_info(cfg: dict | None = None) -> dict:
 
 
 def build_injection(query: str = "", budget_tokens: int | None = None,
-                    report: dict | None = None) -> str:
+                    report: dict | None = None, minimal: bool = False) -> str:
     ensure_home()
     cfg = load_config()
     # P0 上下文账单：report 传入 dict 时按段记账（字符数 / 估算 token / 占预算比例）；
@@ -3675,12 +3714,31 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
                 self.append(_it, secs[_i] if secs is not None else None)
     # budget 0/负数按 1 兜底：`budget_tokens or ...` 会把 0 静默吞掉，负数则算出负 char_budget
     budget = budget_tokens if isinstance(budget_tokens, int) and budget_tokens > 0 else _cfg_num(cfg, "budget_tokens", 2400, int)
+    # v3.57 上下文压力：插件把真实水位写进 HOME/_pressure.json，这里据此**往下**降档。
+    # 只降不升——压力只会让注入更省，不会让它变大；拿不到信号 = 完全保持旧行为。
+    #
+    # 为什么主要靠"砍预算"而不是只切 lazy：实测满档 1733 字符的记忆段，切成 lazy 后
+    # 单条省 37 字符，但 lazy 会多出一行图例（~41 字符），**只有一条记忆时净增**。
+    # 预算乘数才是确定性的杠杆：char_budget 一缩，各段按比例一起缩。
+    _pressure = read_pressure(cfg)
+    _p_tier = "full"
+    if _pressure is not None and not _pressure.get("stale"):
+        _p_tier = str(_pressure.get("tier") or "full")
+    # v3.59：显式极简（resume 用）——比压力档更彻底：按 minimal 处理，与"上下文快满"
+    # 走同一套省略逻辑（丢技能库/人格自检、预算 ×0.45），不再另写一份裁剪代码。
+    if minimal:
+        _p_tier = "minimal"
+        _pressure = {**(  _pressure or {}), "pct": (_pressure or {}).get("pct"), "tier": "minimal", "stale": False}
+    _P_BUDGET_MULT = {"full": 1.0, "lazy": 0.7, "minimal": 0.45}
+    if _p_tier in _P_BUDGET_MULT and _P_BUDGET_MULT[_p_tier] < 1.0:
+        budget = max(1, int(budget * _P_BUDGET_MULT[_p_tier]))
     # 五-D/候选1：开关打开时，库没变 + TTL 内直接复用上次注入文本，
     # 跳过整库遍历与 recall 重算（跨天恢复首轮明显更快）。默认关闭。
     # 账单模式（report 非 None）不读缓存：缓存只有整段文本、没有分段信息，
     # 读缓存填不出可信账单；顺带避免一次观测改写下次 startup 的缓存命中。
+    # 压力档位进缓存键：否则高压时命中低水位缓存的全文，降档等于没做。
     if report is None and cfg.get("session_state_cache"):
-        _ck = _inject_cache_key(query, budget, cfg)
+        _ck = _inject_cache_key(query, budget, cfg, _p_tier)
         if _ck:
             _cached = _inject_cache_load(cfg, _ck)
             if _cached:
@@ -3766,6 +3824,17 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
         used += _soft_block("\n## 我犯过的错（遇到类似情境先想起这些）",
                             [f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}" for m in _mistakes],
                             0.15)
+
+    # 「已经排除的方向」：负空间（v3.58，借自 AOCI-CODE 的 exclude 角色）。
+    # 与「我犯过的错」的区别：mistake 是"我做错了什么"，avoid 是"我们决定不做什么"。
+    # 单独成块的用处是让 AI 不再反复建议用户已经否掉的路——原来的做法只能靠一条
+    # 普通记忆碰运气被 recall 到，而注入时又分不清"这是事实"还是"这是禁区"。
+    _bill["sec"] = "avoid"
+    _avoids = [m for m in _recent40 if m.get("avoid")]
+    if _avoids:
+        used += _soft_block("\n## 已经排除的方向（别再提、别再建议）",
+                            [f"- {display_text(m)}" for m in _avoids[:5]],
+                            0.12)
 
     # 「我的人际关系」：kind=relationship 独立成块注入——记得谁是谁、欠了谁、
     # 被谁帮过，关系才有连续性（群聊场景跨群共享同一份画像）。
@@ -3903,14 +3972,21 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
         _last = (load_config().get("last_startup") or {}).get("ts") or 0
         new_mem = [m for m in _recent40 if _num(m.get("created"), 0) >= _last][:4]
         _new_ids = {m.get("id") for m in new_mem}
-        mems = [(m, 0, {}) for m in _recent40 if m.get("id") not in _new_ids][:6]
+        # v3.58：负空间条目走专属块，不参与"最近的记忆"——避免重复占预算
+        mems = [(m, 0, {}) for m in _recent40
+                if m.get("id") not in _new_ids and not m.get("avoid")][:6]
         header = "\n## 最近的记忆"
     lines, kept_mems = [], []
     # c1c 预算不够时先砍谁：低重要度 × 高衰减（retention 低）的先丢。
     # 按该键升序重排候选，让"最不抗压"的排尾部最先 pop。
+    # v3.58：加 text 作为最终 tie-break——重要度/retention 相同的记忆很常见（同一批
+    # 一起写入的尤其多），而候选的先后来自 recall 内部用 set 收集的命中顺序，会随
+    # 字符串哈希随机化而变。不兜底的话"同一份库"每次注入的记忆顺序可能不同，
+    # 既让金标准比对没法做，也让"上次注入"和"这次注入"无谓地漂移。
     mems = sorted(mems, key=lambda x: (
         _num(x[0].get("importance"), 0.5),
         retention(x[0], now_ts()),
+        str(x[0].get("text") or "")[:120],
     ))
     # 记忆段可用预算 = 总预算 − 前面软块已用，但至少保留 0.4×char_budget
     # （软块再多也不许把记忆段吃光；反之记忆段用不完也不返还给别处）。
@@ -3925,6 +4001,24 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
 
     _lazy = str(cfg.get("inject_mode") or "full").strip().lower() == "lazy"
     _lazy_chars = max(20, int(_cfg_num(cfg, "inject_lazy_chars", 80, int)))
+    # v3.57 上下文压力：插件把真实水位写进 HOME/_pressure.json，这里据此**往下**降档
+    # （只降不升：压力只会让注入更省，不会让它变大）。拿不到信号 = 完全保持旧行为。
+    #
+    # v3.59 修：这里**不能无条件重读**。上面（预算那一段）已经读过一次，`minimal=True`
+    # 时还把它写成了 `{"tier":"minimal",...}`；原来这里再 `read_pressure()` 一次会把
+    # 那个 dict 覆盖成 None（没有压力文件时），于是下面水位守则的
+    # `_pressure.get('pct','?')` 直接 AttributeError 崩掉。只在"还没读过"时才读。
+    if _pressure is None:
+        _pressure = read_pressure(cfg)
+    if _pressure is not None and not _pressure.get("stale"):
+        if _pressure.get("tier") == "minimal":
+            # minimal：记忆只留"有 id 的一句话指针"，正文一律交给 recall；
+            # 每条上限压到 40 字符，且记忆段预算再砍一半。
+            _lazy = True
+            _lazy_chars = min(_lazy_chars, 40)
+            mem_cap = max(char_budget * 0.2, min(mem_cap, char_budget * 0.5))
+        elif _pressure.get("tier") == "lazy":
+            _lazy = True
     _used_pointer = False
 
     def _pointer_line(m: dict, star: str = "") -> str:
@@ -3934,6 +4028,37 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
             brief = brief[:_lazy_chars].rstrip() + "…"
         mid = str(m.get("id") or "")
         return f"- {star}{brief}（id:{mid}，正文用 recall 取）"
+
+    def _fras_inj_suffix(m: dict) -> str:
+        """v3.58：把 FRAS 的 S（不明显约束）挂到行尾——它是最容易踩坑的一段。
+
+        F/R/A 三段信息量大、更容易从正文推到，注入只带 S，其余留 `recall --id` 取。
+        """
+        fr = m.get("fras")
+        if not isinstance(fr, dict):
+            return ""
+        s = str(fr.get("s") or "").strip()
+        if not s:
+            return ""
+        return f"｜约束：{s[:120]}"
+
+    def _stale_suffix(m: dict) -> str:
+        """v3.58：源文件变了就标「源已变」——记忆写的时候对，现在可能已经不对了。
+
+        只比 sha256，不读文件内容；文件被删也标（等于"源没了"）。
+        """
+        sf = m.get("source_file")
+        if not sf:
+            return ""
+        want = str(m.get("source_sha256") or "")
+        try:
+            p = Path(str(sf))
+            now_hash = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else ""
+        except Exception:
+            return "（源不可读）"
+        if want and now_hash == want:
+            return ""
+        return "（源已变，可能过期）" if now_hash else "（源文件已不在）"
 
     def _stars_inj(imp: float) -> str:
         if _inj_all and len(_inj_all) >= 20:
@@ -3960,14 +4085,17 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
         if inject_max > 0 and len(_body) > inject_max:
             _body = _body[:inject_max].rstrip() + "…"
         is_pointer = _lazy
+        # v3.58：FRAS 的 S 段与源过期标记都挂在正文行尾——信息密度最高、
+        # 又是"改它之前必须知道"的东西，先于正文细节给出来。
+        _extra = _fras_inj_suffix(m) + _stale_suffix(m)
         if _lazy:
             line = _pointer_line(m, star)
         else:
-            line = f"- {star}{_body}"
+            line = f"- {star}{_body}{_extra}"
             # 预算紧张自动降级：整行放不下时改指针，而不是直接把这条丢掉
             # （mem_cap 是"记忆段可用额度"，只跟段内已排的长度比）
             if lines_join_len(lines + [line]) > mem_cap:
-                line = _pointer_line(m, star)
+                line = _pointer_line(m, star) + _extra
                 is_pointer = True
         # append 之后累计再判：append 前判会把"当前这行自身"的长度漏算，实际可超预算一行
         lines.append(line)
@@ -3988,16 +4116,22 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
                          channel="inject" if query else "startup")
 
     # 「刚刚发生」：上面已按 id 切分（new_mem），这里直接渲染即可。
+    # v3.58：负空间条目（avoid）有自己的专属块，这里跳过——否则同一条会同时出现在
+    # 「刚刚发生」和「已经排除的方向」里，既费预算又让"禁区"看起来像普通新鲜事。
     if not query and new_mem:
-        dyn.append("\n## 刚刚发生（本会话新增）")
-        for m in new_mem:
+        _new_show = [m for m in new_mem if not m.get("avoid")]
+        if _new_show:
+            dyn.append("\n## 刚刚发生（本会话新增）")
+        for m in _new_show:
+            # FRAS 的 S 段 / 源过期标记同样要带（否则"刚刚发生"段成了信息盲区）
+            _suffix = _fras_inj_suffix(m) + _stale_suffix(m)
             if _lazy:
-                dyn.append(_pointer_line(m))
+                dyn.append(_pointer_line(m) + _suffix)
                 continue
             _body = display_text(m)
             if inject_max > 0 and len(_body) > inject_max:
                 _body = _body[:inject_max].rstrip() + "…"
-            dyn.append(f"- {_body}")
+            dyn.append(f"- {_body}{_suffix}")
 
     # v3.02 #10：到期事实复核提醒——带保质期的记忆过期后注入标「待复核」，
     # 提醒 AI 找机会跟用户确认"这条还作数吗"。确认过打 review_by_confirmed
@@ -4106,9 +4240,14 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
                   "human": "拟人模式：摘要压缩，细节可放心淡化，人设与情绪要点保住即可。"}.get(
                       session_mode if session_mode in ("work", "human") else "human", "")
     _bill["sec"] = "water"
-    out.append(f"[水位守则] 会话中即记即存；{rv} 补记清点，{dr} 做梦压缩，{es} 封存保底。"
-               + _mode_tail +
-               "用 python scripts/brain.py check-context --used <当前百分比> 逐档检查。")
+    # v3.57 高压档省略水位守则：它本身就是"什么时候该压缩"的说明，而上下文都快满了
+    # 还教怎么判断水位是多余的；minimal 档保留一行极简提示（否则模型完全不知道阈）。
+    if _p_tier == "minimal":
+        out.append(f"[水位守则] 上下文已偏满（{_pressure.get('pct', '?')}%）：先压缩再继续，别再囤。")
+    else:
+        out.append(f"[水位守则] 会话中即记即存；{rv} 补记清点，{dr} 做梦压缩，{es} 封存保底。"
+                   + _mode_tail +
+                   "用 python scripts/brain.py check-context --used <当前百分比> 逐档检查。")
     # 上次做梦的交接摘要（重放→压缩产物）：让新会话直接接上旧话题，
     # 而不是把「未决事项」一直压在上下文里占水位。
     _bill["sec"] = "dynamic"
@@ -4215,7 +4354,9 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
     try:
         import growth
         avail = [r for r in growth.skill_roots() if r.get("exists") and r.get("count")]
-        if avail:
+        # v3.57 高压档整段省略：技能库是"锦上添花"的可选块（实测 ~139 tokens），
+        # 上下文快满时它最不值得花；需要时 `skill scan` 随时能查。
+        if avail and _p_tier != "minimal":
             out.append("\n## 技能库（跨宿主，可直接用）")
             out.append("这些目录里有现成技能，都是本地文件，读出来照做即可，不必先安装：")
             for r in avail[:8]:
@@ -4247,7 +4388,9 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
                 _parts.append("喜欢 " + "、".join(_lk))
             if _dk:
                 _parts.append("讨厌 " + "、".join(_dk))
-            if _parts:
+            # v3.57 高压档省略：人格自检是防漂移的"复读提醒"，紧张时先让位；
+            # 人格本体（我是谁）始终保留，不会因此变成另一个人。
+            if _parts and _p_tier != "minimal":
                 out.append("[人格自检] 你还是那个" + str(_pself.get("name") or "灵枢") + "："
                            + "；".join(_parts) + "。语气与判断与它保持一致，别越聊越走样。")
     except Exception:

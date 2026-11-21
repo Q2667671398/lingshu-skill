@@ -82,7 +82,7 @@ function memCard(m){
   const pct = Math.round(Math.max(0, Math.min(100, (m.retention || 0) * 100)));   // clamp：conic-gradient 的 --p 不能越界
   const pending = m.review === "pending";
   return `<article class="mem">
-    <input type="checkbox" class="mem-check" data-id="${esc(m.id)}" title="加入批量操作" style="margin-top:4px;accent-color:var(--amber)">
+    <input type="checkbox" class="mem-check" data-id="${esc(m.id)}"${bulkHas(m.id) ? " checked" : ""} title="加入批量操作" style="margin-top:4px;accent-color:var(--amber)">
     <div class="ring" style="--p:${pct}"><b>${pct}%</b></div>
     <div class="mem-body">
       <div class="mem-top">
@@ -2437,15 +2437,22 @@ $("apply-json").addEventListener("input", () => {
 });
 
 // ---- 批量操作（记忆）
+// 选中集合是唯一真相，DOM 只是它的投影：>120 条走 LSVirtual 分块渲染，
+// 拿 DOM 当状态会导致"全选只选中已渲染的那 120 条"（v3.56 修）。
+function bulkHas(id){ return !!(S.bulkSel && S.bulkSel.has(String(id))); }
+function bulkVisibleIds(){ return new Set((S.memRows || []).map(m => String(m.id))); }
 function bulkSelected(){
-  return [...document.querySelectorAll("#mem-list .mem-check:checked")].map(x => x.dataset.id);
+  const visible = bulkVisibleIds();
+  const kept = [...(S.bulkSel || new Set())].filter(id => visible.has(id));
+  S.bulkSel = new Set(kept);   // 切筛选 / 刷新后，已不在结果里的行不再算选中
+  return kept;
 }
 function bulkUpdateCount(){
   const n = bulkSelected().length;
   const el = $("bulk-count"); if (el) el.textContent = `已选 ${n} 条`;
   const all = $("bulk-all");
   if (all) {
-    const total = document.querySelectorAll("#mem-list .mem-check").length;
+    const total = (S.memRows || []).length;
     all.checked = total > 0 && n === total;
     all.indeterminate = n > 0 && n < total;
   }
@@ -2460,20 +2467,39 @@ function bulkUpdateCount(){
   }
 }
 $("mem-list").addEventListener("change", e => {
-  if (e.target.classList && e.target.classList.contains("mem-check")) bulkUpdateCount();
+  const t = e.target;
+  if (!t.classList || !t.classList.contains("mem-check")) return;
+  if (!S.bulkSel) S.bulkSel = new Set();
+  if (t.checked) S.bulkSel.add(String(t.dataset.id));
+  else S.bulkSel.delete(String(t.dataset.id));
+  bulkUpdateCount();
 });
 $("bulk-all").addEventListener("change", () => {
   const on = $("bulk-all").checked;
-  document.querySelectorAll("#mem-list .mem-check").forEach(x => x.checked = on);
+  // 全选作用于"S.memRows 全量"，不是已渲染的 DOM；虚拟列表滚动时新卡片按集合回填勾选
+  S.bulkSel = on ? bulkVisibleIds() : new Set();
+  document.querySelectorAll("#mem-list .mem-check").forEach(x => {
+    x.checked = on && S.bulkSel.has(String(x.dataset.id));
+  });
   bulkUpdateCount();
 });
+async function postBulk(ids, action, value){
+  // 一次几百条会让单个请求超时/占住面板：按 200 条分批，累加 updated
+  let updated = 0;
+  for (let i = 0; i < ids.length; i += 200) {
+    const r = await post("/api/memory/bulk", {ids: ids.slice(i, i + 200), action, value});
+    updated += Number((r && r.result && r.result.updated) || 0);
+  }
+  return updated;
+}
 async function bulkRun(action, value, confirmMsg){
   const ids = bulkSelected();
   if (!ids.length) { toast("先勾选记忆", true); return; }
   if (confirmMsg && !confirm(confirmMsg)) return;
   try {
-    const r = await post("/api/memory/bulk", {ids, action, value});
-    toast(`已处理 ${r.result.updated} 条`);
+    const updated = await postBulk(ids, action, value);
+    S.bulkSel = new Set();
+    toast(`已处理 ${updated} 条`);
     await load();
     bulkUpdateCount();
   } catch (e) { console.error("批量操作:", e); toast(e.message, true); }

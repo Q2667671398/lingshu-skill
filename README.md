@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v3.54**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v3.59**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -131,9 +131,18 @@
 
 ### 情绪与类人机制
 
-情绪系统把"心情"做成一条会衰减的曲线，而不是一行写死的字：
+情绪系统把"心情"做成一条会衰减的曲线，而不是一行写死的字。
+
+**先说清"七情六欲"到底是什么**（代码里是真的，不是比喻）：
+
+- **七情 = 喜 / 怒 / 哀 / 惧 / 爱 / 恶 / 欲**，与《礼记》的七情同名；每组下面是具体情绪名（如「喜」含开心、喜悦、兴奋、满足、欣慰、骄傲、得意、惊喜），七情共 45 个，`emotion list` 按大类分组打印。另有一组「静」（平静 / 疲惫 / 无聊，3 个），代码上**不算七情**，但日常心情经常落在这里。
+- **六欲不是传统的"生、耳、目、口、鼻"**，而是六个拟人化的底层需要：求知欲 / 表达欲 / 连接欲 / 成就欲 / 安全欲 / 掌控欲。每天自然回落 6 点，被满足才回升，低到一定程度会渗进心情与语气（`emotion desire`）。
+- 两者分工：七情回答"此刻发生了什么"，按半衰期叠加成心情曲线；六欲回答"最近长期缺什么"，不直接算进 valence，但会影响语气与主动话题。
 
 - **两条轴**：valence（喜/哀，-1~1）+ arousal（强度，0~1），用**半衰期叠加**算出此刻心情（`emotion now`），看轨迹用 `emotion arc`，情绪共 7 大类（`emotion list`）。
+- **心情标签 ≠ 七情**：`emotion now` 显示的是把双轴坐标翻成人话的 **13 档标签**（兴奋 / 开心 / 愉快 / 平和 / 期待 / 平静 / 烦躁 / 焦虑 / 低落 / 失落 / 生气 / 委屈 / 难过）；七情是**事件**的归类（`emotion list`、面板七情占比）——"此刻什么心情"和"这件事属于哪一类"是两层，别混着说。
+- **心情标签不再"假满足"**（v3.55）：正面低唤醒细分「开心（arousal ≥0.35）/ 愉快（0.20–0.35）/ 平和（<0.20）」，负面在「失落」与「平静」之间补「低落」；当下没有任何正向事件在起作用（weight < 0.05）时，正面标签一律回落「平静」——不会出现"什么都没发生却在满足"。
+- **日常对话也会产生情绪**（v3.55）：`extract`（即记即存）封存后按词表做一次极轻量评价，正负混说 / 命中太少不猜，够门槛才补 **1 条**强度 ≤0.35 的情绪事件（`config.emotion_auto_extract`，默认开）。
 - **怎么产生情绪**：`emotion evaluate` 认知评价自动产生（不是手动演出来的）、`emotion mirror` 共情跟入用户情绪、`emotion feel` 手动记一笔。共情强度与抑制清单是用户随时可改的设定（`emotion config`）。
 - **错判了能微调**：`emotion events` 看事件流（带序号），`emotion adjust <序号>` 只改判错的那几项（强度/情绪名/原因），`emotion del <序号>` 删掉误记的整条，不用推倒重来。
 - **情绪增强编码**：情绪强烈时记住的事更牢，记录带 `emotion` 标记（杏仁核打个标签）。
@@ -579,7 +588,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | IM 桥接开关 | `~/.brain-memory/config.json` 的 `im` 段（如 `{"autoRecall":true,"autoCapture":false}`）；也可由宿主透传 `{im:{...}}`。默认都关（跨会话隐私） |
 | 冷热归档 | `archive show\|search <词>\|restore <id>\|run [--dry-run]\|count`（沉眠记忆自动雪藏，原文保留可回捞） |
 | 人格 | `persona show\|set traits.幽默=70\|sync\|path\|interview\|self\|lock\|unlock\|history [--limit]\|rollback <序号>\|snapshot [--label]\|snapshots\|restore <名字>\|drift [--days 7] [--json]` |
-| 情绪 | `emotion now\|arc\|list\|feel\|evaluate\|mirror\|desire\|config\|events\|adjust <序号>\|del <序号>\|cool\|check "回复文本"` |
+| 情绪 | `emotion now\|arc\|list\|feel\|evaluate\|mirror\|desire\|config\|events\|adjust <序号>\|del <序号>\|cool\|check "回复文本"`（`extract` 的自动情绪用 `config set emotion_auto_extract false` 关） |
 | 工作记忆 | `work status\|add\|list\|done <序号>\|flush [--skip-done]\|clear` |
 | 会话模式 | `mode show\|work\|human\|auto\|explain "一句话话题"`（工程会话自动隔离情绪；explain 看 auto 判定依据） |
 | 记忆关联 | `assoc link <idA> <idB> --relation 因果 --why "..."\|unlink <idA> <idB>\|of <id>\|auto [--dry-run]\|graph --limit 300` |
@@ -608,7 +617,7 @@ python scripts/brain.py serve   # 或直接双击 start-panel.bat
 | 通道三元组 | `channel remember "内容" --group <id>\|recall "词" --group <id>\|user <id>`（群隔离/跨群记忆/按人回忆） |
 | 群友隐私 | `channel privacy status\|grant <用户>\|revoke <用户>`（本人授权门控，未授权查第三人返回退出码 4） |
 | 淡忘可逆 | `memory dust fold\|unfold\|revive <id>`（折叠只留 gist / 原文还原 / 复活回活跃层，面板 ⇲⇱⤴ 按钮） |
-| 诊断 | `doctor`（十项体检，含 engine 副本一致性）/ 面板「诊断」标签页 / `GET /api/diagnostics`（死链、冲突未裁决、数据膨胀、来源归属完整率） |
+| 诊断 | `doctor`（13 项体检，含 engine 副本一致性、发布漂移、被吞异常聚合与运行时活跃度）/ 面板「诊断」标签页 / `GET /api/diagnostics`（死链、冲突未裁决、数据膨胀、来源归属完整率） |
 | 性能基准 | `python scripts/bench.py [--n 1000] [--quick]`（隔离临时库量 p50/p95，不碰真实记忆库） |
 
 全局参数：`--home <目录>`（切换数据目录）、`--ro`（只读降级）。

@@ -502,7 +502,7 @@ def mood_now(at: float | None = None) -> dict:
     strong = [g for g in groups if g["pct"] >= 15 and g["group"] != "静"]
     complex_flag = len(strong) >= 2
     base = {"valence": round(v, 3), "arousal": round(a, 3),
-            "label": _mood_label(v, a),
+            "label": _label_with_gate(v, a, active),
             "category": groups[0]["group"] if groups else "静",
             "intensity": round(min(1.0, sw), 3),
             "active": active[:6], "groups": groups,
@@ -512,16 +512,48 @@ def mood_now(at: float | None = None) -> dict:
 
 
 def _mood_label(v: float, a: float) -> str:
-    """把双轴坐标翻成一句人话。"""
+    """把双轴坐标翻成一句人话。
+
+    v3.55 起正面低唤醒不再一律「满足」：按唤醒度细分「开心 / 愉快 / 平和」，
+    负面在「失落」与「平静」之间补一档「低落」。阈值刻意保留小数档，
+    边界用例见 tests/test_emotion_labels.py。
+    """
     if v >= 0.45:
-        return "兴奋" if a >= 0.65 else ("开心" if a >= 0.35 else "满足")
+        if a >= 0.65:
+            return "兴奋"
+        if a >= 0.35:
+            return "开心"
+        if a >= 0.20:
+            return "愉快"
+        return "平和"
     if v >= 0.15:
         return "期待" if a >= 0.6 else "平静"
     if v > -0.15:
         return "烦躁" if a >= 0.6 else "平静"
     if v > -0.45:
-        return "焦虑" if a >= 0.6 else "失落"
+        if a >= 0.6:
+            return "焦虑"
+        return "低落" if a < 0.20 else "失落"
     return "生气" if a >= 0.7 else ("委屈" if a >= 0.45 else "难过")
+
+
+# —— v3.55：没有正向事件在起作用，就不许说「开心/满足」——
+# 心境是 EMA 沉淀出来的，正向余温能粘一天多；事件都散尽后 v 仍可能 ≥0.45，
+# 于是"什么都没发生"也显示「满足」——那不是情绪，是账上没洗掉的残留。
+POSITIVE_LABELS = ("兴奋", "开心", "愉快", "平和", "满足")
+POSITIVE_ACTIVE_MIN_WEIGHT = 0.05
+
+
+def _label_with_gate(v: float, a: float, active: list) -> str:
+    """标签 + 正向事件门槛：active 里没有够分量的正向事件时，正面标签回落「平静」。"""
+    label = _mood_label(v, a)
+    if label in POSITIVE_LABELS and not any(
+            _num(x.get("valence"), 0) > 0
+            and _num(x.get("weight"), 0) >= POSITIVE_ACTIVE_MIN_WEIGHT
+            for x in (active or [])):
+        return "平静"
+    return label
+
 
 
 # 心境 EMA：单事件情绪是"一瞬间"，心境是"这段时间的状态"。
@@ -547,11 +579,13 @@ def _mood_ema(m: dict) -> dict:
     out = dict(m)
     raw_v, raw_a = m["valence"], m["arousal"]
     out["valence"], out["arousal"] = v, a
-    out["label"] = _mood_label(v, a)
+    # 平滑后重算标签也要过同一道正向事件门槛（否则 EMA 会把回落又抹回「满足」）
+    out["label"] = _label_with_gate(v, a, m.get("active"))
     # 透明度：把"平滑前的真实感受"一并带回，注入给 AI/面板——
     # 手感隔层的问题大多出在只看到折过的心境、看不到瞬时情绪；两行都给，
     # 防线照旧（心境仍按 EMA 慢慢走），但 AI 能说清"我现在感觉X，心境是Y"。
-    out["raw"] = {"valence": raw_v, "arousal": raw_a, "label": _mood_label(raw_v, raw_a)}
+    out["raw"] = {"valence": raw_v, "arousal": raw_a,
+                  "label": _label_with_gate(raw_v, raw_a, m.get("active"))}
     # 与瞬时值差得远时说明"情绪在恢复期"，提示一下
     if abs(v - raw_v) >= 0.2:
         out["note"] = ((out.get("note") + "，") if out.get("note") else "") + "情绪正在慢慢平复"
@@ -1052,6 +1086,57 @@ def emotion_auto_candidate(user_text: str) -> dict | None:
         "hits": pos_hits[:3] + neg_hits[:3],
         "decision": "candidate",  # 只是候选：AI 决定要不要 feel()/mirror()
     }
+
+
+# —— v3.55：#10 extract 顺带做一次极轻量情绪评价（直接落盘，不再只给候选）——
+# 以前七情只有显式 `emotion feel/evaluate/mirror` 才会写：日常对话封存再多，
+# 心情也长期静止；偶发一条正面就跳到「满足」，看着很假。这里在 extract 封存
+# 成功后按词表判一次极性，够门槛才写 **1 条** genesis 事件，强度封顶 0.35——
+# 它是底色，不是主角。正负混着说不猜、命中太少不猜、失败不影响封存。
+AUTO_EXTRACT_MIN_CHARS = 80        # 与 extract 的惊异门控同口径
+AUTO_EXTRACT_MIN_HITS = 2          # 单词命中太容易把随口一句当成情绪
+AUTO_EXTRACT_MAX_INTENSITY = 0.35  # 自动事件强度上限
+
+
+def auto_appraise(text: str, config: dict | None = None) -> dict | None:
+    """extract 封存对话后顺手写一条轻量情绪事件；不写时返回 None。
+
+    返回 {emotion, intensity, polarity, hits}，供调用方打日志/测试断言。
+    配置键 `emotion_auto_extract`（默认 true）可整体关闭。
+    """
+    if READONLY:
+        return None
+    cfg = config if config is not None else load_config()
+    if not bool(cfg.get("emotion_auto_extract", True)):
+        return None
+    t = (text or "").strip()
+    if len(t) < AUTO_EXTRACT_MIN_CHARS:
+        return None
+    pos_hits = [w for w in _AUTO_POS_WORDS if w in t]
+    neg_hits = [w for w in _AUTO_NEG_WORDS if w in t]
+    if pos_hits and neg_hits:      # 正负混着说（"烦死了不过还是谢谢"）不猜
+        return None
+    hits = pos_hits or neg_hits
+    if len(hits) < AUTO_EXTRACT_MIN_HITS:
+        return None
+    intensity = min(0.35 if len(hits) >= 3 else 0.25, AUTO_EXTRACT_MAX_INTENSITY)
+    if neg_hits:
+        polarity = "negative"
+        emotion = ("难过" if any(w in t for w in ("难过", "失望", "哭", "委屈"))
+                   else "焦虑" if any(w in t for w in ("害怕", "担心", "焦虑"))
+                   else "烦躁")
+    else:
+        polarity = "positive"
+        emotion = ("开心" if any(w in t for w in ("开心", "高兴", "太好了", "哈哈"))
+                   else "感动" if "感动" in t else "满足")
+    if emotion not in EMOTIONS:
+        return None
+    feel(emotion, intensity=intensity,
+         why=f"对话里带{'正面' if polarity == 'positive' else '负面'}信号："
+             f"{'、'.join(hits[:3])}",
+         about="对话", genesis=True)
+    return {"emotion": emotion, "intensity": intensity,
+            "polarity": polarity, "hits": hits[:3]}
 
 
 def emotion_mirror(user_emotion: str, intensity: float = 0.5, what: str = "") -> dict:

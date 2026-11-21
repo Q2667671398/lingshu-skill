@@ -45,16 +45,32 @@ const DEFAULTS = {
   extractMinChars: 80,    // 攒的文本短于该值不触发（惊异门控在 brain.py extract 里有第二道）
   selfReviewDays: 3,      // 每 N 天触发 skill self-review
   runUsage: true,         // 每轮 turn-stopping 静默跑 usage --reply
-  injectReview: true,     // review 有 pending 时注入提醒（每轮有内容才注）
+  injectReview: true,     // review 有 pending 时注入提醒（每会话一次，见 reviewNotice*）
+  reviewNoticeMin: 5,     // v3.57：待审条数达到这个数才提醒（零星一两条不打扰）
+  reviewNoticeOnce: true, // v3.57：每会话最多提醒一次（false = 每次都提，旧行为）
   waterGuard: true,       // 水位守卫：pre-step 估真实水位，首次跨 60/75/90 各注一条提醒（v3.01）
   charsPerToken: 2,       // 中文语境 token 估算：约 2 字符 ≈ 1 token（v3.23 从 3 下调，避免低估）
   systemOverheadTokens: 18000, // system prompt + 工具 schema 的固定开销（不进 messages，v3.23）
   contextLimit: 131072,   // 模型上下文窗口 token 数（估算分母；宿主给 usage 时用宿主值）
   waterCheckTurns: 10,    // 每 N 轮做一次「软自检」：估算没到阈值也提醒 AI 自查（v3.23）
   reviewCacheMs: 30000,   // review --json 结果缓存时长（pre-step 每步都跑，别真跑）
-  pruneInjected: true,    // 上下文无感清理：把灵枢自己注入过的旧提醒从消息流里清掉
+  pruneInjected: false,   // v3.59：默认**不清理**已注入的旧消息。
+                          // 为什么反过来了：提示词缓存从请求开头逐项匹配，删掉历史中段的
+                          // 一条消息等于**改写前缀**——从该处往后全部无法复用缓存，新模型还会
+                          // 丢弃变更点之后的推理项（OpenAI《保持前缀不变》）。所以"删旧消息省
+                          // token"是净亏。只在压缩/上下文重建后由宿主清一次才划算。
+                          // 想恢复旧行为：config 里设 pruneInjected: true。
                           // （原文已被 extract 封存海马体，清掉 = 归档后遗忘，不丢信息）
 }
+
+// 本插件注入消息的 source.name：**故意与 startup 的 'lingshu-startup' 区分开**。
+// 原来两个子插件都用 'lingshu'，于是 cron 的 pruneInjected 会把 startup 注入的
+// 人格/记忆块一起删掉（谁先跑谁赢）。lingshu-im 早就因为同一个坑改用了
+// 'lingshu-im'（见其 plugin.js 注释），这里补齐。
+const INJECT_SOURCE = 'lingshu-cron'
+
+/** 灵枢家族所有注入消息的 source.name——水位估算要排除它们，只看真实对话。 */
+const LINGSHU_SOURCES = new Set(['lingshu', 'lingshu-cron', 'lingshu-startup', 'lingshu-im'])
 
 /** 合并用户配置与默认值 */
 function mergeConfig(user) {
@@ -301,8 +317,74 @@ function recordWaterAuto(level, action, executed, reason) {
   } catch {} // 台账本身不能成为故障源
 }
 
-/** 90% 的"待人工确认的逃生建议"：说明为什么不由插件 capture，并给出人工确认后的命令。 */
-function escapeSuggestion(pct, source) {
+// ---------------------------------------------------------------- 上下文压力（v3.57）
+
+/** 压力阈值：与 scripts/core.py 的 PRESSURE_DEFAULTS **保持一致**；config 的
+ *  pressure 段可覆盖。两边各写一份是因为插件不 import Python，注释互指即可。 */
+const PRESSURE_DEFAULTS = { lazy_at: 70, minimal_at: 85, hard_at: 95, force_at: 98 }
+
+/** 读 pressure 阈值（写坏/缺项一律回退默认，宁可不生效也不猜）。 */
+export function pressureThresholds() {
+  let seg = {}
+  try {
+    const cfg = JSON.parse(readFileSync(join(memoryHome(), 'config.json'), 'utf8'))
+    const raw = cfg?.pressure
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) seg = raw
+  } catch {}
+  const out = { ...PRESSURE_DEFAULTS }
+  for (const key of Object.keys(PRESSURE_DEFAULTS)) {
+    const v = seg[key]
+    if (typeof v === 'boolean') continue
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 100) out[key] = v
+  }
+  out.minimal_at = Math.max(out.minimal_at, out.lazy_at)
+  out.hard_at = Math.max(out.hard_at, out.minimal_at)
+  out.force_at = Math.max(out.force_at, out.hard_at)
+  return out
+}
+
+/** 上次写 Pressure 的百分比（按 agent 记，避免每步都写盘）。 */
+const pressureWritten = new Map()
+
+/**
+ * 把水位写进 `HOME/_pressure.json`（注入侧读它降档）。
+ * 只在"跨 5 个百分点"或"跨档"时真写，减少磁盘写；失败静默返回 false。
+ */
+export function writePressure(pct, source, prevMax) {
+  try {
+    if (pct == null || !Number.isFinite(Number(pct))) return false
+    const p = Math.round(Number(pct))
+    const th = pressureThresholds()
+    const tier = p >= th.minimal_at ? 'minimal' : p >= th.lazy_at ? 'lazy' : 'full'
+    const key = `${tier}`
+    const last = pressureWritten.get('last')
+    if (last && last.tier === key && Math.abs(p - last.pct) < 5) return false
+    pressureWritten.set('last', { pct: p, tier: key })
+    const file = join(memoryHome(), '_pressure.json')
+    const tmp = `${file}.${randomUUID()}.tmp`
+    writeFileSync(tmp, JSON.stringify({ pct: p, at: Math.floor(Date.now() / 1000), source: String(source || '') }), 'utf8')
+    try { rmSync(file, { force: true }) } catch {}
+    renameSync(tmp, file)
+    return true
+  } catch { return false }
+}
+
+/**
+ * 98% 强制自救：只跑**没有破坏性**的两条——
+ *   `auto-archive`：把审核通过的 pending 记忆按类型转正（原记忆只加 archived_at，不删）
+ *   `memory diagnose`：只报告问题，不修复
+ * capture 永不自动（插件拿不到会话原文），purge 永不自动（物理删除）。
+ */
+export function forceActions() {
+  return [
+    { id: 'autoarchive', argv: ['auto-archive'] },
+    { id: 'diagnose', argv: ['memory', 'diagnose'] },
+  ]
+}
+
+/**
+ * 90% 的"待人工确认的逃生建议"：说明为什么不由插件 capture，并给出人工确认后的命令。
+ */function escapeSuggestion(pct, source) {
   const from = source === 'usage' ? '宿主 usage' : '消息字符估算'
   return `【灵枢·水位 90% 逃生建议】上下文估算约 ${pct}%（来源：${from}）。`
     + '封存 capture 需要会话原文，插件拿不到正文、也绝不替你拼凑，所以这里只提醒、不自动执行。'
@@ -373,7 +455,7 @@ function notice(text) {
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'skill-invocation', name: 'lingshu', form: 'instructions' },
+    source: { kind: 'skill-invocation', name: INJECT_SOURCE, form: 'instructions' },
   }
 }
 
@@ -395,6 +477,8 @@ export function apply(ctx, config) {
   const convo = new Map()   // agent -> { text, seen }（即记即存缓冲 + 已处理消息游标，extract 成功后清空）
   const lastReply = new Map() // agent -> 最后一条 assistant 文本（给 usage --reply 用）
   const waterState = new Map() // agent -> { max } 水位守卫已提醒的最高档（60/75/90 各提醒一次）
+  // v3.57：review 提醒已发过的 agent（每会话一次，不再每轮催）
+  const reviewNoticeAt = new Map()
   const waterAutoState = new Map() // agent -> { max } 水位自动执行已处理到的最高档（75/90 各动作一次）
   let state = loadState(statePath())
 
@@ -499,6 +583,31 @@ export function apply(ctx, config) {
       }
     })()
     return true
+  }
+
+  /**
+   * v3.57（保护 B 的执行端）：98% 强制自救——**同步 await**（与 fire 的 fire-and-forget
+   * 不同：这里必须等结果，才能把"做了什么"如实告诉模型）。只跑无破坏性动作。
+   * 返回一行摘要（失败也返回，说明失败了几个），绝不抛异常。
+   */
+  async function runForceActions(pythonExe, brainPy) {
+    const done = []
+    const failed = []
+    for (const task of forceActions()) {
+      try {
+        const out = await runBrain(pythonExe, cfg.python, brainPy, task.argv, cfg.timeoutMs)
+        if (out === null) failed.push(task.id)
+        else {
+          // 取首行当摘要，避免把整段输出灌进上下文
+          const line = String(out).trim().split(/\r?\n/).find((x) => x.trim()) || task.id
+          done.push(line.trim().slice(0, 60))
+        }
+      } catch { failed.push(task.id) }
+    }
+    const parts = []
+    if (done.length) parts.push(done.join('；'))
+    if (failed.length) parts.push(`失败：${failed.join('、')}（可手工重试）`)
+    return parts.join('。')
   }
 
   /**
@@ -662,12 +771,20 @@ export function apply(ctx, config) {
       }
       let chars = 0
       for (const m of msgs) {
-        if (m?.source?.name === 'lingshu') continue
+        // 估算只看"真实对话"：灵枢自己注入的消息不算（v3.59：三个子插件各有名字）
+        if (LINGSHU_SOURCES.has(m?.source?.name)) continue
         for (const c of (Array.isArray(m?.content) ? m.content : [])) {
           if (c?.type === 'text' && typeof c.text === 'string') chars += c.text.length
         }
       }
-      if (!chars) return null
+      if (!chars) {
+        // v3.57（保护 C）：原来这里直接 return null，守卫就此静默跳过——「以为没到水位，
+        // 其实已经快满」正是要防的情况。现在至少按 system/工具固定开销给一个下限
+        // （拿不到正文时它也是真实存在的成本），并标明来源，让提醒口径说实话。
+        const floor = Number(cfg.systemOverheadTokens) || 0
+        if (!floor) return null
+        return { pct: Math.min(100, Math.round(floor / cfg.contextLimit * 100)), source: 'floor' }
+      }
       const tokens = chars / cfg.charsPerToken + (cfg.systemOverheadTokens || 0)
       return { pct: Math.min(100, Math.round(tokens / cfg.contextLimit * 100)), source: 'chars' }
     } catch { return null }
@@ -682,14 +799,16 @@ export function apply(ctx, config) {
       const { agent } = payload || {}
       if (!agent) return decision
 
-      // 上下文无感清理：把此前由本插件注入的旧提醒消息清掉。
-      // 只识别 source.name === 'lingshu' 的注入消息（本插件唯一的"私有领地"），
-      // 绝不碰用户/AI 的原始对话、不碰 APP 的会话管理——这些提醒的原文
-      // 已经通过 extract 沉进海马体，清掉只是"归档后遗忘"，信息不丢。
+      // 上下文清理（v3.59 起默认关闭）：只清**本插件自己**注入过的旧提醒。
+      // 两个要点：
+      //   1. 只认 `INJECT_SOURCE`（'lingshu-cron'），绝不碰 startup 的
+      //      'lingshu-startup' 记忆块，也不碰 im 的 'lingshu-im'；
+      //   2. 默认不执行——删历史中段的消息会改写提示词缓存前缀，后续全部无法
+      //      复用（见 DEFAULTS 里 pruneInjected 的说明）。用户显式开启才清。
       try {
         if (cfg.pruneInjected) {
           const msgs = Array.isArray(decision.messages) ? decision.messages : []
-          const kept = msgs.filter((m) => m?.source?.name !== 'lingshu')
+          const kept = msgs.filter((m) => m?.source?.name !== INJECT_SOURCE)
           if (kept.length !== msgs.length) {
             decision = { ...decision, messages: kept }
           }
@@ -755,7 +874,12 @@ export function apply(ctx, config) {
         }
       } catch {} // 自动执行判定异常不能拖住 pre-step
 
-      // 2) review 提醒：每轮都查（走缓存），有 pending 才注
+      // 2) review 提醒（v3.57 降级）：原来是"每轮 + 命令式"——「先运行 lingshu review
+      //    确认或丢弃，再继续当前任务」，逼模型每次都先跑一轮工具才回答（实测多一轮
+      //    工具往返 ≈ TTFT +2~4s，且用户会感觉"开局慢"）。现在：
+      //      · 文案改成非命令式（"有空再看"），不再抢占回答；
+      //      · 每会话最多提醒一次（reviewNoticeOnce 默认 true）；
+      //      · 待审条数达到 reviewNoticeMin（默认 5）才提，零星一两条留给用户自己看。
       if (cfg.injectReview) {
         if (Date.now() - reviewCacheAt > cfg.reviewCacheMs) {
           const raw = await runBrain(pythonExe, cfg.python, brainPy, ['review', '--json'], 15000)
@@ -771,11 +895,15 @@ export function apply(ctx, config) {
         const memCount = (reviewCacheVal?.memories?.length ?? 0)
           + (reviewCacheVal?.knowledge?.length ?? 0)
           + (reviewCacheVal?.persona?.length ?? 0)
-        if (memCount > 0) {
+        // 已达下限、且没在本会话提醒过（reviewNoticeOnce=false 时每次都提）
+        const alreadyNoticed = reviewNoticeAt.get(agent) === true
+        const gated = cfg.reviewNoticeOnce && alreadyNoticed
+        if (memCount >= Math.max(1, Number(cfg.reviewNoticeMin) || 1) && !gated) {
+          reviewNoticeAt.set(agent, true)
           return {
             ...decision,
             messages: [...decision.messages, notice(
-              `【灵枢审核】有 ${memCount} 条 AI 整理的记忆待确认。先运行 lingshu review 确认或丢弃，再继续当前任务。`,
+              `【灵枢审核】有 ${memCount} 条 AI 整理的记忆待确认（不急，有空 \`lingshu review\` 看一眼即可，不影响当前任务）。`,
             )],
           }
         }
@@ -785,8 +913,44 @@ export function apply(ctx, config) {
       //    首次跨过 60/75/90 各注入一条带真实数字的提醒。
       //    另加软自检：每 waterCheckTurns 轮若还没跨阈值，也戳一下，防止估算偏低时永远不响。
       if (cfg.waterGuard) {
-        const st = waterState.get(agent) || { max: 0, softAt: -1 }
+        const st = waterState.get(agent) || { max: 0, softAt: -1, lastPct: null }
         if (pct != null) {
+          // v3.57（保护 A 的写入端）：把真实水位落成 HOME/_pressure.json，注入侧
+          // （memory.build_injection 读 core.read_pressure）据此整体降档。
+          // 每跨 5 个百分点或跨档时写一次，避免每步都写盘；失败静默（不能拖住 pre-step）。
+          writePressure(pct, est?.source || 'unknown', st.max || 0)
+
+          // v3.57（保护 B）：95 / 98 两个硬档。90 仍是"建议"（用户可能还想继续干活），
+          // 95 改命令式，98 起自动做**无破坏性**自救（auto-archive 只打归档标记、
+          // diagnose 只报告），绝不自动 capture（拿不到原文）也绝不 purge（物理删除）。
+          const th = pressureThresholds()
+          if (pct >= th.force_at) {
+            const did = await runForceActions(pythonExe, brainPy)
+            if (st.forceAt !== true) {
+              st.forceAt = true
+              waterState.set(agent, st)
+              return {
+                ...decision,
+                messages: [...decision.messages, notice(
+                  `【灵枢·水位 ${pct}%】已到强制自救线（${th.force_at}%），已自动执行无破坏性压缩：${did || '无可用动作'}。`
+                  + `现在只做三件事之一：① 让用户确认封存 capture；② 结束本轮话题；③ 继续也得先说明风险。不要再开新话题。`,
+                )],
+              }
+            }
+            return decision
+          }
+          if (pct >= th.hard_at && st.hardAt !== true) {
+            st.hardAt = true
+            waterState.set(agent, st)
+            return {
+              ...decision,
+              messages: [...decision.messages, notice(
+                `【灵枢·水位 ${pct}%】已过硬线（${th.hard_at}%）：立刻先跑 \`python scripts/brain.py dream --auto\``
+                + `（或 \`auto-archive\`），压缩完再继续。不做压缩就继续对话，后面的内容很可能被宿主截断。`,
+              )],
+            }
+          }
+
           const step = pct >= 90 ? 90 : pct >= 75 ? 75 : pct >= 60 ? 60 : 0
           if (step > (st.max || 0)) {
             st.max = step
@@ -797,18 +961,36 @@ export function apply(ctx, config) {
               return { ...decision, messages: [...decision.messages, notice(text)] }
             }
           }
-          // 软自检：估算明显偏低时（比如没到 60）也不能全程沉默
+          // 软自检（v3.59 重写）：原来"每 waterCheckTurns 轮无条件注入一条"，实测
+          // 水位才 14% 也照发，用户会看到"没压缩却还在注入上下文"。现在只在
+          // **确有变化**时提醒，其余情况只记账不占上下文：
+          //   ① 从没测过水位（本会话首次拿到估算）；
+          //   ② 估算比上次提醒时涨了 ≥10 个百分点（真的在变满）；
+          //   ③ 距上次提醒已过 waterCheckTurns 轮，**且**确实在涨（≥2 个百分点）。
+          // 另：文案里不再叫模型去跑 check-context——那会多一次工具往返，而这条
+          // 提醒本身通常没到需要动作的程度。
           const every = Math.max(0, Number(cfg.waterCheckTurns) || 0)
-          if (every > 0 && step === 0 && n > 0 && n % every === 0 && st.softAt !== n) {
+          const lastPct = Number.isFinite(st.lastPct) ? st.lastPct : null
+          const grew = lastPct === null ? Infinity : pct - lastPct
+          const turnsSince = Number.isFinite(st.softAt) && st.softAt > 0 ? n - st.softAt : Infinity
+          const worthNoticing = lastPct === null
+            || grew >= 10
+            || (every > 0 && turnsSince >= every && grew >= 2)
+          if (worthNoticing && step === 0 && n > 0 && st.softAt !== n) {
             st.softAt = n
+            st.lastPct = pct
             waterState.set(agent, st)
             return {
               ...decision,
               messages: [...decision.messages, notice(
-                `【灵枢·水位自检】估算约 ${pct}%（来源：${est.source}，可能偏低）。`
-                + '若你觉得上下文已经偏满，先跑 `check-context --used <你估的百分比>`；到 75% 就跑 `dream --auto`。'
+                `【灵枢·水位】上下文估算约 ${pct}%（来源：${est.source}）。还没到清点线，正常继续即可。`
               )],
             }
+          }
+          // 不提醒也要更新"上次见过的水位"，下次才有得比
+          if (lastPct !== pct) {
+            st.lastPct = pct
+            waterState.set(agent, st)
           }
         } else {
           waterState.set(agent, st)

@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 3.54
+version: 3.59
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -50,6 +50,8 @@ verbatim/       capture 原样快照  evolution.jsonl 自我进化日志
 skills/        你自己写的技能      extensions/     扩展模块（可执行钩子，更新永不覆盖）
 lingshu.user.md 用户附加规则（更新技能永不覆盖，每会话自动注入）
 ```
+
+**情绪口径**：七情＝喜 / 怒 / 哀 / 惧 / 爱 / 恶 / 欲（《礼记》同名，45 个情绪名按大类分组见 `emotion list`），另有一组「静」（平静 / 疲惫 / 无聊）不算七情；六欲＝求知 / 表达 / 连接 / 成就 / 安全 / 掌控——**不是传统"耳目口鼻"**，是六个底层需要，每天回落 6 点、被满足才回升。`emotion now` 的标签是 **13 档人话**（兴奋/开心/愉快/平和/期待/平静/烦躁/焦虑/低落/失落/生气/委屈/难过），与七情分类不是一层。`extract` 封存后会自动补一条轻量情绪（`config.emotion_auto_extract` 默认开）；没有正向事件在起作用时，心情标签回落「平静」。
 
 脚本：`<本技能目录>/scripts/brain.py`（成长子系统 `growth.py`，由 brain.py 转发；记忆/情绪/人格/做梦实现已按领域拆到同目录 `memory.py` / `emotion.py` / `persona.py` / `dream.py` / `cli.py`，由 `brain.py` 合并命名空间并 re-export，命令与旧 import 全部兼容）。
 
@@ -348,7 +350,7 @@ python scripts/brain.py knowledge add|search|review
   # 验证：python scripts/brain.py knowledge search <关键词> 或 knowledge show <id>
 python scripts/brain.py work | work done <序号> | work flush
 python scripts/brain.py status --json               # 水位唯一数据源（退出码 0/1=60%/2=75%/3=90%，面板/cron/doctor 都读它）
-python scripts/brain.py doctor [--json]             # 七合一体检（audit/人格/记忆诊断/写权限/副本sha/日志warn/engine-sync——副本漂移直接暴露）
+python scripts/brain.py doctor [--json]             # 13 项体检（audit/人格/记忆诊断/写权限/备份sha/日志/版本矩阵/临时目录/写入者/engine-sync/release-drift/failures/runtime-liveness）
 python scripts/brain.py lesson "教训内容"            # 一条命令三写：memory(mistake)+knowledge(pending)+note
 python scripts/brain.py persona suggest [list|scan|adopt N|discard N]  # 从记忆/笔记归纳人格画像候选，确认后生效
 python scripts/brain.py persona viewed              # 确认已浏览人格近期改动

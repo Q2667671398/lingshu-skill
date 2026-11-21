@@ -185,6 +185,11 @@ function makeWorld() {
   }
 }
 
+// v3.59：注入消息的 source.name 按子插件分开（startup/cron/im 各不相同）。
+// 断言"插件注入了什么"时不能再只认 'lingshu'——那是 v3.58 及以前的统一名字，
+// 正因为两个子插件共用它才导致 cron 的 prune 会删掉 startup 的记忆块。
+const LINGSHU_SOURCES = new Set(['lingshu', 'lingshu-cron', 'lingshu-startup', 'lingshu-im'])
+
 // 与 cron 插件 DEFAULTS 对齐的最小配置：contextLimit=100000 → totalTokens=pct*1000 就是 pct%
 const BASE_CONFIG = {
   contextLimit: 100000,
@@ -222,13 +227,13 @@ function messagesFor(pct) {
   }]
 }
 
-/** 驱动一次 pre-step 到指定水位；返回插件注入的提醒文本（source.name==='lingshu'）。 */
+/** 驱动一次 pre-step 到指定水位；返回插件注入的提醒文本（source.name 属灵枢家族）。 */
 async function preStep(world, agent, pct) {
   const handler = world.handler('agent/pre-step')
   if (!handler) throw new Error('agent/pre-step handler 未注册')
   const decision = await handler({ agent }, async () => ({ kind: 'enter', messages: messagesFor(pct) }))
   const injected = ((decision && decision.messages) || [])
-    .filter((m) => m && m.source && m.source.name === 'lingshu')
+    .filter((m) => m && m.source && LINGSHU_SOURCES.has(m.source.name))
     .map((m) => (m.content || []).filter((c) => c && c.type === 'text').map((c) => c.text).join(''))
   return { decision, injected }
 }

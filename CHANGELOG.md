@@ -1,5 +1,89 @@
 # 更新日志
 
+## v3.59（2026-11-21）
+
+> 主题：**中途重复注入的根治**。用户报障：「每次对话上下文注入完，在对话还会注入，上下文没有压缩但是灵枢还会注入上下文」。查下来是四个独立成因，其中两个直接违反提示词缓存的**前缀不变**原则——不是"多花点 token"，是让缓存从注入点往后全部失效。
+
+- **软自检条件化（item 21）**：原来 `waterCheckTurns:10` 让插件**每 10 轮无条件**注入一条水位自检，实测水位只有 14% 也照发，文案还叫模型再跑一次 `check-context`（多一次工具往返）。现在只在三种情况提醒：从没测过 / 估算比上次涨 ≥10 个百分点 / 轮数够了且确实在涨 ≥2 点；其余情况只更新 `st.lastPct` 记账、不占上下文。文案改为纯告知。
+- **`pruneInjected` 默认改 false（item 22）**：它原来按 `source.name` 把历史里的旧注入消息**删掉**。但提示词缓存从请求开头逐项匹配，删掉中段一条就等于**改写前缀**，从该处往后全部无法复用缓存，新模型还会丢弃变更点之后的推理项（[OpenAI·保持前缀不变](https://developers.openai.com/zh-Hans/api/docs/guides/keep-prefix-unchanged)）。"删旧消息省 token"在这里是净亏。想恢复旧行为可显式设 `pruneInjected: true`。
+- **`source.name` 三家分开（item 23）**：startup 与 cron 都用 `'lingshu'`，于是 cron 的 prune 会把 startup 注入的人格/记忆块一起删掉（谁先跑谁赢）。现在 `lingshu-startup` / `lingshu-cron` / `lingshu-im` 各用各的，prune 只清自己那一种；水位估算改用 `LINGSHU_SOURCES` 集合统一排除三家。`lingshu-im` 早就因为同一个坑自己绕开了，这次把 startup 与 cron 补齐。
+- **内容指纹去重 + resume 极简版（item 24）**：startup 注入前算文本 sha256 前 16 位，同一 agent 里重复内容直接跳过（resume、agent 重建、宿主重复派发都可能触发重注入）；`resume` 改用 `resumeBudget`（默认 400）+ 新增 `--minimal`，走"极简注入"（省略技能库与人格自检，保留人格本体、状态、水位）。
+- **修掉一个刚引入的崩溃**：`build_injection` 里 `_pressure` 被读了**两次**——预算那段在 `minimal=True` 时写入了 `{"tier":"minimal"}`，后面 `_lazy` 那段又无条件 `read_pressure()` 一次，把 dict 覆盖成 `None`，于是水位守则的 `_pressure.get('pct','?')` 抛 `AttributeError: 'NoneType' object has no attribute 'get'`。改为"只在还没读过时才读"，并补注释说明为什么不能重读。
+
+**验证**：新增 `tests/test_injection_hygiene.py` 10 条（软自检不再周期化、文案不再命令式、prune 默认 false、两个 `INJECT_SOURCE` 常量、prune 只清自己、`LINGSHU_SOURCES` 覆盖三家、指纹去重与 `resumeBudget` 存在、真实 node 导入两插件）；`startup --minimal` 实测 2244 字符无任何错误行、无新 crash 日志；函数级对比 2530 → 2169 字符且 `## 技能库` / `[人格自检]` 确实省略、`## 我是谁` / `[水位守则]` 保留；全量 `run_tests.py` 51/51。
+
+## v3.58（2026-11-21）
+
+> 主题：**外部借鉴三条落地 + 首次体验一条命令**。P4 是从 AOCI-CODE / rust-anything 抄来的三件工具（详见台账 P4 节），P3-16 是拖了很久的"新用户第一屏"。
+
+- **记忆条目加 FRAS 四段**（`remember --f/--r/--a/--s`）：F 职责 / R 关系 / A 接口 / S 不明显约束。原来的记忆只有 `text`/`gist`/`tags`——**记得事情，不记得坑**；`S` 段（例外、边界、关键约束）信息密度最高，注入时挂在正文行尾优先展示，F/R/A 留给 `recall` 取。空字段自动丢弃；不传则完全不写该字段，**旧调用与旧数据行为逐字不变**。
+- **源指纹 + STALE**（`remember --source-file <路径>`）：落盘时记该文件的 `sha256`。注入时重新哈希比对，不一致标「源已变，可能过期」，文件被删标「源文件已不在」。这是"这条记忆还成不成立"的信号，与 `h`/`p_h` 哈希链（防篡改）不是一回事——文件型知识（部署流程、配置说明）最容易悄悄过期。
+- **负空间**（`remember --avoid`）：显式记住「我们决定不做的事」。原来"别再建议 DiskGenius 恢复"只能挤在一条普通记忆里，注入时分不清它是事实还是禁区；现在单独成块**「已经排除的方向（别再提、别再建议）」**，并**从「最近的记忆」「刚刚发生」里排除**（否则同一条出现两三次，白占预算）。
+- **`persona interview --quick`**：首次体验一条命令完成最小画像（名字 + 最多 3 个 traits）。原来要两条命令（`interview` → `self`）+ 一串可选问题，用户容易停在半路，而 `onboarding.completed=false` 时注入会一直催"初识还没完成"。现在没给名字就用占位名「灵枢」并提示怎么改，其余（说话方式/价值观/称呼/自称/喜好）全部可跳过。
+- **行为基线工具**（`scripts/behavior_baseline.py`，P4-20）：`record` 录一批固定输入下的 `startup`/`recall` 文本快照，`check` 重放逐字比对，`diff` 只看差异。给 P3-15 拆模块当门禁用——原来只有"断言集合不变"，证明不了"同一份库产出的注入仍逐字相同"。
+  - 踩坑记录：第一版连续 `check` 有 1/3 概率报差异。根因是「刚刚发生」段取 `[m for m in _recent40 if created >= last_startup][:4]` ——**前 4 条**，而种子记忆同一秒写入时 `created` 全相等、排序并列，谁进这 4 条取决于文件先后；修法第一版又按 `(created, text)` 排序，只要 6 条写入跨过秒边界就每次不同。最终**只按 text 定序**才稳定（实测 8/8 通过）。
+- **顺带修掉一个真缺陷**：`build_injection` 里记忆候选的排序原来只按 `(importance, retention)`，并列时顺序来自 `recall` 内部 `set` 的遍历顺序 → **同一份库两次注入的记忆顺序可能不同**。加了 `text` 作为最终 tie-break（见 [memory.py](scripts/memory.py) 的 `mems = sorted(...)`）。
+
+**验证**：新增 `tests/test_memory_metadata.py` 8 条（FRAS 可选/空字段丢弃/S 段进注入、指纹 sha256/变更标 stale/删除标不在、avoid 独立块且不重复）与 `tests/test_behavior_baseline.py` 5 条（抹平规则只抹该抹的/两次采集逐字相同/快照 key 齐全/种子文本不重复/钉完时间戳互不相同）；端到端实测三条元数据在注入里的实际表现；`persona interview --quick` 在新 HOME 上跑通且注入不再催初识。
+
+## v3.57（2026-11-21）
+
+> 主题：**上下文快满时的保护，以及"开局慢"的真正原因**。用户提了两件事：「发起对话感觉慢，他得先审核记忆、之后还得看记忆来回复」+「能不能再加一个保护，当上下文快满的时候那种」。
+
+**先说实测，避免拍脑袋**（真解释器、真实记忆库）：
+
+| 环节 | 实测 |
+|---|---|
+| `brain.py startup` 本体 | **141–194 ms**（跑 3 次） |
+| 纯 `python -c pass` / `import brain` | 24 ms / 102 ms |
+| 插件每步 `review --json` / 每轮 `usage --reply` | 147 ms（30s 缓存）/ 114 ms |
+| 注入体积 | 1922 字符 ≈ **1214 tokens**，其中「上次交接」250、技能库 139、人格三段 311 |
+
+结论：**慢不在 Python 读库**，在两处——(a) 那句命令式的「先运行 lingshu review 确认或丢弃，再继续当前任务」逼模型多跑一轮工具往返（同类实测 TTFT +2~4s）；(b) 注入体是固定成本，上下文快满时照旧全额注入。
+
+- **`injectReview` 降级**（[plugin.js](cordis-plugin/lingshu-cron/plugin.js)）：文案改非命令式（「不急，有空 `lingshu review` 看一眼即可，不影响当前任务」），并新增 `reviewNoticeMin`（默认 5 条才提）与 `reviewNoticeOnce`（默认每会话最多一次）。零星一两条不再打断回答。
+- **保护 A：水位驱动的注入降档**（[core.py](scripts/core.py) 的 `read_pressure`/`write_pressure` + [memory.py](scripts/memory.py)）：
+  - 插件在每步 `pre-step` 拿到宿主真实 usage，跨 5 个百分点或跨档时写 `HOME/_pressure.json`；
+  - 注入侧据此**只降不升**：≥70% → lazy（预算 ×0.7 + 指针化）、≥85% → minimal（预算 ×0.45 + **整段省略技能库/人格自检**）；
+  - 实测（隔离库 8 条记忆）：满档 2014 → lazy 1989 → minimal 1625 字符，**minimal 省 19%（约 243 tokens）**，清掉压力完整恢复 2014；
+  - 为什么必须"省略整段"而不是只砍预算：只砍预算时可选块照旧输出，实测仅省 3%；
+  - 压力档位进注入缓存键（`_inject_cache_key` 新增 `pressure_tier`），否则高压时命中低压缓存的全文、降档形同未做；
+  - 文件缺失/损坏/超过 600 秒未更新一律当作"无压力"，**默认零行为变化**。
+- **保护 B：95% / 98% 两个硬档**：90% 仍是"建议"语气（用户可能还想继续干活）；**95%** 改命令式（先 `dream --auto` 或 `auto-archive` 再继续）；**98%** 自动执行**无破坏性**自救（`auto-archive` 只加归档标记、`memory diagnose` 只报告）。**明确不做**：自动 `capture`（拿不到会话原文，硬拼就是造假数据）、自动 `purge`（物理删除）。
+- **保护 C：水位估算兜底不静默**：`estimateWater()` 原来在既无 usage 又无正文时 `return null`，守卫直接跳过——「以为没到水位，其实已经快满」正是要防的。现在按 `systemOverheadTokens` 给下限（`source: 'floor'`）。
+- **阈值可配**：`config.json` 新增 `pressure` 段（`lazy_at:70 / minimal_at:85 / hard_at:95 / force_at:98`），会被强制单调化（`lazy≤minimal≤hard≤force`），字段类型不对一律回退默认。
+- **`check-context` 抬头与分档**：一行显示五档；`--used 96` → 硬线、`--used 99` → 自救。
+
+**验证**：新增 `tests/test_pressure_guard.py` 10 条（无文件=零变化 / 读写往返 / 档位边界 / 过期与坏文件忽略 / 阈值单调与坏类型回退 / 注入单调收缩且可恢复 / minimal 整段省略可选块且保留人格本体 / 压力进缓存键）；全量 `run_tests.py` 46/46；`check-context` 六档实测正确。
+
+**文档：新增 `docs/进展与待办.md` 的 P4「外部借鉴池」**（来自用户给的两个项目，已核实原始仓库）：
+- **AOCI-CODE**（[aoci-spec/aoci-code](https://github.com/aoci-spec/aoci-code)）——给 Agent 建项目级代码认知地图。留下三条可借鉴：① 记忆条目用 **FRAS 四段**（F 职责 / R 关系 / A 接口 / S 不明显约束，且 S 不许重复前三段），补上灵枢"记得事情但不记得坑"的缺口；② **源指纹 + STALE**（每条绑文件 sha256，源变了就标过期降权），比现有哈希链更贴"这条记忆还成不成立"；③ **负空间 exclude**（显式记录"决定不记的东西"），让"别再建议这一步"这类禁区有独立语义。
+- **rust-anything**（[erkamyaman/rust-anything](https://github.com/erkamyaman/rust-anything)）——逐块改写并逐步对原行为校验。借鉴它的 `record → diff → gate`：拆大模块（P3-15）前先录 `recall`/`inject`/`startup` 的 golden 快照，拆完重放逐字比对，diff 为空才提交。
+- **明确评估过但不做**：AOCI 按「20 万行≈1 小时建索引、70 万行≈300K token 索引」的规模假设面向代码库认知，与灵枢（个人记忆与人格）不同轴，做成代码索引器是跑偏；两者是互补关系（需要时作 MCP 并行挂载）。另外 AOCI 的"候选认知先治理再转正"＝灵枢已有的 `source=ai → pending → review confirm`，指纹思路＝既有哈希链 + `inject-drift`，这两处算业界印证，无需改。
+
+## v3.56（2026-11-20）
+
+> 主题：**体检能看见"插件不动了"与"异常被吞了多少"**。v3.53 事故里三条自动通道全停 6 小时，`doctor` 11 项全绿——它只查包内一致性、不看运行时证据；`failures.jsonl` 一直在记，却从没被聚合展示。本版补上这两项，顺带修掉两处把"备份默认目录"写错的文案。
+
+- **`doctor` 第 12 项 `failures`**：读 `failures.jsonl` 近七天记录并按 `kind` 聚合；`restore / backup / meta / lock / write / save` 等关键路径出现即 WARN，其余累计 ≥10 条才提示；明细指向 `failures` 命令。
+- **`doctor` 第 13 项 `runtime-liveness`**：读 cron 插件的 `~/.dsh/lingshu-cron-state.json`——`days` 最旧落后 >2 天、`retries` 显示"今日补跑仍失败"、海马体 >24 小时无新增、7 天内有新 `lingshu-diag.json`，任一命中即 WARN；状态文件不存在视为未装插件，直接 PASS。读取路径可用 `BRAIN_CRON_STATE` / `APP_DSH` 覆盖，测试不读真机 `~/.dsh`。
+- **文案纠偏**：`backup --out` 的 help 改为"默认跨卷优先，由 `safety.pick_backup_dir()` 选址"；`docs/recovery.md` 里那句"当时的默认写在 `~/Documents/brain-memory-backups`"补上时间边界（v3.45 起已改），不再让人误以为现在仍写在那里。
+- 新增 `tests/test_doctor_runtime.py`（9 条，覆盖两项检查的 PASS/WARN 边界，全部隔离 HOME + 覆盖状态路径）。
+
+**验证**：`python tests/test_doctor_runtime.py` 9/9；`doctor` 由 11 项变 13 项，隔离 HOME 下两项均 PASS；全量测试 45 个文件通过；五项发布检查全绿。
+
+## v3.55（2026-11-20）
+
+> 主题：**心情不再"假满足"**。起因是用户问「心情满足怎么一直能满足？」：实测当时其实是「平静」（valence 0.00 / arousal 0.10 / 强度 0%），但机制上三件事叠在一起——`满足` 是"正面低唤醒"的兜底桶、正向心境会粘一天多、七情从不自动生成。
+
+- **标签细化（`_mood_label`）**：正面低唤醒按唤醒度拆成「开心（≥0.35）/ 愉快（0.20–0.35）/ 平和（<0.20）」，不再一律「满足」；负面在「失落」与「平静」之间补「低落」。中间带（期待 / 平静 / 烦躁 / 焦虑 / 生气 / 委屈 / 难过）阈值不变。
+- **正向事件门槛（`mood_now` / `_mood_ema`）**：`active` 里没有 weight ≥0.05 的正向事件时，正面标签强制回落「平静」；EMA 平滑后重算标签走同一道门槛——数值上仍可保留余温，但不许把"其实什么都没发生"说成「开心 / 满足」。面板读的是 `mood_brief() or mood_now()["label"]`，因此与 `emotion now` 天然同口径。
+- **`extract` 顺带情绪评价（`emotion.auto_appraise`）**：即记即存封存对话后按词表判一次极性（不调模型）；正负混说、命中 <2 词都不猜；够门槛才写 1 条 `genesis=True`、`about="对话"`、强度封顶 0.35 的事件。配置 `emotion_auto_extract`（默认 `true`）可关；任何失败只记日志，不影响封存。
+- 新增 `tests/test_emotion_labels.py`：11 条断言，覆盖档位边界、正向门槛、EMA 残值、自动评价四类。
+- **文档口径补齐**：`README.md` / `SKILL.md` / `docs/mechanics.md` / `docs/commands.md` 讲清"七情六欲"到底是什么——七情＝喜 / 怒 / 哀 / 惧 / 爱 / 恶 / 欲（《礼记》同名，45 个情绪名，另有「静」组 3 个）；六欲＝求知 / 表达 / 连接 / 成就 / 安全 / 掌控（六个底层需要，**不是**传统"耳目口鼻"）；并说清 `emotion now` 的 **13 档心情标签**与七情分类是两层。同时修掉 mechanics.md 里把六欲写成"生、耳目口鼻"的旧错。
+
+**验证**：`python tests/test_emotion_labels.py` → 11/11 通过；隔离 HOME 端到端：`brain.py extract --file …` 后 `emotion events` 出现 1 条「开心（35%），因为对话里带正面信号」，`emotion now` 同步变成「开心」；全量测试 44 个文件通过；五项发布检查全绿。
+
 ## v3.54（2026-11-20）
 
 > 主题：**测试不再污染真实记忆库**。起因是排障 v3.53 时发现本机真库日志里多了两条假的「扫描 DSH 副本失败」——查下来是**我自己的全量测试跑法**没隔离 HOME，`test_release_drift` 的失败分支经 `core.log_event` 写进了真实 `~/.brain-memory/lingshu.log`。

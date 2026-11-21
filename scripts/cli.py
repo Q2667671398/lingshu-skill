@@ -728,7 +728,8 @@ def _spawn_background_ingest(cfg: dict | None = None) -> bool:
 
 
 
-def cmd_startup(query: str = "", budget: int | None = None) -> int:
+def cmd_startup(query: str = "", budget: int | None = None,
+                minimal: bool = False) -> int:
     """会话开始钩子：输出注入包，用返回码表达状态。
     0 = 正常注入；10 = 只读降级注入（记忆可能不新鲜）；2 = 记忆库未初始化。
     """
@@ -770,7 +771,9 @@ def cmd_startup(query: str = "", budget: int | None = None) -> int:
             _ab_report = {}
     except Exception:
         _ab_report = None
-    print(build_injection(query, budget, report=_ab_report))
+    # v3.59：--minimal 走"极简注入"——resume 续聊默认用它（历史里已有完整记忆块，
+    # 再来一份就是同一段上下文出现两遍）。省略技能库/人格自检、预算 ×0.45。
+    print(build_injection(query, budget, report=_ab_report, minimal=minimal))
     # 水位提醒块：与 status 同一实现（memory._water_level），别两套口径。
     try:
         wl = memory._water_level()
@@ -1347,11 +1350,23 @@ def _main(argv=None) -> int:
                        help="保质期（天，可小数）：到期后注入标「待复核」，提醒找用户确认还作数吗（v3.02 #10）")
     p_rem.add_argument("--review-at", default=None, metavar="DATE",
                        help="显式指定复核时间点（YYYY-MM-DD 或时间戳），优先于 --ttl 推算")
-    p_rem.add_argument("--correction", action="store_true",
-                       help="#41 改口标记：这条是用户纠正过的更正版，做梦合并/淡忘/归档永不自动动它"
+    p_rem.add_argument("--correction", action="store_true",                       help="#41 改口标记：这条是用户纠正过的更正版，做梦合并/淡忘/归档永不自动动它"
                             "（教训提炼 #36 优先读它）")
     p_rem.add_argument("--project", default="",
                        help="项目名标记（第四轮#3）：recall --project 同名时此记忆排前")
+    # v3.58 三层元数据（借自 AOCI-CODE，见 docs/进展与待办.md P4）
+    p_rem.add_argument("--f", dest="fras_f", default="",
+                       help="FRAS·F 职责：这个对象/这件事负责什么（项目类知识用）")
+    p_rem.add_argument("--r", dest="fras_r", default="",
+                       help="FRAS·R 关系：要安全改它，还必须看哪些对象")
+    p_rem.add_argument("--a", dest="fras_a", default="",
+                       help="FRAS·A 接口：对外提供哪些接口/命令/契约")
+    p_rem.add_argument("--s", dest="fras_s", default="",
+                       help="FRAS·S 不明显约束：例外、边界、关键坑（注入时优先展示，别重复 F/R/A）")
+    p_rem.add_argument("--source-file", default="", metavar="PATH",
+                       help="绑定源文件：存当次 sha256；文件变了注入会标「源已变，可能过期」")
+    p_rem.add_argument("--avoid", action="store_true",
+                       help="负空间：这条是「我们决定不做的事」，注入进「已经排除的方向（别再提）」块")
 
     p_learn = sub.add_parser("lesson", help="一条命令记教训：memory(mistake) + knowledge(pending) + note 三写"
                                              "（brain.py learn 已被 growth 组的 learn ask/loop 占用，故名单独成词）")
@@ -1532,6 +1547,9 @@ def _main(argv=None) -> int:
     p_per.add_argument("--habits", default="", help="self：我想养成的习惯")
     p_per.add_argument("--insights", default="", help="self：我自己的洞见")
     p_per.add_argument("--unsure", action="store_true", help="interview：用户不知道名字/性格，自己定")
+    p_per.add_argument("--quick", action="store_true",
+                       help="初识一条命令搞定：只收名字 + 最多 3 个 traits，其余（说话方式/价值观/"
+                            "称呼/自称/喜好）全部可跳过，且不阻塞启动注入。缺名字时自动起一个占位名。")
     p_per.add_argument("--limit", type=int, default=30, help="history：显示最近 N 条改动")
     p_per.add_argument("--label", default="", help="snapshot：给快照起个名")
     p_per.add_argument("--days", type=int, default=7, help="drift：看最近 N 天的漂移")
@@ -1731,7 +1749,7 @@ def _main(argv=None) -> int:
     p_home.add_argument("dest", nargs="?", default="", help="move：目标目录")
 
     p_bak = sub.add_parser("backup", help="打包备份整个记忆库")
-    p_bak.add_argument("--out", default=None, help="目标目录或 zip 路径（默认 文档/桌面下的 brain-memory-backups）")
+    p_bak.add_argument("--out", default=None, help="目标目录或 zip 路径（默认跨卷优先，由 safety.pick_backup_dir() 选址）")
     p_bak.add_argument("--keep", type=int, default=20, help="保留最近 N 份，删除更旧的（0=不修剪）")
     p_bak.add_argument("--password", default=None, help="备份口令：给出则生成加密备份（.zip.enc），恢复时需同一口令")
     p_bak.add_argument("--yes", action="store_true", help="跳过明文备份的确认提示（脚本/宿主调用用）")
@@ -1803,6 +1821,9 @@ def _main(argv=None) -> int:
     p_st = sub.add_parser("startup", help="会话开始钩子：注入记忆。返回码 0=正常 10=只读降级 2=未初始化")
     p_st.add_argument("--query", default="", help="本次会话主题关键词")
     p_st.add_argument("--budget", type=int, default=None)
+    p_st.add_argument("--minimal", action="store_true",
+                       help="极简注入（v3.59）：只留人格/状态/水位，省略技能库与人格自检。"
+                            "resume 续聊默认用它——历史里已有完整块，不必再来一份")
 
     p_sync = sub.add_parser("sync", help="灵枢日志摘要同步进 DSH 记忆")
     p_sync.add_argument("target", nargs="?", default="dsh", choices=["dsh"])
@@ -2011,7 +2032,14 @@ def _main(argv=None) -> int:
                             emotion=(args.emotion or None),
                             ttl_days=_ttl_days, review_at=_review_ts,
                             correction=args.correction,
-                            project=(getattr(args, "project", "") or "").strip() or None)
+                            project=(getattr(args, "project", "") or "").strip() or None,
+                            # v3.58 三层元数据（FRAS / 源指纹 / 负空间）
+                            fras={"f": getattr(args, "fras_f", ""),
+                                  "r": getattr(args, "fras_r", ""),
+                                  "a": getattr(args, "fras_a", ""),
+                                  "s": getattr(args, "fras_s", "")},
+                            source_file=(getattr(args, "source_file", "") or "").strip() or None,
+                            avoid=bool(getattr(args, "avoid", False)))
         # 超长正文会被 remember_max_chars 截断：显式告知，别让用户以为原样存下了
         _src_text = " ".join(args.text).strip()
         _stored_text = rec.get("text") or ""
@@ -2076,6 +2104,14 @@ def _main(argv=None) -> int:
             res = capture(text, tag=args.tag, kind="episode", importance=None)
             saved = len(res.get("saved", []))
             skipped = res.get("skipped", 0)
+            # v3.55：封存成功后再顺手判一次情绪（纯词表，强度封顶 0.35）。
+            # 整段兜住：心情没记住是小事，对话没封存才是大事。
+            try:
+                from emotion import auto_appraise
+                auto_appraise(text)
+            except Exception as exc:
+                log_event("emotion-auto", f"extract 情绪评价失败（封存已成功，可忽略）：{exc}",
+                          level="warn")
             if saved or skipped:
                 print(f"即记：封存 {saved} 段" + (f"，跳过重复 {skipped} 段" if skipped else ""))
             return 0
@@ -2191,7 +2227,8 @@ def _main(argv=None) -> int:
         return 0
 
     if args.cmd == "inject":
-        injection = build_injection(" ".join(args.query), args.budget)
+        injection = build_injection(" ".join(args.query), args.budget,
+                                minimal=bool(getattr(args, "minimal", False)))
         # v3.02 #11：情绪自动输入——用户最新一句话过轻量启发式，命中就附候选。
         # 只产候选：落不落盘、强度调多少，由 AI 自己判断后调 feel()/mirror()。
         if getattr(args, "user_said", None):
@@ -2887,6 +2924,35 @@ def _main(argv=None) -> int:
             print("人格变动提示已标记为已读（概览「人格有变动」卡关闭）。")
             return 0
         if args.action == "interview":
+            # P3-16 首次体验：--quick 走"最小画像"直达路径。
+            # 原来初识要两条命令（interview → self）+ 一串可选问题，新用户容易卡在半路，
+            # 而 onboarding.completed=false 时注入包会一直催"初识还没完成"。
+            # quick 只收名字 + 最多 3 个 traits，其余全部跳过，一条命令标完成。
+            if getattr(args, "quick", False):
+                _traits = (args.traits or "").strip()
+                _pairs = [x for x in re.split(r"[、,，;；]+", _traits) if x.strip()]
+                if len(_pairs) > 3:
+                    print(f"[提示] --quick 只取前 3 个 traits（收到 {len(_pairs)} 个，其余请稍后 "
+                          f"`persona set traits.xxx=70` 补）", file=sys.stderr)
+                    _traits = "、".join(_pairs[:3])
+                _name = (args.name or "").strip()
+                if not _name:
+                    # 不逼用户起名：先给一个可改的占位名，注入不再被"未完成"卡住
+                    _name = "灵枢"
+                    print(f"[提示] 没给名字，先用占位名「{_name}」；想改："
+                          f"`python scripts/brain.py persona set identity.名字=<你的名字>`")
+                persona_interview(_name, _traits, "", "", args.callme, "", False)
+                p = persona_self_author("", "", "", "", "", "", "", "", "", "")
+                st = onboarding_state()
+                print("初识完成（最小画像）：")
+                print(f"  名字：{_name}")
+                print(f"  性格：{_traits or '（未填，之后可用 persona set traits.xxx=70 补）'}")
+                print(f"  阶段：{st.get('stage')}（completed={st.get('completed')}）")
+                print("\n其余都可跳过，想补再补：")
+                print("  说话方式  python scripts/brain.py persona set style=简洁")
+                print("  喜好讨厌  python scripts/brain.py persona self --likes \"...\" --dislikes \"...\"")
+                print("  称呼      python scripts/brain.py persona set identity.称呼你=小明")
+                return 0
             p = persona_interview(args.name, args.traits, args.style, args.values,
                                   args.callme, args.self_name, args.unsure)
             if args.unsure or not (args.name or "").strip():
@@ -3504,6 +3570,105 @@ def _main(argv=None) -> int:
     if args.cmd == "doctor":
         # 六合一体检：已有实现直接复用，不重写逻辑；单项失败不影响其他项
         checks = []
+
+        def _doctor_runtime_liveness() -> tuple:
+            """v3.56：插件"装着但不动"自检（v3.53：自动通道全停 6 小时，doctor 还全绿）。
+
+            只读运行时证据，缺证据一律 PASS——防的是"装了 cron 插件却不干活"，
+            不是要求每个人都装插件。路径可用 BRAIN_CRON_STATE / APP_DSH 覆盖，便于测试。
+            """
+            import datetime as _dt
+            base = Path(os.environ.get("APP_DSH") or (Path.home() / ".dsh"))
+            state_p = Path(os.environ.get("BRAIN_CRON_STATE")
+                           or (base / "lingshu-cron-state.json"))
+            diag_p = base / "lingshu-diag.json"
+            if not state_p.is_file():
+                return ("runtime-liveness", "PASS", "无 cron 状态文件（未装天级插件或从未触发）")
+            try:
+                st = json.loads(state_p.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError) as e:
+                return ("runtime-liveness", "WARN", f"状态文件读不了（{e}）：{state_p}")
+            days = st.get("days") if isinstance(st, dict) else None
+            if not isinstance(days, dict) or not days:
+                return ("runtime-liveness", "WARN", f"状态文件里没有 days：{state_p}")
+
+            today = _dt.date.today()
+            lag: dict[str, int] = {}
+            for task, last in days.items():
+                try:
+                    lag[str(task)] = max(0, (today - _dt.date.fromisoformat(str(last)[:10])).days)
+                except ValueError:
+                    continue      # 脏日期不参与判定，不影响其他任务
+            worst = max(lag.values(), default=0)
+            worst_task = max(lag, key=lag.get) if lag else "?"
+
+            # 注意：cron 插件在"今天补跑过一次仍失败"时也会把 days 标成今天
+            # （plugin.js 的 fire()），所以还要看 retries，否则失败会被当成成功。
+            retry_bad = []
+            retries = st.get("retries") if isinstance(st, dict) else None
+            if isinstance(retries, dict):
+                for task, r in retries.items():
+                    try:
+                        if str(r.get("date")) == today.isoformat() and int(r.get("count") or 0) >= 1:
+                            retry_bad.append(str(task))
+                    except (AttributeError, TypeError, ValueError):
+                        continue
+
+            # 海马体停更：库非空且超过 24 小时没有新增
+            hip_hours = None
+            try:
+                hip = Path(HOME) / "hippocampus.jsonl"
+                if hip.is_file() and hip.stat().st_size > 0:
+                    hip_hours = (time.time() - hip.stat().st_mtime) / 3600.0
+            except OSError:
+                hip_hours = None
+            try:
+                seen = _dt.datetime.fromtimestamp(state_p.stat().st_mtime).strftime("%m-%d %H:%M")
+            except OSError:
+                seen = "?"
+
+            parts = [f"天级任务最落后 {worst} 天（{worst_task}；状态 {seen} 更新）"]
+            parts.append(f"记忆 {hip_hours:.0f} 小时无新增" if hip_hours is not None
+                         else "记忆库暂无海马体数据")
+            bad = worst > 2 or bool(retry_bad) or (hip_hours is not None and hip_hours > 24)
+            if retry_bad:
+                parts.append(f"今日补跑仍失败：{'、'.join(retry_bad[:4])}")
+            if diag_p.is_file():
+                try:
+                    diag_recent = (time.time() - diag_p.stat().st_mtime) < 7 * 86400
+                except OSError:
+                    diag_recent = False
+                if diag_recent:
+                    bad = True
+                    parts.append(f"diag 有新报错：{diag_p}")
+            if bad:
+                parts.append("排查：看 `logs` 与 `status`，必要时重跑 update_dsh_copy.ps1 后重启插件")
+                return ("runtime-liveness", "WARN", "；".join(parts))
+            return ("runtime-liveness", "PASS", "；".join(parts))
+
+        def _doctor_failures() -> tuple:
+            """v3.56：被吞异常的可数账（failures.jsonl → 按类聚合，近七天）。
+
+            fail-open 是设计，但从来看不见"吞了多少、吞了什么"就没法判断哪条路径坏了。
+            关键路径（恢复/备份/元数据/锁/写盘）出现即 WARN；其余只在总量异常时提示。
+            """
+            import failures as _failures
+            s = _failures.summarize(days=7, top=3)
+            total = int(s.get("total") or 0)
+            if total == 0:
+                return ("failures", "PASS", "最近七天没有被吞异常的记录")
+            kinds = s.get("by_kind") or {}
+            brief = "、".join(f"{k}×{v}" for k, v in
+                              sorted(kinds.items(), key=lambda kv: -kv[1])[:4])
+            critical = sum(v for k, v in kinds.items()
+                           if k.split(".")[0] in ("restore", "backup", "meta", "lock", "write", "save"))
+            bad = critical > 0 or total >= 10
+            tip = "；`failures` 看明细"
+            if critical:
+                tip += "；关键路径有失败"
+            return ("failures", "WARN" if bad else "PASS",
+                    f"最近七天 {total} 条（{brief}）{tip}")
+
         # 1. audit 自查
         try:
             a = audit()
@@ -3662,6 +3827,18 @@ def _main(argv=None) -> int:
             checks.append(("release-drift", "WARN" if rd["drift"] else "PASS", detail))
         except Exception as e:
             checks.append(("release-drift", "WARN", f"发布漂移自检失败：{e}"))
+
+        # 12. v3.56：被吞异常的可数账（failures.jsonl，近七天按类聚合）
+        try:
+            checks.append(_doctor_failures())
+        except Exception as e:
+            checks.append(("failures", "WARN", f"自检失败：{e}"))
+
+        # 13. v3.56：运行时活跃度——插件"装着但不动"（v3.53 事故：全停 6 小时仍全绿）
+        try:
+            checks.append(_doctor_runtime_liveness())
+        except Exception as e:
+            checks.append(("runtime-liveness", "WARN", f"自检失败：{e}"))
 
         fails = sum(1 for _, s, _ in checks if s == "FAIL")
         warns = sum(1 for _, s, _ in checks if s == "WARN")
@@ -4100,13 +4277,30 @@ def _main(argv=None) -> int:
         review = _cfg_num(cfg, "review_threshold", 0.60) * 100
         dream_pct = _cfg_num(cfg, "dream_threshold", 0.75) * 100
         escape = _cfg_num(cfg, "escape_threshold", 0.90) * 100
+        # v3.57 硬档（与 core.PRESSURE_DEFAULTS / 插件 pressureThresholds 同一口径）
+        th = pressure_thresholds(cfg)
+        hard_pct, force_pct = th["hard_at"], th["force_at"]
 
-        print(f"上下文 {used:.0f}%（清点 {review:.0f}% / 做梦 {dream_pct:.0f}% / 封存 {escape:.0f}%）")
+        print(f"上下文 {used:.0f}%（清点 {review:.0f}% / 做梦 {dream_pct:.0f}% / 封存 {escape:.0f}%"
+              f" / 硬线 {hard_pct:.0f}% / 自救 {force_pct:.0f}%）")
+
+        # 水位落盘：注入侧据此降档（budget×0.7 / ×0.45 + 省略可选块）
+        write_pressure(used, "check-context")
 
         if args.unsaved and args.unsaved > 0:
             print(f"  还有约 {args.unsaved:.0f} 字没落盘——滚出窗口就找不回来了，先补记/封存。")
 
-        if used >= escape:
+        if used >= force_pct:
+            print(f"  [自救] 已过 {force_pct:.0f}% 强制线：现在只做下面三件事之一，不要再开新话题。")
+            print("    1) python scripts/brain.py auto-archive          # 无破坏性：给可转正的记忆打标记")
+            print("    2) python scripts/brain.py memory diagnose       # 只报告，不修复")
+            print("    3) 让用户确认后封存：python scripts/brain.py capture \"<原文>\" --tag 逃生 --kind episode")
+            print("  （注入已自动降到 minimal 档：省略技能库/人格自检等可选块，预算缩到 45%）")
+        elif used >= hard_pct:
+            print(f"  [硬线] 已过 {hard_pct:.0f}%：先压缩再继续，否则后面的内容很可能被截断。")
+            print("    python scripts/brain.py dream --auto            # 机器自愈：重放→启发式合并→沉淀")
+            print("    python scripts/brain.py auto-archive             # 顺手把可转正的记忆打归档标记")
+        elif used >= escape:
             print("  [封存] 快满了，先原样保存再说压缩：")
             print("    python scripts/brain.py capture \"<把这一段上下文粘进来>\" --tag 逃生 --kind episode")
             print("  （capture 原文落盘 + 归档，100% 不丢；做完再考虑做梦压缩）")
@@ -4489,7 +4683,8 @@ def _main(argv=None) -> int:
                            exact=getattr(args, "exact", False))
 
     if args.cmd == "startup":
-        return cmd_startup(args.query, args.budget)
+        return cmd_startup(args.query, args.budget,
+                           minimal=bool(getattr(args, "minimal", False)))
 
     if args.cmd == "sync":
         return cmd_sync_dsh(args.days, args.dry_run, args.force, args.dir)

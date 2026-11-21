@@ -289,6 +289,9 @@ DEFAULT_CONFIG = {
     #   mood_inject_per_day = 每天最多注入 N 次心情摘要，0 = 不限额。
     "mood_inject_change_delta": True,
     "mood_inject_per_day": 6,
+    # v3.55：extract（即记即存）封存对话后顺带做一次极轻量情绪评价（纯词表，
+    # 强度封顶 0.35、每次最多 1 条），让心情跟着对话走；false = 完全关闭。
+    "emotion_auto_extract": True,
     # 五-D/候选1 会话级 state 快照：startup 注入包缓存（默认关）。
     # 开启后，库文件 mtime 未变 + TTL 内的重复 startup 直接复用上次注入文本，
     # 跳过整库遍历与 recall 重算（跨天恢复首轮明显更快）。
@@ -1048,6 +1051,112 @@ def atomic_bytes(path: Path, data: bytes) -> None:
     with open(tmp, "wb") as f:
         f.write(data)
     _replace_retry(tmp, path)
+
+
+# ---------------------------------------------------------------- 上下文压力（v3.57）
+#
+# 为什么需要：注入体是固定成本——实测满档约 1214 tokens（`startup` 1922 字符），
+# 不管上下文还剩多少都照旧注入。上下文快满时这笔开销最不该花：既挤占窗口，又
+# 让每一轮都更贵。
+#
+# 跨进程通道：插件（cordis-plugin/lingshu-cron）在每步 pre-step 能拿到**真实**
+# 水位（宿主 usage），CLI/引擎拿不到——所以由插件在跨档时把水位写进
+# `HOME/_pressure.json`，注入侧读它来降档。与 `_meta.json` 同一套"外部可读写状态
+# 文件"的先例。
+#
+# 设计约束：
+#   1. **读侧永不抛异常**：文件缺失/损坏/过期一律当作"没有压力"，注入行为与旧版
+#      完全一致（默认零行为变化）。
+#   2. **只降不升**：压力只能让注入更省，不能让注入变大；档位单调，不会来回抖。
+#   3. 过期保护：超过 `_PRESSURE_TTL` 秒没更新就忽略（进程崩溃留下的陈旧水位不能
+#      永久压着注入档位）。
+
+_PRESSURE_FILE = "_pressure.json"
+_PRESSURE_TTL = 600  # 10 分钟没有新水位即视为失效
+
+# 档位阈值（百分比）。config 的 pressure 段可覆盖：
+#   {"lazy_at": 70, "minimal_at": 85, "hard_at": 95, "force_at": 98}
+PRESSURE_DEFAULTS = {"lazy_at": 70, "minimal_at": 85, "hard_at": 95, "force_at": 98}
+
+
+def pressure_thresholds(cfg: dict | None = None) -> dict:
+    """读 pressure 段的阈值，字段类型不对一律回退默认（宁可不生效也不猜）。"""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    seg = cfg.get("pressure")
+    seg = seg if isinstance(seg, dict) else {}
+    out = dict(PRESSURE_DEFAULTS)
+    for key in PRESSURE_DEFAULTS:
+        val = seg.get(key)
+        if isinstance(val, bool):
+            continue
+        if isinstance(val, (int, float)) and 1 <= float(val) <= 100:
+            out[key] = float(val)
+    # 保证单调，避免用户配出 lazy_at > minimal_at 这种自相矛盾的档位
+    out["minimal_at"] = max(out["minimal_at"], out["lazy_at"])
+    out["hard_at"] = max(out["hard_at"], out["minimal_at"])
+    out["force_at"] = max(out["force_at"], out["hard_at"])
+    return out
+
+
+def read_pressure(cfg: dict | None = None) -> dict | None:
+    """读当前上下文压力。返回 None 表示"没有压力信号"。
+
+    返回形状：`{"pct": 78.0, "at": 1795240000, "stale": False, "tier": "lazy"|"minimal"|"full", ...}`
+    """
+    try:
+        path = HOME / _PRESSURE_FILE
+        if not path.exists():
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(raw, dict):
+            return None
+        pct = raw.get("pct")
+        if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+            return None
+        pct = float(pct)
+        if pct < 0 or pct > 100:
+            return None
+        at = raw.get("at")
+        at = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else 0.0
+        stale = bool(at and (now_ts() - at > _PRESSURE_TTL))
+        if stale:
+            return {"pct": pct, "at": at, "stale": True, "tier": "full"}
+        th = pressure_thresholds(cfg if cfg is not None else load_config())
+        if pct >= th["minimal_at"]:
+            tier = "minimal"
+        elif pct >= th["lazy_at"]:
+            tier = "lazy"
+        else:
+            tier = "full"
+        return {"pct": pct, "at": at, "stale": False, "tier": tier,
+                "thresholds": th, "source": raw.get("source") if isinstance(raw.get("source"), str) else ""}
+    except Exception:
+        # 坏文件绝不能让注入挂掉：当作没有压力
+        return None
+
+
+def write_pressure(pct: float, source: str = "") -> None:
+    """写上下文压力（由插件调用；CLI 侧一般不用，留给测试与手工标定）。"""
+    if READONLY:
+        return
+    try:
+        atomic_json(HOME / _PRESSURE_FILE, {
+            "pct": round(float(pct), 1),
+            "at": now_ts(),
+            "source": source or "cli",
+        })
+    except Exception as exc:
+        log_event("pressure", f"写上下文压力失败：{exc}", level="warn")
+
+
+def clear_pressure() -> None:
+    """清掉压力标记（回到满档）。"""
+    if READONLY:
+        return
+    try:
+        (HOME / _PRESSURE_FILE).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _brace_balance(line: str) -> int:
