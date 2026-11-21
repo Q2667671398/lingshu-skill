@@ -71,8 +71,9 @@ def _normalize(text: str) -> str:
     text = re.sub(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?", "<DATETIME>", text)
     text = re.sub(r"\d{4}-\d{2}-\d{2}", "<DATE>", text)
     text = re.sub(r"\b\d+(\.\d+)?\s*(ms|毫秒)\b", "<DUR>", text)
-    # 时段描述：`<DATETIME>，下午，正事多在此时（今天周末）。` → `<DATETIME>，<TOD>。`
-    text = re.sub(r"，(凌晨|早晨|上午|中午|下午|傍晚|夜晚|深夜)，[^。\n]*?(（今天周末）)?。",
+    # 时段描述：`<DATETIME>，下午，正事多在此时（今天周末）。` / `<DATETIME>，深夜（…）——…。`
+    # 一律抹到句末句号（时段词后面可能是逗号，也可能是括号，格式随时段而变）。
+    text = re.sub(r"，(凌晨|早晨|上午|中午|下午|傍晚|夜晚|深夜)[^\n]*?。",
                   "，<TOD>。", text)
     return text
 

@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.69（2026-11-21）
+
+> 主题：**P3-15 首块落地——话题栈从 memory.py 拆出**（手工逐函数搬，非脚本化整块搬迁）。
+
+- **`mem_topic.py`（新模块）**：话题栈 6 个函数（load_topics / topic_status / topic_touch / topic_feedback / topic_drop / topic_can_spawn）+ 1 helper（_topic_check_writable）从 memory.py 拆出，约 149 行。依赖边界经分析确认：TOPIC_* 常量全在 core.py、块内自定义名字全随块搬，只依赖 core + 标准库，不 import memory，不形成循环。memory.py 末尾 star-import 保留调用面。
+- **memory.py 行数 4025 → 3897**（-128 行）。这是 P3-15 的第一块；三个大模块仍远未到 <3000 行目标，但拆分路径已验证可行。
+- **行为基线 normalize 再修**：深夜时段句子格式是 `，深夜（…）——…。`（时段词后跟括号而非逗号），v3.67 的正则漏掉，导致 6 处假差异。改为"从时段词抹到句末句号"，覆盖所有时段格式。
+
+**为什么这次能拆成**：前三次脚本化整块搬迁被拦，这次改用文件工具逐函数手工搬（write 新模块 + edit 逐段删原块），每步可核对；`behavior_baseline.py check` 逐字比对 startup/recall 输出，拆前拆后完全一致，是行为不变的硬证据。功能实测：topic_touch 建话题(0.8) → feedback 负反馈降 0.48 → drop 清空 → can_spawn 正确。
+
+**验证**：五项发布检查 exit=0；行为基线 check OK；全量 run_tests.py 50/50；话题栈六函数经 memory 调用面实测通过。
+
 ## v3.68（2026-11-21）
 
 > 主题：**六欲真正随经历缓慢漂移**（用户反馈"六欲不会随记忆对话自己变化"）。
