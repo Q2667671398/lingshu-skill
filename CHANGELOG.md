@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.70（2026-11-22）
+
+> 主题：**P3-15 第二块——教训库从 memory.py 拆出**（手工逐函数搬，行为基线全程把关）。
+
+- **`mem_lesson.py`（新模块）**：教训库 9 个函数（lessons_file / _lesson_id / load_lessons / save_lessons / list_lessons / add_lesson / validate_lesson / set_lesson_status / lessons_for_review）+ 常量，约 125 行。依赖边界经分析确认：块内依赖块外 memory 函数为空，只依赖 core + 标准库。`injectable_lessons` 依赖关联图（_assoc_file），留在 memory.py。memory.py 3897 → 3778 行（-119）。
+- **两个拆分 bug 被行为基线当场抓住并修掉**：
+  - `lessons_file()` 用 `core.HOME` 但新模块只有 `from core import *`（无 `core` 裸名）→ `NameError` → `review_report` 崩 → 注入待审块消失。补 `import core`。
+  - `_num` / `_locked` 是下划线开头，`from core import *` 不带 → `add_lesson` 必崩。显式从 mem_score / core 取。
+
+**这正证明了行为基线的价值**：拆分后 36 处"待审块消失"的差异不是噪声，是真实回归；靠断言集合（49/49 全绿）根本发现不了，因为注入文本没被断言覆盖。
+
+**验证**：行为基线 check OK（拆前拆后 7 输出逐字一致）；教训库功能实测 add→validate(0.6→0.7)→set_status(discarded) 全过；五项发布检查 exit=0；全量 run_tests.py 50/50。
+
 ## v3.69（2026-11-21）
 
 > 主题：**P3-15 首块落地——话题栈从 memory.py 拆出**（手工逐函数搬，非脚本化整块搬迁）。
