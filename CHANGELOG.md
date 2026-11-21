@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.61（2026-11-21）
+
+> 主题：**清掉台账里能真修的已知问题**（#4 / #10 / #15）。其余 12 条是环境事实或工程约束，改代码修不了（TLS 轮换、GitHub 仓库、DSH 沙箱等），保留在台账作为操作提示。
+
+- **#4 `check_version.py` 不再把派生清单算作代码**：`CHECKSUMS.json` / `manifest.json` 只是"别的文件变了的哈希表"，它们变是因为上游变了；算作代码会导致"改文档 → 重生成校验和 → 又被要求升一次版本"的无谓 bump。现在 `_is_code()` 显式排除这两个文件；哈希一致性仍由 `make_checksums.py --check` 与 CI 单独把关。（SKILL.md 正文仍算能力文件、仍必须升版本。）
+- **#15 `emotion list --days` 不再静默忽略**：原来 `emotion list` 只打七情六欲词表、`--days` 被吞掉，排障时容易误以为"没有情绪事件"。现在检测到 `--days` 会给出明确提示（指向 `emotion events --days N`）并按 events 的同一口径直接输出最近事件。
+- **#10 `BRAIN_MEMORY_HOME` 空值改为告警**：PowerShell 里 `$HOME` 是只读自动变量，`$home = ...` 静默失败会让环境变量变空、回落到真实用户目录（v3.52 曾因此对真实库做出 1.45 GB 半截备份）。现在空值会向 stderr 打明确告警并提示用 `$memHome` 这类普通变量名，行为本身不变（避免破坏已有调用）。
+
+**验证**：`check_version.py` 实测只认 3 个真代码文件（`check_version.py` / `cli.py` / `core.py`），`CHECKSUMS.json` 不再触发；`emotion list --days 3` 实测给出提示并转发 events；`py_compile` 三文件全过。
+
 ## v3.60（2026-11-21）
 
 > 主题：**打包必须先造 engine 副本**（P1-1 的前置条件）。

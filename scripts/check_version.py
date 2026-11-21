@@ -55,6 +55,12 @@ def _norm(path: str) -> str:
 def _is_code(path: str) -> bool:
     p = _norm(path)
     name = Path(p).name
+    # v3.61：派生清单不算代码。`CHECKSUMS.json` 只是「上面那批文件的哈希表」，
+    # 它变必然是因为别的文件变了；把它算作代码会导致「改文档 → 重生成校验和 →
+    # 被要求再升一次版本」的无谓 bump（见台账已知问题 #4）。哈希一致性本身由
+    # `make_checksums.py --check` 与 CI 单独把关，不依赖这里。
+    if name == "CHECKSUMS.json" or p == "manifest.json":
+        return False
     if name in CAPABILITY_NAMES:
         return True   # SKILL.md 正文变更必须走版本检查（#18）
     if name in DOC_NAMES or p.startswith("docs/") or name in {"SKILL-lite.md", "SKILL-tiny.md"}:

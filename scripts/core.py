@@ -55,6 +55,18 @@ def _default_home() -> Path:
     env = os.environ.get("BRAIN_MEMORY_HOME")
     if env:
         return Path(env)
+    # v3.61：`BRAIN_MEMORY_HOME` **存在但为空**几乎只有一种成因——PowerShell 里
+    # 写了 `$home = ...`，而 `$HOME` 是只读自动变量，赋值静默失败，于是
+    # `$env:BRAIN_MEMORY_HOME = $home` 把环境变量设成了空串。此时不能再静默回落到
+    # 真实用户目录：v3.52 验证时就因此对真实库跑了一次备份，产出 1.45 GB 半截 zip。
+    # 这里显式告警（不改行为，避免破坏已有调用），让操作者一眼看到。
+    if env is not None and not env.strip():
+        sys.stderr.write(
+            "[警告] BRAIN_MEMORY_HOME 被设为空值，已忽略并回落到默认目录 "
+            f"{Path.home() / '.brain-memory'}。\n"
+            "       若是 PowerShell 里赋值，注意 `$HOME` 是只读自动变量，"
+            "请改用其它变量名（如 $memHome）。\n"
+        )
     try:
         ptr = Path.home() / ".brain-memory" / ".home"
         if ptr.is_file():

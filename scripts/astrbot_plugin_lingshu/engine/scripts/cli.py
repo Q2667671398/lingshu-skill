@@ -3133,6 +3133,25 @@ def _main(argv=None) -> int:
             print(f"  （{a['first']} ~ {a['last']}）")
             return 0
         if args.action == "list":
+            # v3.61：`emotion list` 只打词表，不吃 --days。原来静默忽略，排障时容易
+            # 误以为"最近没有情绪事件"（台账已知问题 #15）。这里给一句明确提示，
+            # 并把用户真正想看的事件按 events 的同一口径打出来。
+            if "--days" in sys.argv:
+                print("[提示] `emotion list` 是七情六欲词表，不接受 --days；"
+                      "查询最近事件请用 `emotion events --days N`。下面按 events 输出：\n")
+                rows = emotion_events()
+                if not rows:
+                    print("还没有情绪事件。")
+                    return 0
+                print(f"情绪事件流（最新在前，共 {len(rows)} 条；id 用于 adjust / del，防并发错位）：")
+                for i, ev in enumerate(rows[:30], 1):
+                    why = f"，因为{ev['why']}" if ev.get("why") else ""
+                    about = f"（关于{ev['about']}）" if ev.get("about") else ""
+                    mark = " ·已微调" if ev.get("adjusted") else (" ·已冷却" if ev.get("cooled_at") else "")
+                    eid = f" [id={ev['id']}]" if ev.get("id") else ""
+                    print(f"  {i}. {fmt_time(ev.get('ts', 0))}  {ev.get('emotion')}"
+                          f"（强度 {float(ev.get('intensity', 0)):.0%}）{why}{about}{mark}{eid}")
+                return 0
             print("七情六欲 · 可选情绪（归类如下）：")
             for g, names in EMOTION_GROUPS.items():
                 print(f"  【{g}】{'、'.join(names)}")
