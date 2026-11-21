@@ -1,4 +1,4 @@
-# 灵枢 → DSH 插件目录热同步（按发布清单精确复制，不重启 DSH）
+﻿# 灵枢 → DSH 插件目录热同步（按发布清单精确复制，不重启 DSH）
 #
 # 用法（从哪个目录跑都行，脚本自己定位仓库根）：
 #   powershell -ExecutionPolicy Bypass -File "<仓库>\scripts\update_dsh_copy.ps1"

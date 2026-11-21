@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.63（2026-11-21）
+
+> 主题：**修 `update_dsh_copy.ps1` 的 UTF-8 BOM**（v3.62 引入的回归）。
+
+- v3.62 给 `update_dsh_copy.ps1` 补中文注释时，写回丢了 UTF-8 BOM。PowerShell 5.1 读无 BOM 的 UTF-8 会把中文按 GBK 解码，注释里的字符把引号"吃掉"，脚本直接 `Unexpected token '}'` 解析失败——**同步 DSH 副本这一步整个跑不了**。
+- 恢复 UTF-8 BOM（纪律里本就写明「.ps1 必须带 UTF-8 BOM」）。用 `Parser::ParseFile` 验证语法 `SYNTAX_OK`，实测同步成功：`版本 3.54.0 -> 3.62.0，复制 67/67 个文件`。
+
+**顺带解决**：用户报的 `memory.py:4240 AttributeError: 'NoneType' object has no attribute 'get'` 来自 **DSH 副本停在 v3.54**（旧代码没有 `if _pressure is None:` 保护）；仓库 v3.62 代码实测 `--minimal` 不崩。本次同步把副本升到 3.62，该崩溃随之消失。
+
 ## v3.62（2026-11-21）
 
 > 主题：**P1-1 收官——engine 副本从版本库移除**（前置的打包保护已在 v3.60 落地）。
