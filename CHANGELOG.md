@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.64（2026-11-21）
+
+> 主题：**水位守则空指针根治 + 清掉一条污染人格的垃圾记忆**。
+
+- **`build_injection` 水位守则防御式取值**：历史上这里报过 `AttributeError: 'NoneType' object has no attribute 'get'`（`_pressure.get('pct','?')`），虽然正常路径有 `read_pressure` 保证 dict，但压力文件在并发写/TTL 边界/旧副本代码里可能留下 None。水位提示是锦上添花，绝不能因为它把整个 startup 打挂。改为 `isinstance(_pressure, dict)` 判断，取不到就显示「未知」。
+- **淡忘垃圾记忆 `list`**：真库 cortex 里有一条 `kind=mistake`、正文就是 `list` 的记忆（命令输出被误当错误教训存下来的），它一直注入到「我犯过的错」块污染人格判断。用 `brain.py forget` 淡忘（留审计轨迹，可复活）。
+
+**排查记录**：用户报的崩溃堆栈行号 L4240 与当前 v3.63 实际行号 L4246 对不上，且全机只有一个 desktop profile 已是 3.63.0——判断报错来自未重载的旧进程/历史消息。但无论来源，L4246 的直接 `.get()` 确实是潜在空指针，本版从代码层根治。
+
 ## v3.63（2026-11-21）
 
 > 主题：**修 `update_dsh_copy.ps1` 的 UTF-8 BOM**（v3.62 引入的回归）。

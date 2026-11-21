@@ -4243,7 +4243,12 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
     # v3.57 高压档省略水位守则：它本身就是"什么时候该压缩"的说明，而上下文都快满了
     # 还教怎么判断水位是多余的；minimal 档保留一行极简提示（否则模型完全不知道阈）。
     if _p_tier == "minimal":
-        out.append(f"[水位守则] 上下文已偏满（{_pressure.get('pct', '?')}%）：先压缩再继续，别再囤。")
+        # v3.64：防御式取值。历史上这里直接用 `_pressure.get('pct','?')` 崩过
+        # （AttributeError: NoneType.get）——虽然正常路径有 read_pressure 保证 dict，
+        # 但压力文件在并发写/TTL 边界/旧副本代码里可能留下 None。水位提示是"锦上
+        # 添花"，绝不能因为它把整个 startup 打挂。取不到就显示"未知"。
+        _pct_display = _pressure.get("pct", "?") if isinstance(_pressure, dict) else "?"
+        out.append(f"[水位守则] 上下文已偏满（{_pct_display}%）：先压缩再继续，别再囤。")
     else:
         out.append(f"[水位守则] 会话中即记即存；{rv} 补记清点，{dr} 做梦压缩，{es} 封存保底。"
                    + _mode_tail +
