@@ -93,13 +93,9 @@
       "sha256": "2e9443d8416048c72ebe5cbec03a437fb833e41f4cd6cc4b3c8ee14ea73a0e8e",
       "size": 4146
     },
-    "docs/灵枢改进方案-20261120.md": {
-      "sha256": "bb5550c75eb6d18fd0c70cd09e9d239548f8351291ecf72650e7469e7b4b5c27",
-      "size": 38398
-    },
     "docs/进展与待办.md": {
-      "sha256": "6d15190a5ac5a5cb58bd0e5793cc6e47d65a2beb5a7c7eceaa357e338098dc68",
-      "size": 51854
+      "sha256": "1be3d519acdc85f5f55f72d5765337ccab769af11143b93f3651e90d3264986f",
+      "size": 78170
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
