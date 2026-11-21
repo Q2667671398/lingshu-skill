@@ -1,12 +1,12 @@
 {
-  "version": "3.67",
+  "version": "3.68",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "507235aee277bf183632902b49101bb4d1445a06e5e464969f4e42928eba2249",
-      "size": 248747
+      "sha256": "43223914c647990dc144d6fbf11d71a1fe45b9773ebbad46cfa35b9047ef49bb",
+      "size": 249988
     },
     "README.md": {
-      "sha256": "d1e84bfc7b6fb9e7709c2118adfe07780ccfae1b944eeaacf89ba44ebbdf66dd",
+      "sha256": "47248cecf4f14a9269fa8a460e31bb34b8993ff95c008c45af2ee71b0aab53ff",
       "size": 64472
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "ba82576d683cbe7eadd6d03f9b951e0862783e81f66d9ee84cd8bb5c2a31646f",
+      "sha256": "6a9128b2c3c75d2f62c1905b12bd92fcda0c91201ff0752d3175a46be174f491",
       "size": 35253
     },
     "assets/panel.html": {
@@ -94,19 +94,19 @@
       "size": 4146
     },
     "docs/灵枢改进方案-20261120.md": {
-      "sha256": "ddd55abec17bde5ffb0c12e53da7b0e98bee1f55cac408e9b35cd10d785fb621",
-      "size": 28927
+      "sha256": "bb5550c75eb6d18fd0c70cd09e9d239548f8351291ecf72650e7469e7b4b5c27",
+      "size": 38398
     },
     "docs/进展与待办.md": {
-      "sha256": "c6da47d9601c6fe70f3dce837f0816eac5c9117e79df1feb72a4aecc3ca285aa",
-      "size": 50194
+      "sha256": "6d15190a5ac5a5cb58bd0e5793cc6e47d65a2beb5a7c7eceaa357e338098dc68",
+      "size": 51854
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "f57936b2e3c72d1f77cce4fb9470e538fe41a1f594650caf0c368577a33237d6",
+      "sha256": "f8d1a330d069a9da2d612ec20ca8442a9cdd947aa59848d084ac4036638b5ce5",
       "size": 1033
     },
     "scripts/assembler.py": {
@@ -138,8 +138,8 @@
       "size": 6681
     },
     "scripts/cli.py": {
-      "sha256": "9845de9bf459cbc07d1a139bd831d6f1396a136105c87c9b1964c77d383e2b9b",
-      "size": 266305
+      "sha256": "071755b6eb455bc424a29114d0d8c2c712795c37ac2f21b7fb754cb650160eb4",
+      "size": 266389
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
@@ -154,8 +154,8 @@
       "size": 54968
     },
     "scripts/emotion.py": {
-      "sha256": "db538b709a94f917595eaebec8d7ad854b2de4d141f05380673f450563a97c4d",
-      "size": 54876
+      "sha256": "9782a63ea6d13ffb1dcc9edd8f5d68d4c4f95a18d7bf6e5352c39edd38030beb",
+      "size": 55342
     },
     "scripts/failures.py": {
       "sha256": "3a16234a1871f62e3ba7b7b743110b4044fb7b715b4d0e924b8ebf1cf0be50d0",
@@ -206,8 +206,8 @@
       "size": 9208
     },
     "scripts/memory.py": {
-      "sha256": "5d58391483abfa992bb19d4f303ac477d7d4c7002abc25b82b89a6a86fd2219f",
-      "size": 228482
+      "sha256": "e86483c7201ab67d8f006b2a3fbe0dd136ec45906192aea85a441d8e93651c54",
+      "size": 228523
     },
     "scripts/panel_build.py": {
       "sha256": "6394c1d74d203093e43b2106d7acca6e0ca9db61ca1cd6cd3a1616053653414b",

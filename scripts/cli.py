@@ -1076,9 +1076,10 @@ def daily(dry_run: bool = False, force: bool = False, feel_specs: list | None = 
     if low:
         body.append("没被满足的欲望：" + "、".join(f"{x['desire']}({x['level']:.0f})" for x in low) + "。")
         # 低谷自我调节：写日记本身是一次自我觉察，像人睡前盘点了心里的事，
-        # 低着的欲望会回升一点（不是满足，是"被看见"）。幅度小，且只对低谷项。
+        # 低着的欲望会回升一点（不是满足，是"被看见"）。只作用于低谷项，
+        # 独立 20h 冷却（写日记本来就不频繁）。v3.68：幅度 3.0 → 5.0。
         if not dry_run:
-            desire_nudge({x["desire"]: 3.0 for x in low}, cooldown=20 * HOUR)
+            desire_nudge({x["desire"]: 5.0 for x in low}, cooldown=20 * HOUR)
     else:
         body.append("六欲平稳。")
     body.append(f"理智：{ra['effective']}（基数 {ra['base']}，被情绪压住 {ra['suppress']}%）。")

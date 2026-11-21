@@ -1669,14 +1669,14 @@ def _remember_desire_nudge(rec: dict, imp) -> None:
     """记事牵动六欲（自动微调）：记东西本身就是表达，重要的事还带着求知/掌控。
 
     重要度高 → 表达欲/成就欲；探查类（question/insight）→ 求知欲。
-    幅度 1~2 点，冷却节流，避免频繁对话反复写盘。
+    幅度 2~4 点（v3.68 翻倍）+ 冷却节流，避免频繁对话反复写盘。
     """
-    changes = {"表达欲": 1.0}
+    changes = {"表达欲": 2.0}
     kind = (rec.get("kind") or "")
     if kind in ("question", "insight", "curiosity"):
-        changes["求知欲"] = 2.0
+        changes["求知欲"] = 4.0
     if _num(imp, 0) >= 0.7:
-        changes["成就欲"] = 1.5
+        changes["成就欲"] = 3.0
     try:
         desire_nudge(changes)
     except Exception:
@@ -2190,7 +2190,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     # 只在有查询词且确实命中时触发，startup 注入（无 query）不算"回忆"。
     if q_terms and result and not READONLY:
         try:
-            desire_nudge({"求知欲": 1.5})
+            desire_nudge({"求知欲": 3.0})   # v3.68：1.5 → 3.0
         except Exception:
             pass          # 锦上添花，失败不影响回忆本身
     # —— mode=deep 冲突提示（#27）：命中记忆带未裁决冲突时在 parts 里提醒 ——
