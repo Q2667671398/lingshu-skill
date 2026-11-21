@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.71（2026-11-22）
+
+> 主题：**信箱 17 `session-bus` 落地 + 修掉扩展机制一直没工作过的真 bug**。
+
+- **`session-bus` 扩展（数据目录，不入库）**：`~/.brain-memory/extensions/session-bus.py`，五命令 send/inbox/read/reply/register + inject 未读摘要。Maildir 原子投递（tmp→new→cur，crash-safe），落盘 `session-bus/` 随备份走。身份靠 register 别名或 `LINGSHU_SESSION_ID`；通道上下文 `--user` 发送校验 owner/admin；读取隔离到本会话；`read --remember` 把消息沉淀成记忆。更新技能永不覆盖，`ext rm session-bus` 可回滚。
+- **修 `growth.py` 两处 `load_config` NameError**（L3659/L4619）：扩展机制的两个入口（inject + run）都用了裸 `load_config()`，而 growth.py 里配置加载是 `brain.load_config()`——意味着**扩展机制从来没真正工作过**（一调用就崩）。改成 `brain.load_config()` 后实测全通。
+- **`read --remember` 的 tags 修正**：`remember(tags="session-bus")` 字符串被拆成 `['s','e','i'...]`，改成 `tags=["session-bus"]`。
+
+**实测闭环**：注册甲乙两身份 → 甲发 task → 乙 inbox 见未读 → read 标已读 → reply 回执 → 甲收到 → inject 摘要显示未读；`read --remember` 沉淀记忆 tags 正确。`ext check` 语法 OK，`extensions_enabled` 已按用户明确同意开启。
+
+**验证**：五项发布检查 exit=0；全量 run_tests.py 50/50；doctor 不因扩展变红；两项真 bug 均定位自实测而非猜测。
+
 ## v3.70（2026-11-22）
 
 > 主题：**P3-15 第二块——教训库从 memory.py 拆出**（手工逐函数搬，行为基线全程把关）。

@@ -3656,7 +3656,7 @@ def ext_injections(ctx: dict | None = None) -> list:
     exts = list_extensions()
     if not exts:
         return out
-    if not load_config().get("extensions_enabled", False):
+    if not brain.load_config().get("extensions_enabled", False):
         log_event("ext", f"发现 {len(exts)} 个未启用的扩展模块（extensions_enabled=false），未执行其代码", level="info")
         return [("_disabled_hint",
                  "发现未启用扩展：extensions/ 里有扩展模块但默认未启用（安全考虑，扩展是任意代码）。"
@@ -4616,7 +4616,7 @@ def _run(argv=None) -> int:
             return 2
         if args.act == "run":
             # run 同样要过安全开关：扩展是任意代码，默认不执行
-            if not load_config().get("extensions_enabled", False):
+            if not brain.load_config().get("extensions_enabled", False):
                 print("扩展未启用（extensions_enabled=false，扩展是任意代码，默认不执行）。"
                       "确认信任后运行 `config set extensions_enabled true` 开启。", file=sys.stderr)
                 return 1
