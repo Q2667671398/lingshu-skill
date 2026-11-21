@@ -21,6 +21,7 @@ Thumbs.db
 
 # 本地打包产物与依赖锁（不进发布库）
 astrbot.zip
+lingshu-skill-*.tgz
 pnpm-lock.yaml
 
 # 临时文件与本地运行产物（_* 开头的目录/文件、日志、散落 json 一律不进库）

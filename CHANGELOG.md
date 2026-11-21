@@ -1,5 +1,19 @@
 # 更新日志
 
+## v3.73（2026-11-22）
+
+> 主题：**tgz 直链安装方案**（让网络受限/没装 git 的用户能从市场直接装灵枢）。
+
+灵枢市场条目是 `github:` 源码安装，pnpm 必须 clone GitHub → 国内 ECONNREFUSED /
+没装 git 就装不上；别的插件是 npm 版本号或 tgz 直链，下压缩包即可。新增
+`scripts/make_dsh_tgz.py`：先 sync engine 副本，再按 manifest + engine 全目录
+打成 npm 格式 tgz（顶层 package/，含 dsh.bundle.patch）。发布者把 tgz 挂到
+GitHub Release、市场条目 install 改成直链即可，用户不需 git。
+
+实测 v3.72.0：116 文件 / 1538 KB；`npm install <tgz>` 成功、结构正确（engine
+48 文件在 scripts/astrbot_plugin_lingshu/engine/、SKILL.md/index.js 齐全、
+dsh.bundle.patch 正确）。详见 docs/tgz-安装说明.md。
+
 ## v3.72（2026-11-22）
 
 > 主题：**即记即存不再丢掉 AI 说的话**（speaker attribution）。
