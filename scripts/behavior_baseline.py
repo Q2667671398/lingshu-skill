@@ -62,12 +62,18 @@ def _normalize(text: str) -> str:
       · 10 位以上时间戳数字：同上
       · ISO / 本地日期时间：同上
       · 毫秒耗时数字：性能不是本基线的目的（那是 bench.py 的事）
+      · 时段描述（下午/夜晚 + 一句节奏说明 + 今天周末）：startup 注入会把当前
+        真实时段写进去，上午录的基线下午 check 必然不同——它不是被比对的行为，
+        只是"现在几点"的投影。抹成 <TOD> 占位符。
     """
     text = re.sub(r"m_\d{10}_[0-9a-f]{8,}", "m_<ID>", text)
     text = re.sub(r"\b1[6-9]\d{8}\b", "<TS>", text)
     text = re.sub(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?", "<DATETIME>", text)
     text = re.sub(r"\d{4}-\d{2}-\d{2}", "<DATE>", text)
     text = re.sub(r"\b\d+(\.\d+)?\s*(ms|毫秒)\b", "<DUR>", text)
+    # 时段描述：`<DATETIME>，下午，正事多在此时（今天周末）。` → `<DATETIME>，<TOD>。`
+    text = re.sub(r"，(凌晨|早晨|上午|中午|下午|傍晚|夜晚|深夜)，[^。\n]*?(（今天周末）)?。",
+                  "，<TOD>。", text)
     return text
 
 

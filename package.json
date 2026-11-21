@@ -1,6 +1,6 @@
 {
   "name": "lingshu-skill",
-  "version": "3.66.0",
+  "version": "3.67.0",
   "description": "Brain-inspired persistent memory, persona and growth system for AI coding agents. Local-only, zero-dependency Python. Requires Python 3.10+.",
   "repository": {
     "type": "git",
