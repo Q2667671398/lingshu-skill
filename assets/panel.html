@@ -2921,6 +2921,10 @@ function renderExtOllama(st){
   } else if (!st.installed && st.fallback_enabled) {
     body = `<div style="margin-top:10px;font-size:13px;color:var(--muted)">未安装 Ollama：语义召回由纯 Python 降级向量兜底（无需安装即可用）；安装 Ollama 可获得真模型向量，召回更准。</div>`;
   }
+  // v3.65：检测到 Ollama 时把位置显示出来，便于核对是不是在别的盘发现的
+  if (st.installed && st.exe_path) {
+    body += `<div style="margin-top:6px;font-size:12px;color:var(--muted)">发现位置：${esc(st.exe_path)}</div>`;
+  }
   // 按钮：v2.99 一键化——不管装没装，统一一个「一键开启向量记忆」按钮，
   // 服务端 setup 端点自己判断「已装跳过/未装先下载→解压→起服务→拉模型→写配置」
   if (!["downloading", "extracting", "starting", "pulling"].includes(st.stage)) {

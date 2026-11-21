@@ -341,7 +341,7 @@ DEFAULT_CONFIG = {
     "embed": {
         "url": "",                  # 例：http://localhost:11434/api/embeddings
         "model": "nomic-embed-text",
-        "timeout_sec": 8,           # 单次调用超时
+        "timeout_sec": 30,          # 单次调用超时（v3.65：模型冷加载实测要 10.5s，8s 必降级）
         "max_chars": 3000,          # 超过就截断（长记忆全文 embed 慢）
         "batch_size": 8,            # 异步批量写 embedding 时的条数
         # 连不上嵌入服务时，冷却 N 秒内不再重试：否则每次 recall 都要等满 timeout

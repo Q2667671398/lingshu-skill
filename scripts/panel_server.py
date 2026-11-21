@@ -2049,8 +2049,111 @@ def _ollama_state_read() -> dict:
         return {}
 
 
+def _ollama_registry_dirs() -> list[Path]:
+    """从 Windows 注册表读 Ollama 的安装目录（Inno Setup 卸载项）。
+
+    Ollama 官方安装器（OllamaSetup.exe，含 /DIR=D:\\xxx 自定义盘符）用 Inno Setup，
+    会把 InstallLocation / UninstallString 写进卸载注册表。这是发现"装在别的硬盘"
+    最可靠的来源——官方 install.ps1 自己也用 Find-InnoSetupInstall 找它。
+    非 Windows 或无 winreg 时静默返回空列表，不影响其它平台。
+    """
+    out: list[Path] = []
+    if os.name != "nt":
+        return out
+    try:
+        import winreg  # stdlib，仅 Windows
+    except ImportError:
+        return out
+    roots = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    for hive, sub in roots:
+        try:
+            key = winreg.OpenKey(hive, sub)
+        except OSError:
+            continue
+        i = 0
+        while True:
+            try:
+                child_name = winreg.EnumKey(key, i)
+            except OSError:
+                break
+            i += 1
+            try:
+                child = winreg.OpenKey(key, child_name)
+                try:
+                    display, _ = winreg.QueryValueEx(child, "DisplayName")
+                except OSError:
+                    continue
+                if "ollama" not in str(display).lower():
+                    continue
+                # 优先 InstallLocation；没有就从 UninstallString 里的 unins000.exe 反推目录
+                loc = ""
+                try:
+                    loc, _ = winreg.QueryValueEx(child, "InstallLocation")
+                except OSError:
+                    pass
+                if not loc:
+                    try:
+                        uninst, _ = winreg.QueryValueEx(child, "UninstallString")
+                        uninst = str(uninst).strip().strip('"')
+                        if uninst:
+                            loc = str(Path(uninst).parent)
+                    except OSError:
+                        pass
+                if loc:
+                    p = Path(loc.strip().strip('"'))
+                    if p.is_dir():
+                        out.append(p)
+            except OSError:
+                continue
+            finally:
+                try:
+                    winreg.CloseKey(child)
+                except Exception:
+                    pass
+        try:
+            winreg.CloseKey(key)
+        except Exception:
+            pass
+    return out
+
+
+def _ollama_candidate_dirs() -> list[Path]:
+    """所有可能的 ollama.exe 所在目录，按可信度排序（去重）。"""
+    dirs: list[Path] = []
+    # 1) 显式环境变量（用户/安装脚本指定的自定义位置，最高优先级）
+    env_dir = os.environ.get("OLLAMA_INSTALL_DIR")
+    if env_dir and Path(env_dir).is_dir():
+        dirs.append(Path(env_dir))
+    # 2) 注册表 Inno Setup（能找到 /DIR= 自定义盘符的安装）
+    dirs.extend(_ollama_registry_dirs())
+    # 3) 默认安装目录
+    dirs.append(_OLLAMA_INSTALL_DIR)
+    # 4) 常见非默认位置兜底（用户手动搬过、注册表又没写的情况）
+    for base in (Path("C:\\"), Path("D:\\"), Path("E:\\")):
+        for rel in ("Ollama", "Program Files\\Ollama", "Program Files (x86)\\Ollama"):
+            dirs.append(base / rel)
+    # 去重保序
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for d in dirs:
+        k = str(d).lower().rstrip("\\/")
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append(d)
+    return uniq
+
+
 def _ollama_exe() -> Path | None:
-    """找 ollama.exe：PATH 上的优先（where.exe），其次默认安装目录。"""
+    """找 ollama.exe（多来源，兼容装在别的硬盘）。
+
+    优先级：PATH（where.exe）→ OLLAMA_INSTALL_DIR 环境变量 → 注册表 Inno Setup
+    → 默认目录 → 常见非默认路径。原来只查 PATH + 默认目录，装在 D:/E: 盘且没进
+    PATH 时就误报"未安装"，即使用户已经装好了。
+    """
     try:
         out = subprocess.run(["where.exe", "ollama"], capture_output=True,
                              text=True, encoding="utf-8", errors="replace", timeout=5).stdout.strip()
@@ -2059,8 +2162,10 @@ def _ollama_exe() -> Path | None:
             return Path(first)
     except Exception:
         pass
-    if (_OLLAMA_INSTALL_DIR / "ollama.exe").is_file():
-        return _OLLAMA_INSTALL_DIR / "ollama.exe"
+    for d in _ollama_candidate_dirs():
+        exe = d / "ollama.exe"
+        if exe.is_file():
+            return exe
     return None
 
 
@@ -2140,11 +2245,18 @@ def ollama_status() -> dict:
     state = _ollama_state_read()
     # 只探一次 11434：serving 与 model_ready 共用同一次结果（见 _ollama_probe）
     serving, models = _ollama_probe()
+    exe = _ollama_exe()
+    # v3.65：`ollama list` 里是 `nomic-embed-text:latest`，而 _OLLAMA_MODEL 不带 tag，
+    # 精确匹配永远 False。比较时去掉 :tag 后缀（无 tag 视为 :latest）。
+    def _bare(name: str) -> str:
+        return name.split(":", 1)[0] if name else ""
+    model_ready = any(_bare(m) == _bare(_OLLAMA_MODEL) for m in models)
     st = {
         "ok": True,
-        "installed": _ollama_exe() is not None,
+        "installed": exe is not None,
+        "exe_path": str(exe) if exe else "",   # v3.65：让用户看到"在哪发现的"，便于核对非默认盘
         "serving": serving,
-        "model_ready": _OLLAMA_MODEL in models,
+        "model_ready": model_ready,
         "embed_configured": _ollama_embed_configured(),
         "zip_exists": _ollama_zip_path().is_file(),
         "stage": str(state.get("stage") or "idle"),
@@ -2166,7 +2278,9 @@ def _api_ollama_enable(self, path, data):
         if not _ollama_serving():
             self._json({"ok": False, "error": "Ollama 服务未运行（11434 无响应）"}, 400)
             return
-        if _OLLAMA_MODEL not in _ollama_model_names():
+        # v3.65：去掉 :tag 比较，避免 `nomic-embed-text:latest` 被误判成没拉
+        if not any(m.split(":", 1)[0] == _OLLAMA_MODEL.split(":", 1)[0]
+                   for m in _ollama_model_names()):
             if not _ollama_pull_model():
                 self._json({"ok": False, "error": f"模型 {_OLLAMA_MODEL} 拉取失败"}, 502)
                 return

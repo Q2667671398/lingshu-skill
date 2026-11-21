@@ -1,5 +1,16 @@
 # 更新日志
 
+## v3.65（2026-11-21）
+
+> 主题：**Ollama 非默认盘自动发现 + 真向量端到端跑通**。用户把 Ollama 装在别的硬盘，面板一直显示"未安装"；装到默认盘后又发现两个 bug 让它始终降级。
+
+- **多来源发现 Ollama（`_ollama_exe` 重写）**：原来只查 `where.exe`（PATH）+ 默认目录 `%LOCALAPPDATA%\Programs\Ollama`，装在 D:/E: 盘且没进 PATH 就误报"未安装"。现在按优先级探测：PATH → `OLLAMA_INSTALL_DIR` 环境变量 → **注册表 Inno Setup 卸载项** → 默认目录 → C/D/E 盘常见路径。注册表现（Inno Setup）正是 Ollama 官方安装器（`OllamaSetup.exe /DIR=D:\xxx`）和官方 `install.ps1`（`Find-InnoSetupInstall`）用的位置，是发现自定义盘安装最可靠的来源。参考 [Ollama Windows 文档](https://docs.ollama.com/windows) 与 [官方 install.ps1](https://github.com/ollama/ollama/blob/562c76d7/scripts/install.ps1)。
+- **面板显示发现位置**：status 新增 `exe_path`，「本地能力」页展示"发现位置：…"，便于核对是不是在别的盘找到的。
+- **修 `model_ready` 永远 False**：`ollama list` 里是 `nomic-embed-text:latest`，代码用 `nomic-embed-text` 精确匹配永远不等。改为去 `:tag` 后比较（status 与 enable 两处）。
+- **修 embedding 冷加载必降级**：`embed.timeout_sec` 默认 8 秒，而 Ollama 首次加载 nomic-embed-text 实测要 **10.5 秒**，8 秒超时就退回 256 维 hash 兜底。默认提到 30 秒。真模型向量是 768 维。
+
+**验证**：多来源候选目录 9 个（含 C/D/E 盘）；注册表正确读出安装路径；`embed_texts` 实测 **768 维**（真 Ollama，非 256 维降级）；status 全绿（installed/serving/model_ready/embed_configured/semantic_ready 全 True）；面板产物重建 310461 字节。
+
 ## v3.64（2026-11-21）
 
 > 主题：**水位守则空指针根治 + 清掉一条污染人格的垃圾记忆**。
