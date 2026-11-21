@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.66（2026-11-21）
+
+> 主题：**已知问题 #2 收官——CI 双平台**。至此台账"已知问题与风险"里能修的 4 条（#2/#4/#10/#15）全部落地，其余是环境事实/工程约束。
+
+- **CI 从单 ubuntu 改为 ubuntu + windows 双平台矩阵**（`ci.yml`）：`strategy.matrix.os = [ubuntu-latest, windows-latest]`、`fail-fast: false`。灵枢是 Windows 优先工具（CRLF / PowerShell / danger-guard / 备份选址），以前只在 ubuntu 跑，Windows 本地绿不代表可发布——v3.45 清单过期、v3.47/v3.48 测试平台假设都是这么漏过去的。现在两边都跑一致性检查 + 单测 + doctor，任一红即拦。
+- Windows runner 上 `doctor` 步骤显式 `shell: bash`（默认 pwsh 跑不了 `mkdir -p` / `$?`）；`tests` 步骤本来就是 bash。
+
+**验证**：YAML 解析确认矩阵与 shell 正确；`check_version.py` 不把 `.github/` 算代码（exit=0）。此步只改 CI 配置，未打 tag / 未推送。
+
 ## v3.65（2026-11-21）
 
 > 主题：**Ollama 非默认盘自动发现 + 真向量端到端跑通**。用户把 Ollama 装在别的硬盘，面板一直显示"未安装"；装到默认盘后又发现两个 bug 让它始终降级。

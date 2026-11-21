@@ -8,7 +8,14 @@ on:
 
 jobs:
   consistency:
-    runs-on: ubuntu-latest
+    # v3.66（已知问题 #2）：双平台跑。灵枢是 Windows 优先工具（CRLF/PowerShell/
+    # danger-guard/备份选址），以前只在 ubuntu 跑，Windows 本地绿不代表可发布——
+    # v3.45 清单过期、v3.47/v3.48 测试平台假设都是这么漏过去的。矩阵让两边都验。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -79,6 +86,7 @@ jobs:
       - name: doctor
         env:
           BRAIN_MEMORY_HOME: ${{ runner.temp }}/ls-ci-doctor
+        shell: bash   # v3.66：Windows runner 默认是 pwsh，下面的 mkdir -p/$? 需要 bash
         run: |
           mkdir -p "$BRAIN_MEMORY_HOME"
           python scripts/brain.py doctor --json
