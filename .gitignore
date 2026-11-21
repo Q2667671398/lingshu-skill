@@ -46,6 +46,11 @@ pnpm-lock.yaml
 docs/修复待办.md
 scripts/test_niah.py
 
+# P1-1：engine/ 是 scripts/+docs/ 的派生副本，由 sync_engine.py 生成，不入库。
+# 生成时机：CI（ci.yml 的「生成 engine 副本」步骤）、打包（make_plugin_zip.py）。
+# 本地全新 clone 后跑一次 `python scripts/sync_engine.py` 即可重建。
+scripts/astrbot_plugin_lingshu/engine/
+
 # 一次性运维脚本：2026-11-20 同名重建仓库后用来推 main + tag 白名单，用完即弃
 scripts/recreate_push.ps1
 

@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.62（2026-11-21）
+
+> 主题：**P1-1 收官——engine 副本从版本库移除**（前置的打包保护已在 v3.60 落地）。
+
+- **engine/ 不再入库**：`scripts/astrbot_plugin_lingshu/engine/` 是根目录 `scripts/` 与 `docs/` 的**纯派生副本**（`sync_engine.py` 的 `sync()` 会 mkdir + 全量拷贝 + 反向清理），以前两份都进 git、靠人工同步，漏一次就红。现在从 git 索引移除（**磁盘文件保留**，本地照常能跑），加 `.gitignore` 排除；它不再是"要维护的第二份源码"，而是"随时可再生的构建产物"。
+- **三处配套一次性改好，杜绝空壳包**：
+  - **CI**（`ci.yml`）：所有一致性检查前新增 `生成 engine 副本` 步骤（`python scripts/sync_engine.py`）——否则全新 checkout 没有 engine，`sync --check` / `checksums --check` 会报"副本缺失"。
+  - **市场归档**（`make_plugin_zip.py`，v3.60 已落地）：打包前先 `sync_engine.sync()`，同步失败拒绝出包；`--no-sync` 可跳过。实测产出 52 文件 / 773 KB / 45 个 engine 条目。
+  - **热同步**（`update_dsh_copy.ps1`）：补注释说明 engine 由市场包/打包生成、不在发布清单里；全新 clone 时先跑 `python scripts/sync_engine.py` 再同步。
+- **manifest 自动收敛**：`make_manifest.py` 用 `git ls-files` 收文件，engine 从索引移除后自动不再进清单（校验产物更干净）。
+
+**验证**：git 跟踪 engine 42 → 0、磁盘 45 个文件全保留；`.gitignore` 命中；五项发布检查全 exit=0；全量 `run_tests.py` 49/49；打包实测含完整 engine。
+
 ## v3.61（2026-11-21）
 
 > 主题：**清掉台账里能真修的已知问题**（#4 / #10 / #15）。其余 12 条是环境事实或工程约束，改代码修不了（TLS 轮换、GitHub 仓库、DSH 沙箱等），保留在台账作为操作提示。

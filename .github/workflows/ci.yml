@@ -16,6 +16,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      # P1-1：engine/ 是 scripts/+docs/ 的派生副本，已从 git 移除（见 .gitignore）。
+      # 必须在所有一致性检查前先生成，否则 sync/checksums 都会报"副本缺失"。
+      # 这一步等价于本地的 make_plugin_zip.py 打包前同步，保证 CI 校验的是同一份产物。
+      - name: 生成 engine 副本
+        run: python scripts/sync_engine.py
+
       # 版本硬检查：SKILL.md / package.json / 插件 metadata.yaml 次版本一致
       - name: check_version
         run: python scripts/check_version.py

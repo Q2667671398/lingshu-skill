@@ -1,12 +1,12 @@
 {
-  "version": "3.61",
+  "version": "3.62",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "1a2ed35bef42473ec62de56a93bb83e09144f1df746983d7cff08e275689b72a",
-      "size": 241338
+      "sha256": "508059afbade292f45757498ffee2ac32176845a753e0b70a31201753e424163",
+      "size": 242968
     },
     "README.md": {
-      "sha256": "c9f78570b896fc5475973a966c3e97a84530bafff17343eb0a775fa08f7bc396",
+      "sha256": "5889b9a8dec53e96b7372f42c64316f280d6f81eff067d4ffa6c532a13c19d87",
       "size": 64472
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "d37f28c0741bb19d66dee0041113283e2bd83c4a2457701bef90c98354ef2898",
+      "sha256": "c478ffad0ad9f0a7a1571f4caf67b7ac224020429712d441f2d8c1235bcf0d13",
       "size": 35253
     },
     "assets/panel.html": {
@@ -106,7 +106,7 @@
       "size": 5588
     },
     "package.json": {
-      "sha256": "76a6fbfb62a9067abac1682c2ab0da7aada2520276e82e4f0d566ddb7faa8b8b",
+      "sha256": "5a627094d09df1801528054407d226ed1fc381bad209fc65467fe5f6326ad2ec",
       "size": 1033
     },
     "scripts/assembler.py": {
@@ -262,8 +262,8 @@
       "size": 5947
     },
     "scripts/update_dsh_copy.ps1": {
-      "sha256": "645feb7a2f79c3765ce81a582519cbcdb7788da16b5ea4eee4f34dbeda316a3d",
-      "size": 4353
+      "sha256": "ed92b620fd4b2320d0084098da1b2e960713a39418c31ca4b7a78798cf0afa3c",
+      "size": 4906
     },
     "start-panel.bat": {
       "sha256": "1f189106b4c25f28bc7159b740921d7dc48a7a3a5e54c30d8a06ee0e099b9657",

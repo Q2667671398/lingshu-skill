@@ -1,4 +1,4 @@
-﻿# 灵枢 → DSH 插件目录热同步（按发布清单精确复制，不重启 DSH）
+# 灵枢 → DSH 插件目录热同步（按发布清单精确复制，不重启 DSH）
 #
 # 用法（从哪个目录跑都行，脚本自己定位仓库根）：
 #   powershell -ExecutionPolicy Bypass -File "<仓库>\scripts\update_dsh_copy.ps1"
@@ -8,6 +8,12 @@
 # （实测 .tmp_refs 129 MB、_ui_probe 12 MB、panel_src/tests 若干），而 DSH 只需要
 # 发布清单 manifest.json 里的交付物。现在只拷清单里列出的文件（当前 65 个）。
 #
+# P1-1：engine/ 是 scripts/+docs/ 的派生副本，已从 git 移除（见 .gitignore）。
+# 它不在发布清单里，本脚本也不复制它——目标副本的 engine 由市场包安装时带进来。
+# 若从全新 clone 跑本脚本，磁盘可能还没有 engine；此时先手动跑一次
+# `python scripts\sync_engine.py` 生成（幂等），否则同步后 doctor 的 engine-sync
+# 会因源端缺 engine 而红。生成 engine 属于发版/打包职责，不塞进本脚本以免引入
+# "找不到 python 解释器"的新失败点。
 # 退出码：0 成功；1 有文件没拷成（多半是 DSH 正占用，完全退出 DSH 后重跑）。
 
 param(
