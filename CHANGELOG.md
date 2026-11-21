@@ -1,5 +1,26 @@
 # 更新日志
 
+## v3.72（2026-11-22）
+
+> 主题：**即记即存不再丢掉 AI 说的话**（speaker attribution）。
+
+用户发现"记忆里只有我说的话，没有 AI 说的"。根因链：
+- 插件把即记即存文本写成 `user：` / `assistant：`（小写英文）；
+- `capture` 的分段正则 `_split_segments` 只认 `User`/`Assistant` 大写开头 + 中文，
+  **大小写敏感** → 小写前缀既不断段、也无角色归属；
+- 整段对话混成一条，去重（jaccard ≥0.92）时 AI 的话随整段被吞；
+- 真库实测：72 条封存记忆全部无角色归属，看起来"只有用户说的话"。
+
+**修法**（借鉴 Graphiti 的 role→speaker mapping / dual-mem 的 L1 完整对话层 /
+Letta-MemGPT 的 message buffer）：
+- 新增大小写不敏感的角色正则 `_SPEAKER_RE`，兼容 user/human/me/assistant/ai/bot/
+  model/tool/system + 中文（用户/我/助手/灵枢/AI）；
+- 说话人切换时**保留角色前缀**到段落（speaker attribution），每条记忆可归因；
+- 实测：4 轮对话切成 4 段（user/assistant 各 2），assistant 的话单独入库。
+
+**验证**：行为基线 check OK（注入逐字一致）；端到端 `brain.py extract` 实测
+封存 4 段、assistant 的话单独可召回；五项发布检查 exit=0；全量测试全过。
+
 ## v3.71（2026-11-22）
 
 > 主题：**信箱 17 `session-bus` 落地 + 修掉扩展机制一直没工作过的真 bug**。

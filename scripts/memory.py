@@ -2725,8 +2725,23 @@ VERBATIM_DIR = HOME / "verbatim"
 CAPTURE_MIN_LEN = 4
 
 
+# 说话人前缀（v3.72）：即记即存写进来的是插件的 `user：` / `assistant：`（小写英文），
+# 原正则只认 `User`/`Assistant` 大写开头 + 中文，导致小写前缀既不断段、也无归属，
+# 整段对话混成一条，AI 的话随整段去重被吞——真库里于是"只有用户说的话"。
+# 借鉴 Graphiti 的 role→speaker mapping / dual-mem 的 L1 完整对话层：
+# 用大小写不敏感匹配 + 中英文角色词，且**保留角色前缀**到段落文本里（谁说的可追溯）。
+_SPEAKER_RE = re.compile(
+    r"^(user|human|me|assistant|ai|bot|model|tool|system|用户|我|助手|灵枢|AI)\s*[:：]",
+    re.IGNORECASE,
+)
+
+
 def _split_segments(text: str) -> list:
-    """把一段会话原文切成可独立成条的片段：空行 / 分隔线 / 说话人切换。"""
+    """把一段会话原文切成可独立成条的片段：空行 / 分隔线 / 说话人切换。
+
+    v3.72：说话人切换保留角色前缀（如 `assistant：…`），使每条记忆可归因；
+    大小写不敏感，兼容插件写入的 `user：` / `assistant：` 与中文 `我：`。
+    """
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     # 分隔线（---、***、===）当成硬边界
     text = re.sub(r"\n\s*(?:-{3,}|\*{3,}|={3,})\s*\n", "\n\n", text)
@@ -2738,11 +2753,12 @@ def _split_segments(text: str) -> list:
                 segs.append(" ".join(cur))
                 cur = []
             continue
-        # 说话人切换（"用户：" / "我：" / "AI:"）也断开
-        if cur and re.match(r"^(用户|我|助手|AI|Assistant|User)\s*[:：]", s):
+        # 说话人切换：保留前缀到新段落（speaker attribution）
+        if cur and _SPEAKER_RE.match(s):
             segs.append(" ".join(cur))
-            cur = []
-        cur.append(s)
+            cur = [s]
+        else:
+            cur.append(s)
     if cur:
         segs.append(" ".join(cur))
     out = []
