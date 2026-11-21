@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.74（2026-11-22）
+
+> 主题：**npm 发布准备就绪**——发一次 npm 后，目录站自动把灵枢的市场安装源从 `github:` 改成 npm 包名，以后每次发版只要 publish，不用再改市场条目（解决朋友装不上：git/GitHub 问题）。
+
+- **`package.json` 加 `files` 白名单 + `scripts.prepack`**：files 只含发布文件（SKILL*.md / README / CHANGELOG / index.js / cordis.patch.yml / start-panel.bat / assets / docs / cordis-plugin / scripts）；prepack 跑 `npm_prepack.py`。
+- **`scripts/npm_prepack.py`（新）**：publish 前 sync engine 副本 + 清掉所有 `__pycache__`/`.pyc`（npm 的 files 白名单里的目录无法被 .npmignore 排除，必须磁盘清理）。
+- **`.npmignore`（新）**：兜底排除本地数据。
+- **`docs/npm-发布说明.md`（新）**：完整发布步骤（npm login → npm publish）+ 为什么发 npm 后不用再改市场的原理。
+
+**验证**：`npm pack` 实测 132 文件——必需文件齐全、engine 49 文件无缓存垃圾、tests 0、cordis-plugin 11、version 3.74.0、prepack 正确。你朋友届时 `dsh plugin add lingshu-skill` 从 npm 下 tgz，不需 git/GitHub。
+
+（v3.73 的 tgz 直链方案保留为备选：`make_dsh_tgz.py` + `docs/tgz-安装说明.md` 仍在。）
+
 ## v3.73（2026-11-22）
 
 > 主题：**tgz 直链安装方案**（让网络受限/没装 git 的用户能从市场直接装灵枢）。

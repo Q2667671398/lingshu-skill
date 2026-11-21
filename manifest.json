@@ -1,12 +1,12 @@
 {
-  "version": "3.73",
+  "version": "3.74",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "924d212cbd343bf9b14c3dc52f3c4985adb98d146b0f56a89843f5583dee6163",
-      "size": 256648
+      "sha256": "4cfc0c3b9b13ccd80772ae9654ca1763b5cc01c782d66de94294fe945efe2b9b",
+      "size": 257940
     },
     "README.md": {
-      "sha256": "35712e37a2f36e9ee3498cb5043352e9ebc989a23c9b2aafe883e40666c1b6cf",
+      "sha256": "7f177c205125006b9400699b9add835588ae5b08b4ea53fabc1be97400484465",
       "size": 64472
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "60da9c935f2add2a59570429aeadc87a3f33ff5eb200ce6774cb5ac78bdb3cc6",
+      "sha256": "9635c25262ebe41b8bbb79c44a7f3d47e1bbba22121febeafd1da2e0613d98d8",
       "size": 35253
     },
     "assets/panel.html": {
@@ -85,6 +85,10 @@
       "sha256": "596bc1a3414f2de5569dcb41a0c494acae7daa534efd5a91dbcc3c4cb308d695",
       "size": 4624
     },
+    "docs/npm-发布说明.md": {
+      "sha256": "b829779e03a30083225f70dc3de22f239195c53e164a301d00029240c26df481",
+      "size": 2377
+    },
     "docs/panel-api.md": {
       "sha256": "2cab01a7b824b402bca41d8739d36133265bb8622385876e1b499385aa1aaa99",
       "size": 10172
@@ -106,8 +110,8 @@
       "size": 5588
     },
     "package.json": {
-      "sha256": "3b45787bccd66ce712c36a36345b5c105a555ec4c773fa51ea6aa04cb8e1530b",
-      "size": 1033
+      "sha256": "d204fbad8df4b6b90650c5153e970141abd8af85d32b6b4d08440966667387f3",
+      "size": 1341
     },
     "scripts/assembler.py": {
       "sha256": "084e1b0157feda76539f0acd57f813edc4fa4df65c7d418912ef874174622db6",
@@ -220,6 +224,10 @@
     "scripts/memory.py": {
       "sha256": "44f41f0aceb00b548177f3fce2aeb0e621fe192a3b355d74009fdcc4fa9c8c99",
       "size": 217882
+    },
+    "scripts/npm_prepack.py": {
+      "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",
+      "size": 977
     },
     "scripts/panel_build.py": {
       "sha256": "6394c1d74d203093e43b2106d7acca6e0ca9db61ca1cd6cd3a1616053653414b",

@@ -1,0 +1,15 @@
+# npm 包排除：缓存 / 本地数据 / 测试
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tgz
+*.zip
+tests/
+downloads/
+verbatim/
+.brain-memory/
+panel-token.txt
+.env
+config.json
+*.jsonl

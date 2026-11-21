@@ -1,6 +1,6 @@
 {
   "name": "lingshu-skill",
-  "version": "3.73.0",
+  "version": "3.74.0",
   "description": "Brain-inspired persistent memory, persona and growth system for AI coding agents. Local-only, zero-dependency Python. Requires Python 3.10+.",
   "repository": {
     "type": "git",
@@ -10,6 +10,23 @@
   "license": "MIT",
   "type": "module",
   "main": "index.js",
+  "files": [
+    "SKILL.md",
+    "SKILL-lite.md",
+    "SKILL-tiny.md",
+    "README.md",
+    "CHANGELOG.md",
+    "index.js",
+    "cordis.patch.yml",
+    "start-panel.bat",
+    "assets/",
+    "docs/",
+    "cordis-plugin/",
+    "scripts/"
+  ],
+  "scripts": {
+    "prepack": "python scripts/npm_prepack.py"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^0.2.0-rc.1 || ^0.2.1-alpha.3 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3"
   },
