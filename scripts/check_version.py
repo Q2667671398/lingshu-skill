@@ -5,7 +5,6 @@
 用法：
   python scripts/check_version.py            # 比较工作区（含暂存）与 HEAD
   python scripts/check_version.py --staged   # 只比较暂存区（pre-commit 钩子用）
-  python scripts/check_version.py --base v2.21
   python scripts/check_version.py --install  # 把 pre-commit 钩子装进 .git/hooks
 
 规则：代码文件（scripts/、assets/、cordis-plugin/、根目录启动脚本与 json）
@@ -164,6 +163,20 @@ def check(staged: bool = False, base: str = "HEAD") -> int:
                   file=sys.stderr)
             return 1
 
+    # README「当前版本 vX.Y」须与 SKILL.md 一致（P6 #29）：原来 README 被归为
+    # 文档不算代码，版本号可以无限漂移而 CI 全绿——用户看到错误版本。
+    readme_path = ROOT / "README.md"
+    if readme_path.exists():
+        try:
+            rm_text = readme_path.read_text(encoding="utf-8-sig")
+        except OSError:
+            rm_text = ""
+        m_rm = re.search(r"当前版本\s*\*\*?v?(\d+\.\d+(?:\.\d+)?)", rm_text)
+        if m_rm and m_rm.group(1) != new_ver:
+            print(f"[version] 拒绝：README「当前版本」是 v{m_rm.group(1)}，与 SKILL.md"
+                  f"（{new_ver}）不一致。更新 README 的版本行。", file=sys.stderr)
+            return 1
+
     # JSON 交付物禁止 UTF-8 BOM：dsh 用严格 JSON.parse 读已装包的 package.json，
     # 带 BOM 直接 SyntaxError 拒装（v2.87 踩过一次，v2.88 被 PowerShell 写回复发）。
     for jname in ("package.json", "manifest.json"):
@@ -239,12 +252,13 @@ def install_hook() -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="灵枢：改代码必须升版本")
     ap.add_argument("--staged", action="store_true", help="只检查暂存区（pre-commit 用）")
-    ap.add_argument("--base", default="HEAD", help="基准版本，默认 HEAD")
+    # v3.78：删除原来虚假的 --base 参数——它接收后从未被使用（基准版本恒从 HEAD
+    # 读），用户以为指定了基准实际无效。传 --base 现在会被 argparse 明确拒绝。
     ap.add_argument("--install", action="store_true", help="安装 pre-commit 钩子")
     args = ap.parse_args(argv)
     if args.install:
         return install_hook()
-    return check(args.staged, args.base)
+    return check(args.staged)
 
 
 if __name__ == "__main__":

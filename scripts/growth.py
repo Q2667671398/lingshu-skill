@@ -198,6 +198,26 @@ def _today() -> str:
     return time.strftime("%Y-%m-%d")
 
 
+def _sanitize_exc(exc) -> str:
+    """异常转文本时剥掉 URL query 里的凭据（P6 #46）。
+
+    Gitee/GitHub 下载失败时 urllib 的异常链可能带完整 URL——里面若有
+    access_token=... 就会进日志/报错。这里只保留 reason，并对 query 脱敏。
+    """
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    text = str(exc)
+    try:
+        parts = urlsplit(text)
+        if parts.query:
+            safe_q = urlencode([(k, "***" if "token" in k.lower() or "key" in k.lower()
+                                 or "secret" in k.lower() else v)
+                                for k, v in parse_qsl(parts.query, keep_blank_values=True)])
+            text = urlunsplit((parts.scheme, parts.netloc, parts.path, safe_q, parts.fragment))
+    except Exception:
+        pass   # 脱敏失败保守返回原文（core.redact 的模式不一定匹配自定义 token）
+    return text[:300]
+
+
 def _read_json(path: Path) -> dict:
     # Windows 记事本/PowerShell 可能写 BOM，统一用 utf-8-sig 读
     return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -1406,7 +1426,9 @@ def _fetch_gitee_zip_source() -> Path:
             raise RuntimeError("Gitee 归档直下也被风控（403）") from e
         raise
     except _urlreq.URLError as e:
-        # 兜底：异常链里的 URL 可能带认证信息，脱敏后再抛（token 绝不进日志）
+        # 兜底：异常链里的 URL 可能带认证信息，脱敏后再抛（token 绝不进日志）。
+        # P6 #46：原来调用的 _sanitize_exc 全项目未定义，异常路径实际抛 NameError，
+        # 把脱敏失败变成"Another exception occurred"——这里就地定义一个保守版本。
         raise RuntimeError(f"Gitee zip 归档下载失败：{_sanitize_exc(e)}") from None
     finally:
         shutil.rmtree(staging, ignore_errors=True)

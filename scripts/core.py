@@ -441,11 +441,23 @@ def load_config() -> dict:
         _upgraded["importance"] = DEFAULT_CONFIG["weights"]["importance"]
         _upgraded["core_bias"] = DEFAULT_CONFIG["weights"]["core_bias"]
         cfg["weights"] = _upgraded
-        # 回写 config.json（原子），下次启动就是新值；回写前先确认不是 READONLY
+        # 回写 config.json（原子），下次启动就是新值；回写前先确认不是 READONLY。
+        # P6 #27：原来直接 atomic_json 无锁，与面板并发写 config.json 会互相覆盖。
+        # 现在在锁内**重读一次**并确认 weights 仍是旧默认才写（避免覆盖并发改动）。
         if not READONLY:
             try:
-                cfg_to_write = dict(cfg)
-                atomic_json(path, cfg_to_write)
+                with _locked(path):
+                    _fresh = {}
+                    try:
+                        _fresh = json.loads(path.read_text(encoding="utf-8-sig"))
+                    except Exception:
+                        pass
+                    _fresh_w = _fresh.get("weights") or {}
+                    if (_fresh_w.get("recency") == _W_OLD["recency"]
+                            and _fresh_w.get("importance") == _W_OLD["importance"]
+                            and "core_bias" not in _fresh_w):
+                        _fresh["weights"] = dict(_fresh_w, **_upgraded)
+                        atomic_json(path, _fresh)
             except Exception:
                 pass  # 写不动就跳过，内存里用新值也够
     return cfg

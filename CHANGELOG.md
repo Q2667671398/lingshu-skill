@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.78（2026-11-22）
+
+> 主题：**把 P6 里"真 bug + 小改动"的剩余项也修掉**——之前标"暂不做"过于保守。
+
+- **#26** mood-gate 计数 read-modify-write 无锁（`emotion.py:690`）→ 整段包进 `_locked`，防面板多线程与 CLI 并发丢更新。
+- **#27** `load_config` 权重迁移写回无锁（`core.py:445`）→ 锁内重读 config.json、确认 weights 仍是旧默认才写，防与面板并发写互相覆盖。
+- **#29** README 版本漏校验（`check_version.py`）→ 新增「当前版本 vX.Y」与 SKILL.md version 一致性断言，README 漂移不再 CI 全绿。实测改成 v3.50 会被拒。
+- **#30** `check_version --base` 虚假参数 → 删除（原来接收后从未使用，用户以为指定了基准实际无效）；传 `--base` 现在被明确拒绝。
+- **#31** `make_manifest.py` 报错提示"先用 --build 生成"但该 flag 不存在 → 改成"直接运行 python scripts/make_manifest.py"。
+- **#46** `growth.py:1410` 引用的 `_sanitize_exc` 全项目未定义（异常路径抛 NameError）→ 补定义（urlsplit 剥掉 query 里的 token/key/secret）。注：同条里"Gitee token 拼 URL query"需实测 header 支持后再改，不盲改。
+
+验证：py_compile 五文件；check_version 正向 OK、`--base` 被拒（exit=2）、README 改版本号被拒（exit=1）；五项发布检查 + 压力检查 exit=0；行为基线 OK；全量测试全过。
+
 ## v3.77（2026-11-22）
 
 > 主题：**P6 审核收官**——修水位阈值双份默认值漂移风险，其余低危/架构项标记暂不做。

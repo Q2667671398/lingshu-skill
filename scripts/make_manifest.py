@@ -173,7 +173,7 @@ def build_manifest(root: Path = ROOT) -> dict:
 def check(root: Path = ROOT) -> int:
     mf = root / "manifest.json"
     if not mf.is_file():
-        print("[manifest] manifest.json 不存在，先用 --build 生成", file=sys.stderr)
+        print("[manifest] manifest.json 不存在，先运行 python scripts/make_manifest.py 生成", file=sys.stderr)
         return 1
     cur = build_manifest(root)
     old = json.loads(mf.read_text(encoding="utf-8"))

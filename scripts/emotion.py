@@ -688,22 +688,26 @@ def mood_brief() -> str:
     if not READONLY and (per_day > 0 or cfg.get("mood_inject_change_delta", True)):
         try:
             path = _mood_gate_state_path()
-            st = {}
-            try:
-                st = json.loads(path.read_text(encoding="utf-8-sig"))
-            except Exception:
-                pass
-            today = fmt_date(now_ts())
-            if st.get("date") != today:
-                st = {"date": today, "count": 0, "sig": ""}
-            if cfg.get("mood_inject_change_delta", True) and st.get("sig") == sig:
-                gated = True
-            elif per_day > 0 and int(st.get("count") or 0) >= per_day:
-                gated = True
-            if not gated:
-                st["count"] = int(st.get("count") or 0) + 1
-                st["sig"] = sig
-                atomic_json(path, st)
+            # P6 #26：这里是 read-modify-write（读 count → +1 → atomic_json），
+            # 原来无锁——面板多线程 + CLI 并发时会丢更新、限流被绕过。
+            # _locked 可重入（atomic_json 内部也用它），整段包住即可。
+            with _locked(path):
+                st = {}
+                try:
+                    st = json.loads(path.read_text(encoding="utf-8-sig"))
+                except Exception:
+                    pass
+                today = fmt_date(now_ts())
+                if st.get("date") != today:
+                    st = {"date": today, "count": 0, "sig": ""}
+                if cfg.get("mood_inject_change_delta", True) and st.get("sig") == sig:
+                    gated = True
+                elif per_day > 0 and int(st.get("count") or 0) >= per_day:
+                    gated = True
+                if not gated:
+                    st["count"] = int(st.get("count") or 0) + 1
+                    st["sig"] = sig
+                    atomic_json(path, st)
         except Exception as exc:
             log_event("mood-gate", f"心境注入闸门状态读写失败（限流可能短暂失效）：{exc}", level="warn")
     if gated:
