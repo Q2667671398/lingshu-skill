@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.85（2026-11-22）
+
+> 主题：**修 v3.84 发版自动化的 staged 轮询 bug**——publish 用 SKILL.md 的 X.Y 与 registry 的 X.Y.0 比较，永远匹配不上，导致发布成功后脚本空转 20 分钟；本次改从 package.json 读 X.Y.0。
+
+- **`release.py do_publish` 版本格式修复**：`ver` 改为读 `package.json` 的 `X.Y.0`（原来读 SKILL.md 的 `X.Y`），与 npm registry `latest` 格式一致——staged 轮询能正确匹配并退出，不再空转到超时。
+- 实测：v3.84.0 通过 release.py publish 成功发布、registry 可见；但脚本因上述 bug 卡在轮询（已终止进程、确认包已上线），本次修复后轮询匹配验证通过。
+
+验证：release.py 编译通过；`do_publish` 读到 ver=3.84.0 与 registry latest=3.84.0 匹配。六项检查 + 行为基线 + 全量测试全过。
+
 ## v3.84（2026-11-22）
 
 > 主题：**npm 发版自动化**——把台账第四节发布流程串成一条命令，守住"版本必须升、检查必须全绿"门禁。

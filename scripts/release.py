@@ -159,7 +159,9 @@ def do_verify() -> int:
 
 
 def do_publish(wait_minutes: int) -> int:
-    ver = cur_version()
+    # npm 版本是 X.Y.0（package.json），registry 的 latest 也是 X.Y.0——
+    # 必须用这个格式比较；用 SKILL.md 的 X.Y 会永远匹配不上 staged 轮询目标。
+    ver = json.loads((ROOT / "package.json").read_text(encoding="utf-8-sig"))["version"]
     if do_verify() != 0:
         return 1
     npm = shutil.which("npm") or shutil.which("npm.cmd")
