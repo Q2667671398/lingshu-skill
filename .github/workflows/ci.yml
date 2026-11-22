@@ -41,6 +41,10 @@ jobs:
       - name: sync --check
         run: python scripts/sync_engine.py --check
 
+      # 水位阈值双份默认值一致性（P6 #28）
+      - name: pressure sync
+        run: python scripts/check_pressure_sync.py
+
       # 插件 checksum 自检
       - name: checksums --check
         run: python scripts/astrbot_plugin_lingshu/make_checksums.py --check
