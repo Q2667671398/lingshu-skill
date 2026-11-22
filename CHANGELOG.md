@@ -1,5 +1,16 @@
 # 更新日志
 
+## v3.80（2026-11-22）
+
+> 主题：**P5 #20 方案 A 落地**——用户亲口说的记忆直接确认，打通知识库增长链路。
+
+- **问题**：知识库几乎不增长——真库 5 条知识、72 条封存记忆全部 `review=None`，`auto_archive` 只认 `review=confirmed`，封存记忆永远进不了知识库。这是"审核闸防 AI 幻觉"的设计代价。
+- **方案 A（用户选定）**：`source="user"`（用户亲口说的）本就是事实，在 `make_record()` 层直接标 `review="confirmed"` + `review_at` + `review_source="user-statement"`；AI 产出（默认 `ai`/dream/work-flush）一律不标，继续走 pending 审核闸。
+- **落点**：`memory.py make_record()`——`remember()` 与 `capture()` 两条写入路径都覆盖；面板/astrbot 等已显式传 `source="user"` 的调用方自动受益，无需各自改。
+- **不变量**：`source="ai"` 的高重要性（≥0.8）记忆仍标 pending（L1268 既有逻辑不变）——审核闸没被绕过。
+
+验证：`tests/test_user_confirmed.py` 3/3（user→confirmed / ai→不标 / ai 高重要性仍 pending / user 记忆能被 auto_archive 转进知识库）；五项发布检查 + 压力检查 exit=0；行为基线 OK；全量测试全过。
+
 ## v3.79（2026-11-22）
 
 > 主题：**交接笔记-20261122 转入的两条运维缺陷**（cron 失败静默 / doctor 备份误报）+ laneai 余额补齐。

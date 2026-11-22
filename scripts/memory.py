@@ -952,6 +952,15 @@ def make_record(text: str, kind: str = "fact", importance: float | None = None,
         "consolidated": False,
         "pinned": False,
     }
+    # P5 #20 方案 A（v3.80）：用户亲口说的（source="user"）本就是事实——直接标
+    # review=confirmed，让 auto_archive 能把它们沉淀进知识库。AI 产出（默认
+    # "ai"/dream/work-flush 等）一律不标，继续走 pending/审核闸防幻觉固化。
+    # 标在 make_record 这一层，remember() 与 capture() 两条写入路径都覆盖；
+    # 面板/astrbot 等已经显式传 source="user" 的调用方自动受益，无需各自改。
+    if str(source).strip().lower() == "user":
+        rec["review"] = "confirmed"
+        rec["review_at"] = now_ts()
+        rec["review_source"] = "user-statement"
     # 通道三元组（可选）：来自聊天平台的记忆带上来源，用于群间隔离与跨群用户画像。
     # 缺省不写入字段 = 传统全局记忆，完全向后兼容（旧数据没有这些字段也照常召回）。
     if channel:
