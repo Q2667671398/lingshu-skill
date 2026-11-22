@@ -1,5 +1,14 @@
 # 更新日志
 
+## v3.82（2026-11-22）
+
+> 主题：**npm token 脱敏补丁**——堵住"裸 token 被原文封存落盘"的泄露口。
+
+- **`core._REDACT_PATTERNS` 加 npm granular token 规则**（`npm_` + 30 位以上字母数字 → `[REDACTED:npm-token]`）。起因：本会话实测用户贴的裸 npm token（`npm_p2P3...`）被 `capture` 原文落盘——泛化 `kv-secret` 只认 `token=` 键值形态，裸发漏网。具名规则放在泛化兜底之前（否则会被吃掉一半导致具名扫不到）。
+- **不碰历史数据**：真库 verbatim 里那条旧 token 已作废（现用新 token），且删改真实记忆库属不可逆操作——只保证以后不再落盘，历史残留由用户自行决定清理。
+
+验证：`tests/test_npm_redact.py` 2/2（npm token 脱敏 + 其它 token 规则不回归）；五项检查 + 压力检查 exit=0；行为基线 OK；全量测试全过。
+
 ## v3.81（2026-11-22）
 
 > 主题：**P5 #21 借鉴清单首选落地**——foldkeep 的「逐字原文可展开」，让有损压缩可追溯。

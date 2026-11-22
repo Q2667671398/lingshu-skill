@@ -466,9 +466,12 @@ def load_config() -> dict:
 # ---------------------------------------------------------------- 脱敏（v3.02 #1/#3）
 
 # 常见密钥/凭据形态：命中后替换为 [REDACTED:类型]，保留首尾 3 字符便于人工辨认。
-# 顺序敏感：具名前缀（sk-/ghp_/github_pat_/xox/AKIA）先扫，泛化兜底（kv/Bearer）后扫，
+# 顺序敏感：具名前缀（npm_/sk-/ghp_/github_pat_/xox/AKIA）先扫，泛化兜底（kv/Bearer）后扫，
 # 否则泛化规则会把具名 token 先吃掉一半、留下前缀导致具名规则扫不到。
 _REDACT_PATTERNS: list[tuple[str, re.Pattern]] = [
+    # npm 2026 granular token：npm_ + 36 位（本会话实测裸 token 贴进对话被
+    # capture 原文落盘——泛化 kv-secret 只认 "token=" 形态，裸发漏网，补具名规则）
+    ("npm-token", re.compile(r"npm_[A-Za-z0-9]{30,}")),
     ("api-key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
     ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("github-token", re.compile(r"ghp_[A-Za-z0-9]{20,}")),

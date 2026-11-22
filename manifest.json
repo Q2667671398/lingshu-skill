@@ -1,12 +1,12 @@
 {
-  "version": "3.81",
+  "version": "3.82",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "eba32c5b79d5b39602afcd79054b38afde5d8830513087de0f643a0d520ffd31",
-      "size": 268157
+      "sha256": "28963c1cfc011680a99694afee561bd8f04b4668cdfaf52d1ebfd8e824402333",
+      "size": 269056
     },
     "README.md": {
-      "sha256": "31f459fa8a9448abe86026bbd0d39b8d4ee4efaeeecfa327989eb07af3d5469e",
+      "sha256": "a3a90df5a0c3bbb9ff4d4fc4df59e9ec6694d05bd649c3b49922eac66a2fd531",
       "size": 64472
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "9323145cadab64e9c0ad34b13c0fdce13c365de75ecd6ff47fe9c9df78e80002",
+      "sha256": "0111f6cc710cd45d55f9fb379cf63d432cf93a2bcb0aae7ce8ea0fc6758a8363",
       "size": 35253
     },
     "assets/panel.html": {
@@ -102,15 +102,15 @@
       "size": 2074
     },
     "docs/进展与待办.md": {
-      "sha256": "13bf5ea41b051d0fff977fd190230f94dc2e99e5a3e7444c70c90376a796605d",
-      "size": 100053
+      "sha256": "46bbd29ba32f8851f89034fe515a5715d5414ee3c10eb9d6d48e1fd42db54a7f",
+      "size": 100323
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "5642836d862746423eea3528b70edc54fc7b97f51c912dc4bb3e37a0634e0f67",
+      "sha256": "f7156df99ad5159a3bdd3d11ae3920b8c8160584b66b8af919cc0280757f3167",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -154,8 +154,8 @@
       "size": 9928
     },
     "scripts/core.py": {
-      "sha256": "ceafa352e0c869e98adb2a4d4ac0e89ce6f4cf9211411e0e7f523fa7b9c81088",
-      "size": 92438
+      "sha256": "d75dd0a26118cceafdf1e89badf241e7f2bf3c7b809d3f7e7e92e30e82008a11",
+      "size": 92696
     },
     "scripts/dream.py": {
       "sha256": "e25749c32fe6cb3b3845c9541ef663dffe8efaa0d9bd251f611e1359208800b9",
