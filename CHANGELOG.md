@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.84（2026-11-22）
+
+> 主题：**npm 发版自动化**——把台账第四节发布流程串成一条命令，守住"版本必须升、检查必须全绿"门禁。
+
+- **`scripts/release.py`**（新）：
+  - `status` —— 本地 SKILL/package 版本 / npm 线上 latest / 是否可发；
+  - `bump <X.Y> [标题]` —— 拒绝非 X.Y 或版本不升；自动改四处版本（SKILL/package X.Y.0/README/CHANGELOG 首节）+ 按依赖序重生成 sync_engine→checksums→manifest + 跑六项检查/行为基线/全量测试，全绿才成功；
+  - `publish [--wait 分钟]` —— 全套验证 + npm whoami + 版本大于线上防 E409 + npm publish + 轮询 registry 到可见（绕本机缓存，覆盖 npm staged 窗口 ~17 分钟，默认等 20 分钟）。
+  - **不做** git 提交/tag/push（用户决定）；新文件未 git add 时 manifest 门禁照旧拦（脚本不替你决定入库范围）。
+- **`docs/发布自动化.md`**（新）：三条命令用法 + 典型发版流程（先 bump 再一起提交，最后 publish）。
+
+验证：release.py 编译通过；status 正确显示本地 3.83 / 线上 3.83.0 / 不可发；bump 正确拒绝非升版与未 git add 文件；副本上测了 bump 升版改四处 + 各检查全跑到（副本的 2 处失败是测试环境差异：未 add 新文件 / 临时目录冲突，正式仓库 56/56）。
+
 ## v3.83（2026-11-22）
 
 > 主题：**P5 #21 借鉴清单其余三项落地**——L7 意图层 / 群规 / agentId 维度。仅 Letta core-memory 可编辑暂不做（幻觉固化风险，现有双门限已够）。
