@@ -218,7 +218,7 @@ TRAIT_DRIFT_EMA = 0.6    # 兑现比例：账面 6 分只改 3.6 分，余款下
 #   "relationship"：人际关系类记录（A 和我是什么关系、Ta 在意什么、欠了谁/被谁帮过——
 #                   注入时独立成块，跨群共享画像的基础）。
 KINDS = ("episode", "fact", "preference", "emotion", "insight", "identity", "habit",
-         "mistake", "relationship")
+         "mistake", "relationship", "intent", "norm")
 LAYERS = ("hippo", "cortex", "dust")
 
 # 冷热归档层：长期没被想起、保留度极低的沉眠记忆雪藏到这里。

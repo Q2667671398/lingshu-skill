@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.83（2026-11-22）
+
+> 主题：**P5 #21 借鉴清单其余三项落地**——L7 意图层 / 群规 / agentId 维度。仅 Letta core-memory 可编辑暂不做（幻觉固化风险，现有双门限已够）。
+
+- **L7 意图层**（dual-mem）：`kind=intent` + `intent_status`（active/done/cancelled）+ 过期时间。新增 `intent add/done/cancel/reopen` 命令；注入新增「正在进行的目标/计划」块，只列 active 未过期的。与 `work`（12h 丢的会话暂存）不同，intent 是跨会话长期记忆，完成/取消只改状态不删记忆。
+- **群规**（SocialMemBench）：`kind=norm` 表示群体规范（group 公共、user 空），对全群可见且群聊召回加权 +0.30（硬约束优先）；个人例外是带 user 的 preference，只本人可见——实测 U2 看不到 U1 的例外，群规对全群可见。
+- **agentId 维度**（阿里云 Memory）：`make_record`/`remember` 可选 `agent_id` 字段，`recall --agent-id` 只召回"该 agent + 全局（无 agent_id）"的记忆，其它 agent 物理隔离；不指定则看全部（向后兼容）。实现中顺带修复两处 recall 冷集递归漏传 `project`/`agent_id` 的既有问题。
+
+验证：`tests/test_three_borrowings.py` 4/4（意图生命周期 / 群规全群可见 / 个人例外隔离 / agentId 隔离）；五项检查 + 压力检查 exit=0；行为基线 OK；全量测试全过。
+
 ## v3.82（2026-11-22）
 
 > 主题：**npm token 脱敏补丁**——堵住"裸 token 被原文封存落盘"的泄露口。

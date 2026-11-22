@@ -244,6 +244,49 @@ def set_memory_review(mid: str, status: str) -> dict:
     return target
 
 
+# ---------------------------------------------------------------- 意图层（dual-mem L7）
+# 目标/计划：用户说明的意图，跨会话保留，带状态与完成标记。与 work（12h 丢的
+# 会话暂存）不同，intent 是长期记忆（kind=intent），完成/取消只是改状态不删除。
+
+INTENT_STATES = ("active", "done", "cancelled")
+
+
+def set_intent_state(mem_id: str, state: str) -> dict:
+    """把一条 intent 记忆标记为 active/done/cancelled。返回更新后的记录。"""
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法改意图状态。")
+    state = str(state or "").strip().lower()
+    if state not in INTENT_STATES:
+        raise ValueError(f"非法意图状态 {state!r}：只支持 {'/'.join(INTENT_STATES)}")
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        target = next((m for m in records if m.get("id") == str(mem_id)), None)
+        if not target:
+            raise ValueError(f"没有这条记忆：{mem_id}")
+        if target.get("kind") != "intent":
+            raise ValueError("这条记忆不是意图（kind 不为 intent）")
+        target["intent_status"] = state
+        target["intent_updated"] = now_ts()
+        save_all(records)
+    return target
+
+
+def active_intents(limit: int = 8) -> list:
+    """列出仍在进行中的意图（active、未过期、非 dust），按创建时间倒序。"""
+    now = now_ts()
+    out = []
+    for m in recent(60):
+        if m.get("kind") != "intent" or m.get("layer") == "dust":
+            continue
+        if str(m.get("intent_status") or "active").strip().lower() != "active":
+            continue
+        exp = _num(m.get("expires_at"), 0)
+        if 0 < exp <= now:
+            continue
+        out.append(m)
+    return out[:max(1, int(limit))]
+
+
 def review_report() -> dict:
     """待审核清单：AI 记忆 / AI 知识 / AI 人格变更。
 
@@ -921,7 +964,8 @@ def make_record(text: str, kind: str = "fact", importance: float | None = None,
                 layer: str = "hippo", links=None,
                 channel: str | None = None, group_id: str | None = None,
                 user: str | None = None,
-                project: str | None = None, session: str | None = None) -> dict:
+                project: str | None = None, session: str | None = None,
+                agent_id: str | None = None) -> dict:
     ts = now_ts()
     text = text.strip()
     tags = _dedupe([t.strip().lstrip("#") for t in (tags or []) if t.strip()])
@@ -969,6 +1013,10 @@ def make_record(text: str, kind: str = "fact", importance: float | None = None,
         rec["group_id"] = str(group_id)
     if user:
         rec["user"] = str(user)
+    # agent 维度（阿里云 Memory 最佳实践）：多 agent 共用同一记忆库时隔离。
+    # 缺省不写字段 = 全局记忆，任何 agent 都能召回（向后兼容）。
+    if agent_id:
+        rec["agent_id"] = str(agent_id)
     # —— 来源归属（origin，强制带）：项目/会话 id 让每条记忆都能回答「从哪来的」。
     # 冲突检测按同源比较（跨项目不误报），做梦/审计按 source 溯源。
     # 缺省回落到 "default"：老数据没有这两个字段照常工作，新写入一律补全。
@@ -1143,6 +1191,7 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
              channel: str | None = None, group_id: str | None = None,
              user: str | None = None,
              project: str | None = None, session: str | None = None,
+             agent_id: str | None = None,
              ttl_days: float | None = None, review_at: int | None = None,
              correction: bool = False,
              fras: dict | None = None,
@@ -1262,7 +1311,7 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
 
         rec = make_record(text, kind, importance, tags, entities, source, layer,
                           channel=channel, group_id=group_id, user=user,
-                          project=project, session=session)
+                          project=project, session=session, agent_id=agent_id)
         # —— #41 correction 语义：用户说「不对/不是」语境下显式标记的改口记录 ——
         # correction 条目是失败闭环的第一手证据：做梦教训提炼（#36）优先读它，
         # 且合并/淡忘/归档路径都会跳过（永不自动合并消失），只有人工才能处理。
@@ -1831,7 +1880,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
            channel: str | None = None, group_id: str | None = None,
            user: str | None = None,
            target_user: str | None = None, asker: str | None = None,
-           project: str | None = None,
+           project: str | None = None, agent_id: str | None = None,
            mode: str = "auto", with_evidence: bool = False, _archive_pass: int = 0) -> list:
     """模糊回忆：相关度 + 近期性 + 重要性 + 联想扩散。返回 [(record, score, parts), ...]
 
@@ -1882,6 +1931,14 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
     # 通道上下文的群间隔离：先物理过滤，其他群的记忆根本不进打分
     if channel is not None or group_id is not None or user is not None:
         records = [m for m in records if _channel_visible(m, channel, group_id, user)]
+    # agent 维度（阿里云 Memory 最佳实践）：指定 agent_id 时只看"该 agent 的 +
+    # 全局的（无 agent_id）"记忆，其它 agent 的专属记忆物理隔离。不指定则不过滤
+    # （本机全局查询照旧看全部，向后兼容）。
+    if agent_id:
+        aid = str(agent_id).strip()
+        records = [m for m in records
+                   if not str(m.get("agent_id") or "").strip()
+                   or str(m.get("agent_id")).strip() == aid]
     if include_archive:
         archive = [m for m in load_archive() if m.get("id")
                    and _channel_visible(m, channel, group_id, user)]
@@ -1955,6 +2012,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
                 try:
                     return recall(query, k, layers, strengthen, include_dust, True,
                                   channel, group_id, user, target_user, asker,
+                                  project=project, agent_id=agent_id,
                                   mode=mode, _archive_pass=_archive_pass + 1)
                 except Exception as e:
                     log_event("recall", f"冷集兜底（热集空候选）失败：{e}", level="warn")
@@ -2015,6 +2073,13 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         # 第四轮#3：同项目记忆加成（recall(project=...) 时生效）
         if project and m.pop("_project_boost", None):
             score += 0.25
+        # 群规（SocialMemBench）：本群的 norm 类记忆在群聊召回里优先命中——
+        # 群体规范是硬约束，比普通记忆/项目记忆都该先被看到。个人例外
+        # （带 user 的 preference）由 _channel_visible 保证只本人可见，两者不冲突；
+        # 展示层再标注"个人习惯优先于群规"，让模型知道覆盖关系。
+        if group_id and str(m.get("kind") or "") == "norm" \
+                and str(m.get("group_id") or "") == str(group_id):
+            score += 0.30
         # —— persona core 加权——
         # 记忆 kind=identity 或 tags/entities/kind 命中 persona 核心关键词时，
         # 追加 core_bias 比例加权；identity 是核心身份类，权重更高一点。
@@ -2119,6 +2184,7 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             try:
                 return recall(query, k, layers, strengthen, include_dust, True,
                               channel, group_id, user, target_user, asker,
+                              project=project, agent_id=agent_id,
                               mode=mode, _archive_pass=_archive_pass + 1)
             except Exception as e:
                 log_event("recall", f"冷集自动补召失败：{e}", level="warn")
@@ -3654,6 +3720,20 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
         used += _soft_block("\n## 我的人际关系（提到这些人时先想起这些）",
                             [f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}" for m in _rels],
                             0.15)
+
+    # 「正在进行的目标/计划」：dual-mem L7 意图层（kind=intent，跨会话保留）。
+    # 与 work（12h 丢的会话暂存）不同，intent 是长期意图，完成/取消改状态不删。
+    # 只列 active、未过期的，让 AI 在各会话里都记得用户正在推进什么。
+    _bill["sec"] = "intents"
+    try:
+        _active_intents = active_intents(6)
+    except Exception:
+        _active_intents = []
+    if _active_intents:
+        used += _soft_block("\n## 正在进行的目标/计划（用户想推进的事，完成用 intent done）",
+                            [f"- [{fmt_date(m.get('created', 0))}] {display_text(m)}"
+                             for m in _active_intents],
+                            0.12)
 
     # 时段语境：一句话给当下时间定性，让语气/行为与真实时间对齐（克制，不煽情）。
     # 这是全包变化最快的内容（分钟级），必须放在实时区，别毁掉前缀缓存。

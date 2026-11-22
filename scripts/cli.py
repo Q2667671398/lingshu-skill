@@ -1353,6 +1353,8 @@ def _main(argv=None) -> int:
                        help="显式指定复核时间点（YYYY-MM-DD 或时间戳），优先于 --ttl 推算")
     p_rem.add_argument("--correction", action="store_true",                       help="#41 改口标记：这条是用户纠正过的更正版，做梦合并/淡忘/归档永不自动动它"
                             "（教训提炼 #36 优先读它）")
+    p_rem.add_argument("--agent-id", default="",
+                       help="agent 维度：多 agent 共库时隔离，recall --agent-id 只召回本 agent + 全局")
     p_rem.add_argument("--project", default="",
                        help="项目名标记（第四轮#3）：recall --project 同名时此记忆排前")
     # v3.58 三层元数据（借自 AOCI-CODE，见 docs/进展与待办.md P4）
@@ -1393,6 +1395,8 @@ def _main(argv=None) -> int:
     p_rec.add_argument("--verbatim", metavar="记忆ID",
                        help='按 id 取回这条封存记忆的逐字原文快照（P5 #21 / foldkeep）：'
                             '做梦是有损压缩，用它追溯 AI 有没有改错原文。')
+    p_rec.add_argument("--agent-id", default="",
+                       help="只召回该 agent 的记忆 + 全局记忆（agentId 维度隔离）")
 
     p_deref = sub.add_parser("deref", help="按需解引用：取一条记忆的证据原文（#46 Memex）")
     p_deref.add_argument("memory_id", help="记忆 id（通常是合并/蒸馏产物的 id）")
@@ -1713,6 +1717,15 @@ def _main(argv=None) -> int:
                         help="flush 时丢弃已完成条目，不转记忆（做完了就该放下）")
     p_work.add_argument("--json", action="store_true")
 
+    p_intent = sub.add_parser("intent", help="意图层（L7）：跨会话保留的目标/计划")
+    p_intent.add_argument("action", nargs="?", default="list",
+                          choices=["list", "add", "done", "cancel", "reopen"])
+    p_intent.add_argument("text", nargs="*", default=[],
+                          help="add 时为目标内容；done/cancel/reopen 时为记忆 id")
+    p_intent.add_argument("--ttl-days", type=float, default=None,
+                          help="add：过期天数（到期后注入不再列出，状态不变）")
+    p_intent.add_argument("--json", action="store_true")
+
     p_topic = sub.add_parser("topic", help="话题栈：拟人闲聊用，记录聊过的话题与权重")
     p_topic.add_argument("action", nargs="?", default="list",
                         choices=["list", "touch", "feedback", "drop", "status"])
@@ -1937,6 +1950,7 @@ def _main(argv=None) -> int:
             args.cmd in ("remember", "init", "restore", "forget", "capture", "extract")
             or (args.cmd == "dream" and not args.dry_run)
             or (args.cmd == "work" and action in ("add", "done", "flush", "clear"))
+            or (args.cmd == "intent" and action in ("add", "done", "cancel", "reopen"))
             or (args.cmd == "topic" and action in ("touch", "feedback", "drop"))
             or (args.cmd == "persona" and action not in ("show", "path", "onboarding",
                                                          "history", "snapshots", "drift",
@@ -2040,6 +2054,7 @@ def _main(argv=None) -> int:
                             ttl_days=_ttl_days, review_at=_review_ts,
                             correction=args.correction,
                             project=(getattr(args, "project", "") or "").strip() or None,
+                            agent_id=(getattr(args, "agent_id", "") or "").strip() or None,
                             # v3.58 三层元数据（FRAS / 源指纹 / 负空间）
                             fras={"f": getattr(args, "fras_f", ""),
                                   "r": getattr(args, "fras_r", ""),
@@ -2151,7 +2166,7 @@ def _main(argv=None) -> int:
             return 0
         results = recall(query, args.k, include_archive=args.include_archive,
                          mode=args.mode, with_evidence=args.evidence,
-                         project=(getattr(args, "project", "") or "").strip() or None)
+                         project=(getattr(args, "project", "") or "").strip() or None, agent_id=(getattr(args, "agent_id", "") or "").strip() or None)
         record_retrieval(query, results, channel="recall")
         # 知识条目命中提示：recall 原本只查记忆层，顺带在 knowledge.jsonl 里做
         # 简单词面匹配——这个问题曾被沉淀成知识时先亮出来（含待审核条目），
@@ -3465,6 +3480,60 @@ def _main(argv=None) -> int:
         print("  work done <序号>  这件做完了（放下它）")
         print("  work flush       转成真正的记忆（--skip-done 只转没完成的，已做完的直接丢）")
         print("  work clear       丢掉")
+        return 0
+
+    if args.cmd == "intent":
+        from memory import active_intents, set_intent_state
+        act = args.action
+        if act == "add":
+            text = " ".join(args.text).strip()
+            if not text:
+                print("用法：intent add \"准备下个月跑马拉松\" [--ttl-days 60]", file=sys.stderr)
+                return 1
+            rec, how = remember(text, kind="intent", source="user")
+            # 意图是用户亲口说的目标——make_record 已按 source=user 标 confirmed；
+            # intent_status 缺省视为 active（active_intents 里兼容无字段的老记录）。
+            rec["intent_status"] = "active"
+            if args.ttl_days and args.ttl_days > 0:
+                rec["expires_at"] = int(__import__("time").time() + args.ttl_days * 86400)
+            # 补写这两个字段到已落盘的那条记录
+            with _locked(HOME / "hippocampus.jsonl"):
+                rows = load_all()
+                for r in rows:
+                    if r.get("id") == rec["id"]:
+                        r["intent_status"] = "active"
+                        if "expires_at" in rec:
+                            r["expires_at"] = rec["expires_at"]
+                save_all(rows)
+            print(f"已记下目标（跨会话保留）：{rec['id']}  {text}")
+            return 0
+        if act in ("done", "cancel", "reopen"):
+            mid = " ".join(args.text).strip()
+            if not mid:
+                print(f"用法：intent {act} <记忆id>", file=sys.stderr)
+                return 1
+            state = {"done": "done", "cancel": "cancelled", "reopen": "active"}[act]
+            try:
+                r = set_intent_state(mid, state)
+            except (ValueError, PermissionError) as e:
+                print(f"[错误] {e}", file=sys.stderr)
+                return 1
+            print(f"已标记 {r['id']} → {state}：{r.get('text', '')[:60]}")
+            return 0
+        rows = active_intents(20)
+        if args.json:
+            print(json.dumps([{"id": m["id"], "text": m.get("text", ""),
+                               "created": m.get("created"), "expires_at": m.get("expires_at")}
+                              for m in rows], ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("没有正在进行的目标。用 `intent add \"...\"` 记一个（跨会话保留，work 是会话暂存）。")
+            return 0
+        print(f"正在进行的目标（{len(rows)} 条）：")
+        for m in rows:
+            exp = f" · 到期 {fmt_time(m['expires_at'])}" if m.get("expires_at") else ""
+            print(f"  {m['id']}  {m.get('text', '')[:70]}{exp}")
+        print("  intent done <id> / cancel <id> / reopen <id>  改状态（不删记忆）")
         return 0
 
     if args.cmd == "topic":
