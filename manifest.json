@@ -1,12 +1,12 @@
 {
-  "version": "3.78",
+  "version": "3.79",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "ff54b527a62b1fd35fdc07c6c914a88ea046832a089b9dbf2dfb42e0366f2341",
-      "size": 263699
+      "sha256": "8a911f622822ebf819b337dbc6f53ca816cf92351d30fc6cdd8b18cd33c16fa7",
+      "size": 265406
     },
     "README.md": {
-      "sha256": "103f1efa4df0bdeabad394e7c9dd37c2c2559f6789b91d362b3639b1442184e7",
+      "sha256": "a132a921d8fb88332b645c53ba983f17fd7f40aa979b55159d71c9596df94068",
       "size": 64472
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "5111068f1b71d0429c6c1c99b78b808aafd81948738a9095227f1f1f65764a72",
+      "sha256": "45d090776a133313ca4ef0a4ac1411d67d9759a36fe72a43e0dd9a516dd2b519",
       "size": 35253
     },
     "assets/panel.html": {
@@ -38,8 +38,8 @@
       "size": 2205
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "18351b52d86d78c1014ca639e5b5cd134e621b355b8d2814d7274fe679957af3",
-      "size": 49350
+      "sha256": "ca9c3f7a9cec92602db5d0d7ae61048eb8507fc5470259f7399e26d875c232e9",
+      "size": 50739
     },
     "cordis-plugin/lingshu-guard/plugin.js": {
       "sha256": "8c5432332cbb79aafe37f099b1e87f49dcabc7f925486adf112bd8f83629ac5b",
@@ -102,15 +102,15 @@
       "size": 2074
     },
     "docs/进展与待办.md": {
-      "sha256": "b9c1ba4488e4ee62419954b8df847eddecdcf51448f53843ed5afd5350c66e60",
-      "size": 97819
+      "sha256": "f7d4ca37e3e5885e7d479221b4276dfebcda9e926679247fb59d2a57ee6f4db1",
+      "size": 99405
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "d7b910b30e831494850df3f3821748f7fc5769e5eff044c63c7dc4a33fe5bc7b",
+      "sha256": "8c7951e408ae853d013c99a147456cbb9e3077d12c525a5188d71f9ba6e54ce7",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -146,8 +146,8 @@
       "size": 6681
     },
     "scripts/cli.py": {
-      "sha256": "f1eb3441ee72068e670805faeee4b0cde28ad0d8b1d6103f13f5740ed9513b7f",
-      "size": 267234
+      "sha256": "7fdb878fb8cfe3d0ad0a7550a47863c07064362904fa4a559d1fc2228be3ad5b",
+      "size": 269155
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",

@@ -167,6 +167,26 @@ export function writeDiag(kind, detail) {
   } catch {}
 }
 
+/**
+ * 天级任务失败留痕（P6 #49）：写数据目录 lingshu.log，格式与 Python 的
+ * core.log_event 一致（JSONL: {ts秒, kind, level, msg, ...}）。
+ * 原来 fire() 失败只记 state.retries、不写日志——doctor 报"补跑失败：backup"
+ * 时日志里 grep 不到任何线索，用户无法排查。失败必须可追溯。
+ */
+function logTaskFailure(taskId, detail) {
+  try {
+    const dir = memoryHome()
+    mkdirSync(dir, { recursive: true })
+    const row = {
+      ts: Math.floor(Date.now() / 1000),
+      kind: 'cron-task',
+      level: 'error',
+      msg: `天级任务 ${taskId} 执行失败：${String(detail || '未知原因').slice(0, 400)}`,
+    }
+    appendFileSync(join(dir, 'lingshu.log'), JSON.stringify(row) + '\n', 'utf8')
+  } catch {}
+}
+
 function findPythonExe(configured) {
   if (configured) return existsSync(configured) ? configured : null
   for (const p of pythonCandidates()) {
@@ -557,7 +577,11 @@ export function apply(ctx, config) {
     ;(async () => {
       try {
         const brainPy = await ensureBrainPy()
-        if (!brainPy) return
+        if (!brainPy) {
+          // P6 #49：失败必须留痕（原来直接 return，静默）
+          logTaskFailure(task.id, '找不到 brain.py（未安装或路径配置错误）')
+          return
+        }
         const pythonExe = findPythonExe(cfg.python)
         const out = await runBrain(pythonExe, cfg.python, brainPy, task.argv, cfg.timeoutMs)
         // 退出码 0/10 才算跑成；失败不标记完成，下轮补跑一次，再失败就等明天
@@ -573,11 +597,16 @@ export function apply(ctx, config) {
             if (r.date !== todayStr()) { r.date = todayStr(); r.count = 0 }
             r.count += 1
             state.retries[task.id] = r
+            // P6 #49：写 lingshu.log——doctor 报"补跑失败"时用户能查到原因
+            logTaskFailure(task.id, `brain.py 退出码非 0/10（argv: ${JSON.stringify(task.argv || []).slice(0, 160)}；补跑第 ${r.count} 次）`)
             if (r.count >= 1) state.days[task.id] = todayStr() // 已补跑过一次，今天不再纠缠
           }
           stateSaver.flushNow() // 天级任务低频，立即落盘保证不丢标记
         }
-      } catch {} // 顶层兜底：任何异常静默吞掉
+      } catch (err) {
+        // P6 #49：顶层异常也不能静默——写日志后照旧吞掉（守卫语义：异常不冒泡）
+        logTaskFailure(task.id, `执行异常：${err?.message || String(err)}`)
+      }
       finally {
         running.delete(task.id)
       }

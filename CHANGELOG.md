@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.79（2026-11-22）
+
+> 主题：**交接笔记-20261122 转入的两条运维缺陷**（cron 失败静默 / doctor 备份误报）+ laneai 余额补齐。
+
+- **#50 cron 天级任务失败留痕**（`cordis-plugin/lingshu-cron/plugin.js`）：原来 fire() 失败只记 `state.retries`、不写日志——16:26 自动备份失败留下 22 字节空壳，doctor 报「补跑失败：backup」却查不到任何原因。新增 `logTaskFailure()`（写 lingshu.log，格式与 Python log_event 一致），三处失败分支都记：找不到 brainPy / 退出码非 0-10 / 顶层异常。
+- **#51 backup-sha 口径过时**（`cli.py:3730-3745`）：原来只认 `<记忆库>/backups/*.jsonl` 老格式，跨卷 `D:\brain-memory-backups\*.zip` + `.sha256` 看不见 → 「手动备份 118 文件、sha 吻合」仍显示「无备份可对账」。现在同时核对两种：zip 按 .sha256 验完整性；无 sha 的空壳不计入对账。实测显示「跨卷 D:\brain-memory-backups 核对 4 份 zip」。
+- **laneai 余额补齐（用户侧 zip「运行」）**：zip 里两个补丁脚本的 `--check` 显示默认 `laneai` 已打，但本机 profile 的 provider id 实际是 `dsh`（DSH_API_KEY → laneai.dev）——余额卡片仍不认。用通用 `patch_relay_balance.py` 补上 `--provider-id dsh --ref DSH_API_KEY --shape newapi-billing --currency CNY`；原始 .bak 另存时间戳备份后操作。验证：`--check` 通过、JS 语法 OK、BALANCE_PROVIDERS 含 dsh、`parseDshBalance`/`case 'dsh'` 齐全。
+
+验证：doctor 真库 **11 PASS / 2 WARN / 0 FAIL**（engine-sync 漂移已 sync 修平）；五项发布检查 + 压力检查 exit=0；行为基线 OK；全量测试全过。
+
 ## v3.78（2026-11-22）
 
 > 主题：**把 P6 里"真 bug + 小改动"的剩余项也修掉**——之前标"暂不做"过于保守。

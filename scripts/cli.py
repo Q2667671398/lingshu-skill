@@ -3727,20 +3727,53 @@ def _main(argv=None) -> int:
                            "可写" if ok else "只读降级中（检查磁盘/权限）"))
         except Exception as e:
             checks.append(("writable", "FAIL", str(e)))
-        # 5. 备份副本 sha 对比（备份目录存在才查）
+        # 5. 备份副本 sha 对比（P7 #51：新旧两种备份机制都要认）
+        #    旧：<记忆库>/backups/*.jsonl 与库内同名文件比 sha；
+        #    新（当前）：跨卷目录 *.zip + 同名 *.sha256（"<hex>  <文件名>"）。
+        #    原来只认旧格式，导致"手动备份 118 文件、sha 完全吻合"仍显示
+        #    「无备份可对账」——口径过时的误报。
         try:
             import hashlib
-            backup_dir = HOME / "backups"
-            if backup_dir.exists() and any(backup_dir.glob("*.jsonl")):
-                mismatch = 0
-                for bf in backup_dir.glob("*.jsonl"):
+            mismatch, notes = 0, []
+            legacy = HOME / "backups"
+            if legacy.exists():
+                for bf in legacy.glob("*.jsonl"):
                     src = HOME / bf.name
-                    if src.exists():
-                        if hashlib.sha256(bf.read_bytes()).hexdigest() != \
-                           hashlib.sha256(src.read_bytes()).hexdigest():
-                            mismatch += 1
-                checks.append(("backup-sha", "PASS" if mismatch == 0 else "WARN",
-                               f"{mismatch} 个备份与当前库不一致（可能是正常更新）"))
+                    if src.exists() and hashlib.sha256(bf.read_bytes()).hexdigest() != \
+                            hashlib.sha256(src.read_bytes()).hexdigest():
+                        mismatch += 1
+            # 跨卷 zip 备份：以 sha256 记录为准核对 zip 本身是否完整
+            try:
+                zdir = _default_backup_dir()
+            except Exception:
+                zdir = None
+            if zdir is not None and zdir.is_dir():
+                zseen = 0
+                for sf in sorted(zdir.glob("*.zip.sha256")):
+                    zseen += 1
+                    zf = zdir / sf.name[:-7]      # 去掉 ".sha256"
+                    try:
+                        expected = sf.read_text(encoding="utf-8").split()[0].strip().lower()
+                    except Exception:
+                        expected = ""
+                    if not zf.exists():
+                        notes.append(f"{zf.name} 缺失")
+                        mismatch += 1
+                    elif expected and hashlib.sha256(zf.read_bytes()).hexdigest() != expected:
+                        notes.append(f"{zf.name} sha 不符")
+                        mismatch += 1
+                    elif zf.stat().st_size < 100:
+                        # 22 字节的空 zip（PK\x05\x06）——记录里没有对应 sha 的失败残壳
+                        notes.append(f"{zf.name} 仅 {zf.stat().st_size} 字节（疑似失败残壳）")
+                        mismatch += 1
+                if zseen:
+                    notes.append(f"跨卷 {zdir} 核对 {zseen} 份 zip")
+            if mismatch:
+                checks.append(("backup-sha", "WARN", "；".join(notes[:3]) or f"{mismatch} 份备份不一致"))
+            elif notes:
+                checks.append(("backup-sha", "PASS", "；".join(notes[:3])))
+            elif legacy.exists() or (zdir is not None and zdir.is_dir()):
+                checks.append(("backup-sha", "PASS", "备份目录无可对账文件（python scripts/brain.py backup 生成）"))
             else:
                 checks.append(("backup-sha", "PASS", "无备份可对账（python scripts/brain.py backup 生成）"))
         except Exception as e:
