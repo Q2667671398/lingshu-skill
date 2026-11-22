@@ -88,7 +88,11 @@ _HOSTNAME = (socket.gethostname() or "unknown").strip() or "unknown"
 # 触发方式：环境变量 BRAIN_MEMORY_READONLY=1、命令行 --ro，或运行前自动探测到 HOME 不可写。
 # BRAIN_MEMORY_READONLY=0 反向手动覆盖：确认目录可写但自动探测被环境干扰误报时，
 # 用它跳过探测强制可写。
+# READONLY_FORCED（v3.76）：区分"用户显式强制只读"与"自动探测降级只读"。
+# 面板长驻进程的自愈逻辑只看 READONLY——原来强制只读（--ro/环境变量）也会被
+# 写请求的复探摘掉，等于用户的只读承诺被静默违反。现在强制只读时禁止自愈。
 READONLY = os.environ.get("BRAIN_MEMORY_READONLY") == "1"
+READONLY_FORCED = READONLY
 
 DAY = 86400
 HOUR = 3600
@@ -1306,40 +1310,70 @@ def read_jsonl(path: Path) -> list:
         # 绝不静默当作没发生、也不让后续保存把它们永久抹掉。
         log_event("parse", f"{path.name} 有 {len(fresh_blocks)} 个坏块，已挪到 .corrupt 备份",
                   level="warn", path=path.name)
+        # v3.76（#23）：**只读环境下，读路径绝不写盘**。原来这里无条件
+        # append .corrupt + os.replace 覆盖原文件——用户 --ro 时"读"竟会改写
+        # 记忆库；且下面的 try/except pass 吞掉一切失败。只读时仅告警返回。
+        if READONLY:
+            try:
+                log_event("parse", f"{path.name} 只读环境，坏块仅告警不落盘（原文件保留）",
+                          level="warn", path=path.name)
+            except Exception:
+                pass
+            return out
         try:
             corrupt = path.with_name(path.name + ".corrupt")
-            # 去重：修不了（只读/抢锁失败）时坏块会留在原文件里，下次读还会再报，
-            # 不加这一步 .corrupt 会每读一次就追加一遍，越滚越大。
-            try:
-                existing = corrupt.read_text(encoding="utf-8", errors="ignore") if corrupt.exists() else ""
-            except OSError:
-                existing = ""
-            fresh = [b for b in bad_blocks if b.rstrip() not in existing]
-            if fresh:
-                with open(corrupt, "a", encoding="utf-8", newline="\n") as cf:
-                    for b in fresh:
-                        cf.write(b.rstrip() + "\n---\n")
             tmp = _tmp_path(path)
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-                for r in out:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
             lock = path.with_name(path.name + ".lock")
-            # 自愈=替代整文件。若别的进程正持锁写盘，抢写会把它的新数据覆盖丢。
-            # 本进程已持锁→直接修；否则快速抢锁（0.5s），抢不到就这轮先跳过，
-            # 坏块已经进了 .corrupt、原文件也没动，下次读取时再修。
+            # 自愈=替代整文件。下面的 raw 来自函数开头（抢锁前）的读取——若期间
+            # 别的进程写了新数据，直接 replace 会把新数据覆盖丢（丢更新）。
+            # v3.76（#23）：**replace 前在锁内重读盘上内容**，与开头读到的不一致
+            # 就放弃本次自愈（.corrupt 也不写，坏块下次还能被识别重试）。
+            def _replace_if_unchanged():
+                current = _read_jsonl_text(path)
+                if current != raw:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    log_event("parse", f"{path.name} 自愈时文件已变，跳过覆盖（避免丢更新）",
+                              level="warn", path=path.name)
+                    return False
+                # 确认要覆盖了才把坏块挪进 .corrupt：否则去重表会记住"已报过"，
+                # 而原文件没修，坏块就再也不会被处理。
+                try:
+                    existing = corrupt.read_text(encoding="utf-8", errors="ignore") if corrupt.exists() else ""
+                except OSError:
+                    existing = ""
+                fresh = [b for b in bad_blocks if b.rstrip() not in existing]
+                if fresh:
+                    with open(corrupt, "a", encoding="utf-8", newline="\n") as cf:
+                        for b in fresh:
+                            cf.write(b.rstrip() + "\n---\n")
+                with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                    for r in out:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                os.replace(tmp, path)
+                return True
+
             if not _held(lock):
                 try:
                     with _locked(path, timeout=0.5):
-                        os.replace(tmp, path)
+                        _replace_if_unchanged()
                 except TimeoutError:
                     try:
                         os.unlink(tmp)
                     except OSError:
                         pass
             else:
-                os.replace(tmp, path)
-        except Exception:
-            pass  # 只读环境修不了就下次再修；坏块仍在原文件里，没丢
+                _replace_if_unchanged()
+        except Exception as exc:
+            # v3.76（#23）：自愈失败不再静默——坏块仍在原文件里、没丢数据，但
+            # 必须留痕，否则永远不知道坏块为什么一直没修好。
+            try:
+                log_event("parse", f"{path.name} 坏块自愈失败（原文件保留）：{exc}",
+                          level="warn", path=path.name)
+            except Exception:
+                pass
     return out
 
 
@@ -1748,14 +1782,17 @@ def _resolve_readonly(forced: bool = False) -> None:
     """确定最终只读状态：--ro 或 BRAIN_MEMORY_READONLY=1 强制只读；
     BRAIN_MEMORY_READONLY=0 强制可写（跳过探测——确认目录可写、但自动探测
     被环境干扰误报时用手动覆盖）；否则自动探测。"""
-    global READONLY
+    global READONLY, READONLY_FORCED
     env = os.environ.get("BRAIN_MEMORY_READONLY", "").strip()
     if forced or env == "1":
         READONLY = True
+        READONLY_FORCED = True
     elif env == "0":
         READONLY = False
+        READONLY_FORCED = False
     else:
         READONLY = not _home_writable()
+        READONLY_FORCED = False   # 自动降级，面板可自愈
     _sync_state()
 
 

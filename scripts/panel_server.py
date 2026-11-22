@@ -867,9 +867,13 @@ class Handler(BaseHTTPRequestHandler):
         if data is None:
             return
         # 只读门控：写接口在数据目录不可写时直接 403（展示/预览接口放行）
-        # 自愈合：面板是长驻进程，启动那一下探测失败可能只是杀软/索引器短暂占用——
-        # 写请求真正到来时复探一次，可写就摘掉只读状态，不用重启面板。
-        if brain.READONLY and path in _WRITE_ENDPOINTS and not _readonly_allowed(path, data):
+        # 自愈合（v3.76 收紧）：面板是长驻进程，启动那一下探测失败可能只是杀软/
+        # 索引器短暂占用——**自动降级**的只读可在写请求到来时复探自愈，不用重启。
+        # 但**用户显式强制只读**（--ro / BRAIN_MEMORY_READONLY=1，READONLY_FORCED=True）
+        # 绝不能被自愈：那等于静默违反用户的只读承诺（原来这里不区分，强制只读也
+        # 被摘掉）。强制只读时连复探都不做——探针本身会往 HOME 写文件。
+        if (brain.READONLY and not brain.READONLY_FORCED
+                and path in _WRITE_ENDPOINTS and not _readonly_allowed(path, data)):
             try:
                 if brain._home_writable(max_attempts=3):
                     brain.READONLY = False
