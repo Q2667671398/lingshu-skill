@@ -2828,6 +2828,10 @@ def capture(payload: str, tag: str = "", kind: str = "episode",
             rec = make_record(seg, kind=kind, importance=importance, tags=tags,
                               source=source, layer="hippo")
             rec["verbatim"] = True
+            # P5 #21 verbatim 召回：记下这条原文出自哪个封存快照，让
+            # `recall --verbatim <id>` 能按 id 直接展开逐字原文（老记忆无此字段，
+            # 召回时用文本匹配兜底）。归档文件名唯一，不含绝对路径，换机器也能用。
+            rec["verbatim_path"] = archive.name
             rec["detail"] = 1.0
             # #41 correction 语义：封存的改口原文同样打标，合并/提炼路径会特殊对待
             if correction:
@@ -2844,6 +2848,58 @@ def capture(payload: str, tag: str = "", kind: str = "episode",
                     pass
             save_all(records)
     return {"saved": saved, "skipped": skipped, "archive": archive, "chars": len(payload)}
+
+
+def verbatim_source(mem_id: str) -> dict:
+    """按记忆 id 取回它对应的**逐字原文快照**（P5 #21 / foldkeep 借鉴）。
+
+    压缩/做梦是有损的，AI 可能合并改写；每条 verbatim 记忆都该能追溯到原始
+    封存文件。取法两步：
+      1) 新记忆有 `verbatim_path` → 直接读那个文件；
+      2) 老记忆没有 path → 在 verbatim/*.md 里搜包含该记忆 text 的文件
+         （取最长片段匹配，避免短句命中多个快照）。
+
+    返回 {ok, path, text, via}；失败返回 {ok: False, reason: ...}，绝不抛异常。
+    """
+    mid = str(mem_id or "").strip()
+    if not mid:
+        return {"ok": False, "reason": "缺少记忆 id"}
+    try:
+        target = None
+        for m in load_all() + load_archive():
+            if str(m.get("id") or "") == mid:
+                target = m
+                break
+        if target is None:
+            return {"ok": False, "reason": f"没有这条记忆：{mid}"}
+        if not target.get("verbatim"):
+            return {"ok": False, "reason": "这条记忆不是原文封存（无 verbatim 标记）"}
+        files = []
+        vp = target.get("verbatim_path")
+        if vp:
+            p = VERBATIM_DIR / Path(str(vp)).name   # 只取文件名，防路径穿越
+            if p.is_file():
+                files.append(p)
+        if not files and VERBATIM_DIR.is_dir():
+            files = sorted(VERBATIM_DIR.glob("*.md"))
+        text = str(target.get("text") or "").strip()
+        if not files:
+            return {"ok": False, "reason": "没有找到 verbatim 原文快照"}
+        if vp and len(files) == 1:
+            return {"ok": True, "path": files[0].name,
+                    "text": files[0].read_text(encoding="utf-8"), "via": "path"}
+        # 文本兜底：找包含记忆原文的文件（用最长片段，短句用前 24 字）
+        needle = text[:40] if len(text) >= 40 else text
+        for p in sorted(files, key=lambda f: f.stat().st_mtime, reverse=True):
+            body = p.read_text(encoding="utf-8", errors="replace")
+            if needle and needle in body:
+                return {"ok": True, "path": p.name, "text": body, "via": "text-match"}
+        # 连片段都匹配不上：返回最新那份（并注明是猜测）
+        p = max(files, key=lambda f: f.stat().st_mtime)
+        return {"ok": True, "path": p.name,
+                "text": p.read_text(encoding="utf-8"), "via": "fallback-latest"}
+    except Exception as exc:
+        return {"ok": False, "reason": f"读取原文失败：{exc}"}
 
 
 # ---------------------------------------------------------------- 教训库（#36 lessons.jsonl）

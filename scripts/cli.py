@@ -1390,6 +1390,9 @@ def _main(argv=None) -> int:
                        help="带证据解引用：做梦合并/蒸馏产物命中时自动附最多 2 条证据原文（#46）")
     p_rec.add_argument("--project", default="",
                        help="项目上下文（第四轮#3）：同项目记忆加分排前（不硬过滤）")
+    p_rec.add_argument("--verbatim", metavar="记忆ID",
+                       help='按 id 取回这条封存记忆的逐字原文快照（P5 #21 / foldkeep）：'
+                            '做梦是有损压缩，用它追溯 AI 有没有改错原文。')
 
     p_deref = sub.add_parser("deref", help="按需解引用：取一条记忆的证据原文（#46 Memex）")
     p_deref.add_argument("memory_id", help="记忆 id（通常是合并/蒸馏产物的 id）")
@@ -2127,6 +2130,20 @@ def _main(argv=None) -> int:
             return 2
 
     if args.cmd == "recall":
+        # P5 #21：按 id 展开逐字原文——先于普通召回处理，绕过 query 逻辑
+        _vb_id = getattr(args, "verbatim", "") or ""
+        if _vb_id:
+            from memory import verbatim_source
+            r = verbatim_source(_vb_id)
+            if not r.get("ok"):
+                print(f"[错误] {r.get('reason')}", file=sys.stderr)
+                return 1
+            if getattr(args, "json", False):
+                print(json.dumps(r, ensure_ascii=False, indent=2))
+            else:
+                print(f"# 逐字原文 · {r.get('path')}（取法：{r.get('via')}）\n")
+                print(r.get("text", ""))
+            return 0
         query = " ".join(args.query)
         if not query:
             for m in recent(args.k):
