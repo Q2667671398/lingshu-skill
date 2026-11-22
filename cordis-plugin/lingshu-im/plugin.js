@@ -175,24 +175,25 @@ function runBrain(pythonExe, pythonCmdFallback, brainPy, argv, timeoutMs, memory
       if (pythonExe) {
         child = spawn(pythonExe, args, { windowsHide: true, env, cwd: homedir() })
       } else {
-        // spawn 走 CreateProcess 不解析 PATHEXT：PATH 里只有 python.cmd 时交给 cmd。
-        const comspec = process.env.ComSpec ?? 'cmd.exe'
-        const pythonCmd = pythonCmdFallback || 'python'
-        // cmd 的引号解析很脆：空参数（如私聊的 --group ""）会让整条命令报
-        // 「文件名、目录名或卷标语法不正确」，所以空值连同它前面的 --flag 一起去掉
-        // （argparse 里这些参数的默认值本来就是 ''，不传等价）。
-        const parts = [`"${pythonCmd}"`]
-        for (const a of args) {
-          if (a === '') {
-            if (parts.length > 1 && parts[parts.length - 1].startsWith('"--')) parts.pop()
-            continue
-          }
-          parts.push(`"${a}"`)
+        // v3.75（安全）：原来的 cmd.exe 字符串拼接把正文里的 `"` 原样塞进
+        //命令——群成员发 `x" & calc.exe & "` 即可在宿主进程执行任意命令。
+        // 改为：
+        //   1) 优先从 PATH 找 python.exe（真实可执行文件，spawn 数组不经 cmd）；
+        //   2) 确实只有 .cmd 时，用数组形式 spawn .cmd（Node 走 cmd /c 但仍逐参数传递，
+        //      不做字符串拼接）；
+        //   3) 参数含 cmd 元字符（" & | < > ^ %）时 fail-closed，拒绝该次调用——
+        //      宁可少记一条，也不给注入面。
+        // 注意：只拦 cmd 元字符，"\\" 和 "/" 是路径分隔符必须放行（brainPy 路径就用它们）。
+        const DANGEROUS = /["&|<>^%]/
+        const bad = args.find((a) => typeof a === 'string' && DANGEROUS.test(a))
+        if (bad !== undefined) {
+          try { ctx?.logger?.warn?.('lingshu-im: 参数含 cmd 元字符，拒绝执行（防止命令注入）') } catch {}
+          return done(null)
         }
-        const cmdline = parts.join(' ')
-        child = spawn(comspec, ['/d', '/s', '/c', cmdline], {
+        const pythonCmd = pythonCmdFallback || 'python'
+        child = spawn(pythonCmd, args, {
           windowsHide: true,
-          windowsVerbatimArguments: true,
+          windowsVerbatimArguments: false,  // 数组参数，让 Node 逐项传给 .cmd
           env,
           cwd: homedir(),
         })

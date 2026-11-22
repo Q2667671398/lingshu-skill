@@ -1864,9 +1864,12 @@ def _main(argv=None) -> int:
     p_ch_user = ch_sub.add_parser("user", help="查看某用户跨群聚合的记忆画像")
     p_ch_user.add_argument("user", help='全局用户标识，形如 "qq:10001"')
     p_ch_user.add_argument("--k", type=int, default=20, help="最多列出 N 条（按时间倒序）")
+    p_ch_user.add_argument("--group", default="",
+                           help='授权校验所在的群 id（v3.75 安全修复）。第三人查询时按群作用域'
+                                '校验本人的 grant；不给则从严，只认全域授权（"*"）。')
     p_ch_user.add_argument("--asker", default="",
                            help='发起查询的用户标识。带上即启用隐私门控：asker == 目标 → 全量；'
-                                '否则要求目标已 grant，未授权则拒绝（退出码 4）。'
+                                '否则要求目标已在本群（--group）grant，未授权则拒绝（退出码 4）。'
                                 '不带 --asker 视为本机可信查询，保持旧行为。')
 
     # 群友隐私保护：授权操作的是「调用者自己」的授权，不能替别人 grant/revoke。
@@ -4389,10 +4392,16 @@ def _main(argv=None) -> int:
             # owner/admin 对隐私查询刻意不豁免（与 forget/dream 等系统级命令不同）——
             # 主人可以管理记忆库，但不能替群友决定「关于我的记忆给谁看」。
             asker = (getattr(args, "asker", "") or "").strip()
-            if asker and str(asker) != str(args.user).strip() and not _consented(args.user):
-                print(f"[隐私保护] 关于 {args.user} 的记忆需要 {args.user} 本人同意或由其本人查询"
-                      f"（对方可用 `lingshu 同意` 授权对外分享）。", file=sys.stderr)
-                return 4
+            if asker and str(asker) != str(args.user).strip():
+                # v3.75 安全修复：原来 _consented(args.user) 不带 group —— 只要目标
+                # 在任何一个群 grant 过，就能读出他在所有群+私聊的聚合画像（跨群越权）。
+                # 现在按 --group 做作用域校验；无群上下文从严，只认 "*" 全域授权。
+                grant_group = (getattr(args, "group", "") or "").strip() or "*"
+                if not _consented(args.user, grant_group):
+                    where = f"本群 {grant_group}" if getattr(args, "group", "") else "全域"
+                    print(f"[隐私保护] 关于 {args.user} 的记忆需要 {args.user} 本人在{where}同意"
+                          f"或由其本人查询（对方可用 `lingshu 同意` 授权）。", file=sys.stderr)
+                    return 4
             # 跨群用户画像：user 标识匹配的所有记忆聚合（含归档），按时间倒序
             hits = [m for m in load_all() + load_archive()
                     if str(m.get("user") or "") == str(args.user)]

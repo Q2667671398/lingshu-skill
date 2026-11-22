@@ -51,12 +51,14 @@ import { dirname, join } from 'node:path'
 
 export const name = 'dsh-lingshu-guard'
 
-// 默认只读白名单：只读/无副作用工具。刻意不含 write/edit/pwsh/subagent/workflow。
+// 默认只读白名单：v3.75 收紧——移除 read/glob/grep/web_search。
+// 原因：这些"只读"工具可读任意本地路径（read/glob/grep）或把内容外带（web_search），
+// 而灵枢记忆与 token 就是 HOME 下的明文 *.jsonl / config.json。非 owner 一句
+// "读 ~/.brain-memory/hippocampus.jsonl 贴出来"就能绕过 channel/consent 门控拿到
+// 全体成员跨群记忆和密钥。现在只放行**不接触本地路径、无副作用**的工具。
+// 需要让非 owner 读记忆时，应走灵枢自带的 channel recall（有 group/consent 门控），
+// 不靠通用文件读取工具。显式 readOnlyAllow 可覆盖此表（用户自己承担风险）。
 const DEFAULT_READ_ONLY = [
-  'read',
-  'glob',
-  'grep',
-  'web_search',
   'list_agents',
   'skill',
   'todo_write',
@@ -221,19 +223,34 @@ function describeFor(ctx, bindings, sessionId) {
   return merged
 }
 
-/** owners 匹配：整身份（CLI 形态）、原始 senderId、platform:senderId 都算。 */
+/**
+ * owners 匹配（v3.75 收紧）：**只认完整三元组身份**。
+ *
+ * 原来还把裸 senderId、`channelName:senderId` 当 owner 候选——但 senderId
+ * 在不同通道可能相同（如 QQ 和微信都可能有 "12345"），owners 里配了裸
+ * senderId 时，任意通道撞号的成员都会被判 owner、拿到全部工具权限。
+ * 现在只匹配 CLI 口径的完整身份 `channel:user`（含 botId 的编码形态）。
+ * 老配置里若仍是裸 senderId，需要用 `brain.py channel owner list` 查到完整
+ * 身份后重新登记；启动时会对疑似裸 senderId 的 owner 打一次告警。
+ */
 function isOwner(owners, id) {
-  if (!owners.length || !id) return false
-  const candidates = new Set([
-    id.user,
-    id.senderId,
-    `${id.channelName}:${id.senderId}`,
-  ])
-  if (id.botId) candidates.add(`${id.channelName}@${id.botId}:${id.senderId}`)
+  if (!owners.length || !id || !id.user) return false
+  const candidates = new Set([id.user])
+  // 完整三元组（不含 botId 的形态与含 botId 的形态——两者都是编码后的完整身份）
+  if (id.channelName) {
+    const encName = enc(id.channelName)
+    candidates.add(`${encName}:${enc(id.senderId)}`)
+    if (id.botId) candidates.add(`${encName}@${enc(id.botId)}:${enc(id.senderId)}`)
+  }
   for (const owner of owners) {
     if (candidates.has(owner)) return true
   }
   return false
+}
+
+/** 疑似裸 senderId 的 owner（纯数字/短 id，无通道前缀）——启动时告警用。 */
+function suspiciousOwners(owners) {
+  return owners.filter((o) => !String(o).includes(':') && !String(o).includes('@'))
 }
 
 /** 日志里的身份字段（身份不完整时也尽量给出通道/群，便于排查）。 */
@@ -300,12 +317,12 @@ function checkTool(ctx, bindings, hostConfig, exec, agent) {
 
   const tool = asText(exec?.name)
   const subject = agent || exec?.agent || null
+  const sessionId = sessionIdOf(subject) || sessionIdOf(exec?.agent)
 
   let described = null
   let id = null
   let resolveError = null
   try {
-    const sessionId = sessionIdOf(subject) || sessionIdOf(exec?.agent)
     described = describeFor(ctx, bindings, sessionId)
     if (described) id = toIdentity(described)
   } catch (err) {
@@ -317,8 +334,21 @@ function checkTool(ctx, bindings, hostConfig, exec, agent) {
     return denyOrShadow(cfg, tool, fields, failClosedReason(tool))
   }
 
-  // 没有 IM 绑定 = 桌面/普通会话：不介入（否则所有本地使用都会被拦）。
-  if (!described) return undefined
+  // v3.75：区分"真桌面会话"与"IM 会话但身份解析失败"。
+  // 原来 described=null 一律放行——但 describeConversationSync 暂不可用且
+  // session-pre-bind 事件漏了时，IM 会话也会被当桌面会话，非 owner 可用
+  // shell/写文件/subagent 且无审计。现在：bindings 里有这个 session（事件侧
+  // 明确登记过 IM 绑定）却解析不出身份 → fail-closed；只有真正无任何绑定
+  // 痕迹的才当桌面会话放行。
+  if (!described) {
+    if (sessionId && bindings.has(sessionId)) {
+      const fields = { sender: '', channel: '', group: '' }
+      return denyOrShadow(cfg, tool, fields,
+        `灵枢·guard 拒绝：这是已绑定的 IM 会话，但身份解析失败（宿主只读服务不可用），`
+        + `无法确认发言人，按 fail-closed 拒绝 "${tool}"。`)
+    }
+    return undefined
+  }
 
   // 有 IM 绑定但身份不完整：无法确认发言人 → fail-closed（只读工具也拒绝）。
   if (!id) {
@@ -360,9 +390,19 @@ export function apply(ctx, config) {
   // shadow=true 是观察模式（只记日志不拦）。启动时明确警告一次，避免用户
   // "以为已经开启鉴权、其实敏感命令全被放行"。默认 shadow=false 不触发。
   try {
-    if (resolveGuardConfig(hostConfig).shadow) {
+    const gc = resolveGuardConfig(hostConfig)
+    if (gc.shadow) {
       warnOnce(ctx, 'lingshu-guard: 当前处于观察模式（shadow=true），敏感命令不会被拦截，只记日志；'
         + '确认不会误伤后请改为 shadow=false 以启用拦截')
+    }
+    // v3.75：裸 senderId 当 owner 已失效（跨通道撞号可冒充主人），启动时告警一次。
+    if (gc.enabled && !gc.shadow) {
+      const bare = suspiciousOwners(gc.owners)
+      if (bare.length) {
+        warnOnce(ctx, 'lingshu-guard: owners 里疑似有裸 senderId（' + bare.slice(0, 5).join('、')
+          + '），v3.75 起只认完整三元组身份（channel:user），这些条目已不再生效；'
+          + '请用 `brain.py channel owner list` 查到完整身份后重新登记')
+      }
     }
   } catch { /* 配置读取异常交给 checkTool 按 fail-closed 处理，这里不重复报错 */ }
 

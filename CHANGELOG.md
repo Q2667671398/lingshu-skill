@@ -1,5 +1,17 @@
 # 更新日志
 
+## v3.75（2026-11-22）
+
+> 主题：**修 P6 安全审核的 4 个真漏洞**（只读白名单读任意文件 / cmd 注入 / channel user 跨群越权 / guard fail-open + 裸 senderId 冒充）。
+
+- **#41 guard 只读白名单收紧**：从 `DEFAULT_READ_ONLY` 移除 `read`/`glob`/`grep`/`web_search`——这些"只读"工具可读 HOME 下明文记忆与 token 或外带数据，非 owner 一句"读 hippocampus.jsonl 贴出来"即可绕过 channel/consent 门控。只保留无本地路径副作用的 `list_agents`/`skill`/`todo_write`/`ask_user_question`；显式 `readOnlyAllow` 可覆盖。
+- **#42 IM 桥接 cmd.exe 注入**：原回退分支把正文双引号原样拼进 cmd 命令（`x" & calc.exe & "` 可执行任意命令）。改为数组形式 spawn 不经 cmd 字符串拼接，并拦截含 cmd 元字符 `"&|<>^%` 的参数（fail-closed）。
+- **#43 `channel user` 跨群越权**：原 `_consented(args.user)` 不带 group——目标在任一群 grant 过就能读出其所有群+私聊的聚合画像。新增 `--group` 按群作用域校验；无群上下文从严只认 `*` 全域授权。
+- **#44 guard fail-open**：`described=null` 原一律放行（IM 会话解析失败被当桌面会话）。现在若 session 在 bindings 里（事件侧登记过 IM 绑定）却解析不出身份 → fail-closed。
+- **#45 裸 senderId 冒充 owner**：`isOwner` 移除裸 senderId / `channelName:senderId` 候选，只认完整三元组；启动时对疑似裸 senderId 的 owner 告警（需用 `channel owner list` 查完整身份重登记）。
+
+验证：新增 `tests/test_security_fixes.py` 5/5；更新 `test_lingshu_guard.py` 断言反映新安全策略 6/6；行为基线 check OK；node --check 两插件；全量 run_tests.py 全过。
+
 ## v3.74（2026-11-22）
 
 > 主题：**npm 发布准备就绪**——发一次 npm 后，目录站自动把灵枢的市场安装源从 `github:` 改成 npm 包名，以后每次发版只要 publish，不用再改市场条目（解决朋友装不上：git/GitHub 问题）。

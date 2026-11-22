@@ -19,6 +19,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -173,7 +174,8 @@ function record(name, payload) {
   results.push({ name, ...payload })
 }
 
-// ---- 1) 非 owner：pwsh 拒；read / grep 只读放行（shadow=false，自定义日志路径）----
+// ---- 1) 非 owner：pwsh / read / grep 拒（v3.75 起 read/grep 能读任意本地路径，
+//     不再默认放行）；list_agents 无副作用仍放行（shadow=false，自定义日志路径）----
 {
   const home = scenarioDir('non-owner')
   const logPath = join(home, 'custom-guard.log')
@@ -193,6 +195,7 @@ function record(name, payload) {
     pwsh: guard ? guard({ name: 'pwsh', arguments: { command: 'whoami' }, agent }) : null,
     read: guard ? guard({ name: 'read', arguments: { file_path: 'x' }, agent }) : null,
     grep: guard ? guard({ name: 'grep', arguments: { pattern: 'x' }, agent }) : null,
+    listAgents: guard ? guard({ name: 'list_agents', arguments: {}, agent }) : null,
     logPath,
   })
 }
@@ -352,7 +355,7 @@ function record(name, payload) {
   const next = async () => { nextCount += 1; return { kind: 'allow' } }
   const handler = preExecute[0]
   const deny = handler ? await handler({ name: 'pwsh', arguments: {}, agent }, next) : null
-  const allow = handler ? await handler({ name: 'read', arguments: {}, agent }, next) : null
+  const allow = handler ? await handler({ name: 'list_agents', arguments: {}, agent }, next) : null
   record('fallback', {
     guardCount: guards.length,
     preCount: preExecute.length,
@@ -452,9 +455,14 @@ def test_static_contract():
         "ToolGuard",
     ):
         assert needle in src, f"lingshu-guard 缺少关键实现「{needle}」"
-    for tool in ("read", "glob", "grep", "web_search",
-                 "list_agents", "skill", "todo_write", "ask_user_question"):
+    # v3.75：默认只读白名单收紧——移除能读任意本地路径/外带的工具
+    for tool in ("list_agents", "skill", "todo_write", "ask_user_question"):
         assert f"'{tool}'" in src, f"默认只读白名单缺少 {tool}"
+    for tool in ("read", "glob", "grep", "web_search"):
+        # 这些词可能出现在注释/拒绝说明里，只校验它们不在 DEFAULT_READ_ONLY 数组内
+        m = re.search(r"const DEFAULT_READ_ONLY = \[(.*?)\]", src, re.S)
+        assert m and f"'{tool}'" not in m.group(1), \
+            f"危险工具 {tool} 仍在默认只读白名单（可读任意本地路径/外带）"
     for tool in ("'pwsh'", "'write'", "'subagent'"):
         assert tool not in src, f"只读白名单/策略里不该出现有副作用工具 {tool}"
     assert "enabled: true" in src, "guard 默认应 enabled=true"
@@ -491,8 +499,12 @@ def test_non_owner_denied_and_readonly_allowed():
     assert isinstance(reason, str) and reason, f"非 owner 调 pwsh 没有被拒：{reason!r}"
     assert "拒绝" in reason and "pwsh" in reason, f"拒绝原因不明确：{reason}"
     assert "owner" in reason.lower(), f"拒绝原因应说明 owner 白名单：{reason}"
-    assert item["read"] is None, f"只读工具 read 被误拦：{item['read']!r}"
-    assert item["grep"] is None, f"只读工具 grep 被误拦：{item['grep']!r}"
+    # v3.75：read/grep 能读任意本地路径（记忆与 token 就在 HOME 明文），不再默认放行
+    assert isinstance(item["read"], str) and "拒绝" in item["read"], \
+        f"危险只读工具 read 应被拒：{item['read']!r}"
+    assert isinstance(item["grep"], str) and "拒绝" in item["grep"], \
+        f"危险只读工具 grep 应被拒：{item['grep']!r}"
+    assert item["listAgents"] is None, f"无副作用工具 list_agents 被误拦：{item['listAgents']!r}"
 
     entries = read_log(item["logPath"])
     assert entries, "自定义 logPath 没有写入鉴权日志"
@@ -505,8 +517,8 @@ def test_non_owner_denied_and_readonly_allowed():
     assert pwsh_deny["sender"] == STRANGER_USER, pwsh_deny
     assert pwsh_deny["channel"] == "qq@bot1", pwsh_deny
     assert pwsh_deny["group"] == "g1", pwsh_deny
-    assert any(e["action"] == "allow" and e["tool"] in ("read", "grep") for e in entries), \
-        f"只读工具放行没有记 allow：{entries}"
+    assert any(e["action"] == "allow" and e["tool"] == "list_agents" for e in entries), \
+        f"无副作用工具放行没有记 allow：{entries}"
 
 
 def test_owner_allowed_and_event_cache():
