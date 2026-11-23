@@ -2817,6 +2817,46 @@ _SPEAKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 宿主注入的样板文本（P9 #58）：不是对话内容，存成记忆只会污染库与审核队列。
+# 真库实测 244 条记忆里 23 条（9.4%）是这类噪音。session_import 早有同类过滤，
+# 但 capture（即记即存）路径没有——这里补上共享判据。
+_NOISE_MARKERS = (
+    "system-reminder",
+    "current coding agent web gui url",
+    "current coding agent implementation checkout",
+    "current app file policy",
+    "approval prompts are disabled",
+    "actions that require approval are rejected automatically",
+    "current deepseek",
+    "available_skills",
+    "the following information describes your current session",
+    "sandbox_permissions",
+)
+
+
+def _is_noise_text(text: str) -> bool:
+    """判断一段文本是否基本全是宿主注入样板（无对话价值）。
+
+    规则：命中任一噪音标记后，把标记片段剔掉再看剩余有效字符——剩余不足 40
+    字符判为纯噪音（整段都是样板）；剩余够多说明是"样板+真实内容"的混合段，
+    保留（宁多存不漏存，真实内容别丢）。
+    """
+    s = str(text or "").strip()
+    if not s:
+        return True
+    low = s.lower()
+    if not any(m in low for m in _NOISE_MARKERS):
+        return False
+    rest = s
+    for m in _NOISE_MARKERS:
+        rest = re.sub(re.escape(m), "", rest, flags=re.IGNORECASE)
+    # 剔掉标记后剩余的实质字符（去掉尖括号标签、URL、空白）
+    rest = re.sub(r"</?[a-zA-Z_][\w-]*[^>]*>", " ", rest)
+    rest = re.sub(r"https?://\S+", " ", rest)
+    rest = re.sub(r"[\s\W_]+", "", rest)
+    return len(rest) < 40
+
+
 
 def _split_segments(text: str) -> list:
     """把一段会话原文切成可独立成条的片段：空行 / 分隔线 / 说话人切换。
@@ -2846,7 +2886,10 @@ def _split_segments(text: str) -> list:
     out = []
     for s in segs:
         s = re.sub(r"\s+", " ", s).strip()
-        if len(s) >= CAPTURE_MIN_LEN:
+        # P9 #58：跳过宿主注入样板（system-reminder / GUI URL / 审批提示）——
+        # 它们不是对话内容，存成记忆只会污染库与审核队列。verbatim 原文归档
+        # 不经过这里，仍完整保留（可追溯性不受影响）。
+        if len(s) >= CAPTURE_MIN_LEN and not _is_noise_text(s):
             out.append(s)
     return out
 

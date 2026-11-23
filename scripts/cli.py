@@ -926,6 +926,7 @@ def auto_dream(trigger: str = "auto", dry_run: bool = False) -> dict:
     """内置自愈式做梦：机器重放 → 启发式压缩 → 自动沉淀。
     不依赖外部 dream_auto 脚本；人格不自动改；更抽象的压缩仍建议人工复核梦报告。"""
     from collections import Counter
+    import memory as _mem  # 局部导入：与 cli.py 其它函数一致，裸导入 cli 也能用
     report = dream(trigger, dry_run=dry_run)
     if not report["clusters"]:
         return {"applied": False, "report": report, "memories": 0}
@@ -937,12 +938,15 @@ def auto_dream(trigger: str = "auto", dry_run: bool = False) -> dict:
     }
     memories = []
     for c in report["clusters"]:
-        texts = c["texts"]
+        # P9 #58：先剔掉宿主注入样板（system-reminder / GUI URL 等）——
+        # 它们不是对话内容，拼进摘要只会造出「最近关于X的一组事情：<样板>」这种垃圾条目。
+        texts = [t for t in c["texts"] if not _mem._is_noise_text(t.get("text", ""))]
         top = sorted(texts, key=lambda t: _num(t.get("importance"), 0.5), reverse=True)[:3]
-        kind = Counter(t["kind"] for t in texts).most_common(1)[0][0]
+        kind = Counter(t["kind"] for t in texts).most_common(1)[0][0] if texts else "episode"
         label = "、".join(c["tags"][:4]) or "、".join(c["entities"][:4]) or "未命名主题"
         # 只有 1 条记忆的簇不值得造摘要——摘要几乎等于原文复制，入库后和源记忆
         # 重叠（还共享标签/实体，自动联想又给它们连一堆冗余边）。单条簇跳过。
+        # 滤完噪音后不足 2 条同样跳过（否则摘要里只剩噪音）。
         if len(texts) < 2:
             continue
         joined = "；".join(t["text"] for t in top)
