@@ -777,7 +777,10 @@ def cmd_startup(query: str = "", budget: int | None = None,
     # 水位提醒块：与 status 同一实现（memory._water_level），别两套口径。
     try:
         wl = memory._water_level()
-        pct = int(wl.get("pct", 0))
+        # _water_level 的 pct 统一是 0-1 小数（0.43=43%）；stale 分支显示的是
+        # config 里的原始 0-100 值，两条口径别混。之前非 stale 分支直接 int(0.43)
+        # 得到 0%，token-meter 上线后首次走到这里才暴露。
+        pct = int(round(float(wl.get("pct", 0)) * 100))
         if wl.get("stale"):
             _last = wl.get("last_session_pct")
             _age = wl.get("last_session_pct_age_hours")
@@ -3667,7 +3670,7 @@ def _main(argv=None) -> int:
                         + (f"；上次记录 {wl['last_session_pct']}%"
                            + (f"，{wl['last_session_pct_age_hours']}h 前" if wl.get("last_session_pct_age_hours") is not None else "")
                            if wl.get("last_session_pct") is not None else "")
-                        + "）") if wl.get("stale") else f"水位 {wl['pct']:.0f}%"
+                        + "）") if wl.get("stale") else f"水位 {wl['pct'] * 100:.0f}%"
             print(f"{_pct_txt}（清点 {th['review']:.0%} / 做梦 {th['dream']:.0%} / "
                   f"封存 {th['escape']:.0%}）· 级别 {wl['level']}")
             print(f"  各层条数：{wl['counts']}")
