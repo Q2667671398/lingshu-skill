@@ -82,6 +82,29 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"key": "extensions_enabled", "group": "面板与宿主", "label": "启用扩展模块",
      "kind": "bool",
      "hint": "扩展是任意本地 Python 代码，等于完全信任本机——只装你自己写的"},
+
+    # —— 自动更新与备份 ——
+    {"key": "auto_update", "group": "自动更新与备份", "label": "自动更新灵枢",
+     "kind": "bool",
+     "hint": "开启后定期检查新版本并自动更新；更新前会先备份记忆库，失败自动回滚"},
+    {"key": "auto_update_interval_hours", "group": "自动更新与备份",
+     "label": "检查更新间隔（小时）", "kind": "int", "min": 1, "max": 720, "step": 1,
+     "hint": "每隔多久查一次新版本（默认 24 小时）"},
+    {"key": "backup_interval_hours", "group": "自动更新与备份", "label": "自动备份间隔（小时）",
+     "kind": "int", "min": 1, "max": 168, "step": 1,
+     "hint": "每隔多久自动备份一次记忆库（默认 6 小时；原来是每天一次）"},
+    {"key": "backup_min_new_records", "group": "自动更新与备份", "label": "新增记录触发阈值",
+     "kind": "int", "min": 0, "max": 10000, "step": 10,
+     "hint": "新增这么多条记录就补一次备份（0=只看时间间隔）"},
+    {"key": "backup_keep_hourly", "group": "自动更新与备份", "label": "保留：最近几份",
+     "kind": "int", "min": 1, "max": 100, "step": 1,
+     "hint": "小时层保留份数；最新一份永不删"},
+    {"key": "backup_keep_daily", "group": "自动更新与备份", "label": "保留：每天几份",
+     "kind": "int", "min": 0, "max": 90, "step": 1,
+     "hint": "天层保留（每天最多留 1 份，这里填天数）"},
+    {"key": "backup_keep_weekly", "group": "自动更新与备份", "label": "保留：每周几份",
+     "kind": "int", "min": 0, "max": 52, "step": 1,
+     "hint": "周层保留（每周最多留 1 份，这里填周数）"},
 ]
 
 _BY_KEY = {x["key"]: x for x in CONFIG_SCHEMA}

@@ -1793,7 +1793,7 @@ async function renderData(force){
             ${it.suspicious ? '<span class="set-badge">疑似空壳</span>' : ""}
             ${it.has_sha ? "" : '<span class="set-badge">无校验</span>'}
           </div>
-          <div class="sub">${esc(it.mtime_text)} · ${_fmtSize(it.size)}</div>
+          <div class="sub">${esc(it.mtime_text)} · ${_fmtSize(it.size)} · ${it.records != null ? it.records + " 条" : "记录数未知"} · ${it.age_hours != null ? it.age_hours + " 小时前" : ""}${it.suspicious_why ? " · " + esc(it.suspicious_why) : ""}</div>
         </div>
         <button class="ghost" data-restore="${esc(it.name)}" ${it.suspicious ? "disabled" : ""}>恢复</button>
       </div>`).join("")}</div>`;

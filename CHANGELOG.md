@@ -1,5 +1,36 @@
 # 更新日志
 
+## v4.2（2026-11-24）
+
+> 主题：**备份不再"一天一次裸奔"** + 面板自动更新开关 + 桌面「灵枢面板」快捷方式。
+
+### 为什么之前"没有备份"
+
+`cordis-plugin/lingshu-cron/plugin.js` 里备份是 `{ id: 'backup', days: 1 }`——**按天驱动、且只在当天第一次回合跑一次**。11-23 首个回合（08:47）备份完之后，当天后续十几小时的写入完全不在备份里（实测备份 170 条 vs 实有 206 条，缺 17%）；今天的备份要等今天第一个回合结束。**不是坏了，是粒度太粗。**
+
+### 备份改进（#72/#73/#74）
+
+- **按小时驱动**：`backup_interval_hours`（默认 6），cron 新增 `dueByHours`，不再"当天第一次之后就不管"。
+- **变更量驱动**：`backup_min_new_records`（默认 50），写入密集时不必等满 6 小时。
+- **分层保留（GFS）**：`backup_keep_hourly`(6) / `backup_keep_daily`(7) / `backup_keep_weekly`(4)，**最新一份永不删**；仍兼容旧的 `keep`。
+- **包内清单**：每个备份写入 `_backup_manifest.json`（文件数/各层记录数/版本/时间），事后不必解包就能核对。
+- **疑似空壳改按记录数判**：原来只看 `size < 1024`，实测有个 3327 B、只有 2 条记录的包逃过检测、还因最新而被当"最新备份"（恢复它会直接把库打回 2 条）。现在 `records < max(10, 当前库 20%)` 即标可疑并禁用恢复；老包没有清单时解包数一遍兜底。
+- **面板「数据」页**：显示每份备份的记录数、距今多少小时、可疑原因。
+
+### 自动更新（#75）
+
+- 新增 `auto_update`（**默认关**）/`auto_update_interval_hours`（24）配置，面板「设置」页可开关。
+- `scripts/panel_update.py`：`check()` 查新版、`run()` 执行更新。**顺序固定**：先查 → **先备份记忆库**（备份失败就不更新，宁可旧代码不能丢记忆）→ `growth.apply_update` 原子替换（SHA256 校验/全量备份/回滚兜底）→ 写审计日志。
+- cron 新增 `autoupdate` 小时任务；CLI 新增 `brain.py auto-update [--check] [--force] [--json]`。
+
+### 桌面快捷方式「灵枢面板」（#76）
+
+- `scripts/desktop_shortcut.py` + `brain.py shortcut [--name] [--port] [--remove]`。
+- 桌面生成 **灵枢面板.lnk** → 指向数据目录里的静默启动器（`.vbs` → `pythonw.exe`），双击不弹黑窗。
+- **踩坑记录**：`.vbs` 必须写成 **UTF-16LE + BOM**。wscript 默认按 ANSI 解析 .vbs，而本项目路径常含中文（`E:\丁厚同\...`），UTF-8 会被当 GBK 曲解 → pythonw 收到不存在的路径、静默退出（实测端口始终不开，`cscript` 却报"launched"）。
+
+验证：`tests/test_p11_backup_update_shortcut.py` 6/6（清单写入/分层保留不删最新/按记录数判可疑/快捷方式名与 BOM/自动更新默认关/配置默认值）；启动器实测 `wscript` 拉起面板 HTTP 200 且含设置页与数据页。
+
 ## v4.1（2026-11-24）
 
 > 主题：**checkpoint 把瞬时故障说成了业务结论**——顺手修掉那个"偶发 flake"。

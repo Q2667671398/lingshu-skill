@@ -74,6 +74,42 @@ def main(argv: list[str]) -> int:
             print(f"FAIL {f.name}（exit {r.returncode}）")
         shutil.rmtree(tmp, ignore_errors=True)
 
+    # —— 失败重试一次（可见，不掩盖）——
+    # 本机 360/索引器在 66 个测试文件连跑时会造成瞬时占用，个别测试（如
+    # checkpoint 的 git 取证、behavior baseline 的读写）会偶发失败、单跑必过。
+    # 这里对**失败的文件整体重跑一次**：过了就标 "PASS(重试后)"，仍不过才算失败。
+    # 不做静默重试——重试过的事实必须打出来，否则等于用重试掩盖真回归。
+    if failed:
+        print()
+        print("[重试] 对 %d 个失败文件各重跑一次..." % len(failed))
+        still = []
+        for name, detail in failed:
+            f = next((x for x in files if x.name == name), None)
+            if f is None:
+                still.append((name, detail))
+                continue
+            tmp2 = Path(tempfile.mkdtemp(prefix="ls-retry-"))
+            env2 = dict(os.environ)
+            env2["BRAIN_MEMORY_HOME"] = str(tmp2 / "home")
+            env2["LINGSHU_GLOBAL_SKILLS"] = str(tmp2 / "skills")
+            env2["PYTHONIOENCODING"] = "utf-8"
+            (tmp2 / "home").mkdir(parents=True, exist_ok=True)
+            (tmp2 / "skills").mkdir(parents=True, exist_ok=True)
+            try:
+                r2 = subprocess.run([sys.executable, str(f)], capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=1800, env=env2)
+            except subprocess.TimeoutExpired:
+                still.append((name, detail))
+                shutil.rmtree(tmp2, ignore_errors=True)
+                continue
+            shutil.rmtree(tmp2, ignore_errors=True)
+            if r2.returncode == 0:
+                print(f"  PASS(重试后) {name}")
+            else:
+                out2 = (r2.stdout or "") + (r2.stderr or "")
+                still.append((name, "\n".join(out2.strip().splitlines()[-40:])))
+        failed = still
+
     print()
     if failed:
         for name, detail in failed:

@@ -256,6 +256,39 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
                     continue
                 zf.write(f, rel)
                 n += 1
+            # 包内清单：把"这个包到底装了什么、有多少条"写进去，
+            # 事后（以及面板恢复前）不必解包就能判断它是不是空壳。
+            try:
+                import json as _json
+                _counts = {}
+                for _name in ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl",
+                              "archive.jsonl", "knowledge.jsonl", "notes.jsonl",
+                              "emotions.jsonl"):
+                    _f = HOME / _name
+                    if _f.is_file():
+                        try:
+                            _counts[_name] = sum(
+                                1 for _ln in _f.open(encoding="utf-8", errors="replace")
+                                if _ln.strip())
+                        except OSError:
+                            _counts[_name] = -1
+                _ver = ""
+                try:
+                    for _ln in (HOME / "VERSION").read_text(encoding="utf-8").splitlines():
+                        _ver = _ln.strip()
+                        break
+                except OSError:
+                    pass
+                zf.writestr("_backup_manifest.json", _json.dumps({
+                    "created": datetime.now().isoformat(timespec="seconds"),
+                    "files": n,
+                    "counts": _counts,
+                    "total_records": sum(v for v in _counts.values() if v > 0),
+                    "version": _ver,
+                    "home": str(HOME),
+                }, ensure_ascii=False, indent=2))
+            except Exception as exc:  # noqa: BLE001
+                log_event("backup", f"包内清单写入失败（备份本身完好）：{exc}", level="warn")
     except Exception as exc:
         print(f"[错误] 备份失败：{exc}", file=sys.stderr)
         return 2
@@ -298,19 +331,56 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
             print(f"[错误] 备份加密失败：{exc}", file=sys.stderr)
             return 2
     removed = 0
-    if keep and keep > 0:
-        # 按修改时间排序而不是文件名：跨日期时文件名字典序可能乱掉新旧关系
-        # 只按**真备份文件**计数：原来 glob 是 brain-memory_*.zip* ，把同名
-        # .zip.sha256 校验文件也算进去，于是 keep=5 实际只留 2~3 份备份，
-        # 还会留下没有 zip 的孤儿 sha256（P10 #69）。
+    # 分层保留（GFS，P11 #72）：小时内留最近 N 个、天内每天留 1 个、周内每周留 1 个，
+    # 再叠加显式 keep（兼容旧行为）。既避免"只留 5 个"丢掉整周历史，也不会无限膨胀。
+    # 只按**真备份文件**计数（P10 #69：glob 曾把 .sha256 也算进去）。
+    try:
         existing = sorted(
             [p for p in out_dir.glob("brain-memory_*.zip*")
              if p.name.endswith(".zip") or p.name.endswith(".zip.enc")],
             key=lambda p: p.stat().st_mtime, reverse=True)
-        for p in existing[keep:]:
+    except OSError:
+        existing = []
+    if existing:
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+        keep_h = int(cfg.get("backup_keep_hourly") or 0)
+        keep_d = int(cfg.get("backup_keep_daily") or 0)
+        keep_w = int(cfg.get("backup_keep_weekly") or 0)
+        drop: set = set()
+        if keep_h > 0:
+            drop.update(existing[keep_h:])
+        if keep_d > 0:
+            seen_days, kept_d = set(), 0
+            for p in existing:
+                day = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y%m%d")
+                if day in seen_days:
+                    continue
+                seen_days.add(day)
+                kept_d += 1
+                if kept_d > keep_d:
+                    drop.add(p)
+        if keep_w > 0:
+            seen_weeks, kept_w = set(), 0
+            for p in existing:
+                wk = datetime.fromtimestamp(p.stat().st_mtime).strftime("%G%V")
+                if wk in seen_weeks:
+                    continue
+                seen_weeks.add(wk)
+                kept_w += 1
+                if kept_w > keep_w:
+                    drop.add(p)
+        if keep and keep > 0:
+            drop.update(existing[keep:])
+        # 最新那份永不删（否则备份完立刻把自己删了）
+        drop.discard(existing[0])
+        for p in existing:
+            if p not in drop:
+                continue
             try:
                 p.unlink()
-                # 连带清掉它的 sha256 边车，别留孤儿
                 side = p.with_name(p.name + ".sha256")
                 if side.is_file():
                     side.unlink()
@@ -331,7 +401,7 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
     if not password:
         print("[提示] 备份未加密，含全部记忆原文；加 --password 可生成加密备份。", file=sys.stderr)
     if removed:
-        print(f"修剪旧备份 {removed} 个（保留最近 {keep} 个）")
+        print(f"修剪旧备份 {removed} 个（分层保留：小时/天/周；最新一份永不删）")
     return 0
 
 
@@ -1488,6 +1558,18 @@ def _main(argv=None) -> int:
     p_ck.add_argument("--force", action="store_true", help="即使和上次一致也写一条")
     p_ck.add_argument("--json", action="store_true")
 
+    # P11 #76 桌面快捷方式「灵枢面板」
+    p_sc = sub.add_parser("shortcut", help="在桌面生成/删除「灵枢面板」快捷方式（静默启动面板）")
+    p_sc.add_argument("--name", default="灵枢面板", help="快捷方式名字（默认 灵枢面板）")
+    p_sc.add_argument("--port", type=int, default=0, help="固定端口（默认读 config.panel_port）")
+    p_sc.add_argument("--remove", action="store_true", help="删除桌面快捷方式")
+
+    # P11 #75 自动更新灵枢
+    p_au = sub.add_parser("auto-update", help="检查/执行自动更新灵枢（默认跟随 config.auto_update）")
+    p_au.add_argument("--check", action="store_true", help="只检查有没有新版本，不安装")
+    p_au.add_argument("--force", action="store_true", help="忽略 auto_update 开关强制执行一次")
+    p_au.add_argument("--json", action="store_true")
+
     # 附录 C P2 收尾：触发 + 落盘 + 回滚
     p_ss = sub.add_parser("session-summary",
                           help="会话摘要：触发判断 / 生成落盘 / 查看 / 回滚（每 N 轮或水位≥60%%）")
@@ -2012,6 +2094,8 @@ def _main(argv=None) -> int:
             or (args.cmd == "rebuild-embeds")                          # 重建向量写回各层文件
             or (args.cmd == "drift")                                   # 漂移走 persona.json 写盘
             or (args.cmd == "auto-archive" and not args.dry_run)
+            or (args.cmd == "shortcut")                # 写桌面 .lnk
+            or (args.cmd == "auto-update" and not args.check)   # 改自身代码
         )
         if writing:
             print(f"[只读] 记忆库当前不可写，{args.cmd} 需要写盘。"
@@ -2456,6 +2540,45 @@ def _main(argv=None) -> int:
         print(json.dumps(rep, ensure_ascii=False, indent=2) if args.json
               else f"OK {rep}")
         return 0
+
+    if args.cmd == "shortcut":
+        import desktop_shortcut as _ds
+        if args.remove:
+            r = _ds.remove(args.name)
+            print(f"已删除桌面快捷方式：{r.get('path')}" if r.get("removed")
+                  else "桌面没有该快捷方式（无需删除）")
+            return 0 if r.get("ok") else 1
+        r = _ds.create(args.name, args.port or None)
+        if r.get("ok"):
+            print(f"已在桌面创建「{args.name}」：{r['path']}")
+            print(f"  启动器：{r['launcher']}")
+            print("  双击即可静默启动面板（不会弹黑窗）")
+            return 0
+        print(f"[错误] 创建失败：{r.get('reason')}", file=sys.stderr)
+        return 1
+
+    if args.cmd == "auto-update":
+        import panel_update as _pu
+        if args.check:
+            res = _pu.check(force_pull=True)
+            if args.json:
+                print(json.dumps(res, ensure_ascii=False, indent=2))
+                return 0
+            print(f"当前 {res.get('current')} / 最新 {res.get('latest')} "
+                  f"→ {'有新版可更新' if res.get('update_available') else '已是最新'}")
+            return 0
+        res = _pu.run(force=args.force)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0 if res.get("ok") else 1
+        if res.get("skipped"):
+            print(f"跳过：{res.get('reason')}")
+            return 0
+        if res.get("ok"):
+            print(f"已更新：{res.get('from')} → {res.get('to')}；更新前备份 {res.get('backup')}")
+            return 0
+        print(f"[错误] {res.get('reason')}", file=sys.stderr)
+        return 1
 
     if args.cmd == "checkpoint":
         from checkpoint import checkpoint

@@ -27,9 +27,66 @@ def _backup_dir() -> Path:
         return Path(core.HOME) / "backups"
 
 
+def _manifest_of(path: Path) -> dict | None:
+    """读备份包内的 _backup_manifest.json（拿记录数）；读不到返回 None。"""
+    try:
+        import zipfile
+        with zipfile.ZipFile(path) as zf:
+            if "_backup_manifest.json" not in zf.namelist():
+                return None
+            return json.loads(zf.read("_backup_manifest.json").decode("utf-8"))
+    except Exception:
+        return None
+
+
+_COUNTABLE = ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl",
+              "archive.jsonl", "knowledge.jsonl", "notes.jsonl")
+
+
+def _count_in_zip(path: Path) -> int | None:
+    """兜底：老备份没有清单，就从包里数各层行数（包很小，代价可接受）。"""
+    try:
+        import zipfile
+        total = 0
+        with zipfile.ZipFile(path) as zf:
+            for n in zf.namelist():
+                if not any(n.endswith(x) for x in _COUNTABLE):
+                    continue
+                try:
+                    data = zf.read(n).decode("utf-8", "replace")
+                except Exception:
+                    continue
+                total += sum(1 for ln in data.splitlines() if ln.strip())
+        return total
+    except Exception:
+        return None
+
+
+def _current_records() -> int:
+    """当前库的有效记录总数（用于判断某个备份"是否明显不全"）。"""
+    total = 0
+    for name in ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl",
+                 "archive.jsonl", "knowledge.jsonl", "notes.jsonl"):
+        p = core.HOME / name
+        if not p.is_file():
+            continue
+        try:
+            total += sum(1 for ln in p.open(encoding="utf-8", errors="replace") if ln.strip())
+        except OSError:
+            pass
+    return total
+
+
 def list_backups(limit: int = 30) -> dict:
-    """列出备份目录里的 zip（含大小/时间/是否有 sha 记录）。"""
+    """列出备份目录里的 zip：大小/时间/sha/记录数/是否可疑。
+
+    "疑似空壳"改成**按记录数**判定（P11 #73）：原来只看 size<1024，
+    实测有个 3327 B、只有 2 条记录的测试包逃过检测，还因为最新而被当成
+    "最新备份"——恢复它会直接把库打回 2 条。
+    """
     d = _backup_dir()
+    cur = _current_records()
+    threshold = max(10, int(cur * 0.2))      # 不足当前库 20% 就标可疑
     items = []
     try:
         files = sorted(d.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -41,18 +98,32 @@ def list_backups(limit: int = 30) -> dict:
         except OSError:
             continue
         sha_file = p.with_name(p.name + ".sha256")
+        man = _manifest_of(p)
+        records = None
+        if man:
+            records = int(man.get("total_records") or 0)
+        if records is None:
+            records = _count_in_zip(p)      # 老备份没清单：解包数一遍
+        age_h = max(0.0, (time.time() - st.st_mtime) / 3600.0)
+        # 可疑判定：空壳字节 / 记录数明显少于当前库
+        bad_size = st.st_size < 2048
+        bad_records = records is not None and records < threshold
         items.append({
             "name": p.name,
             "path": str(p),
             "size": st.st_size,
             "mtime": int(st.st_mtime),
             "mtime_text": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)),
-            # 22 字节的空 zip（PK\x05\x06）是失败残壳，标出来别当备份用
-            "suspicious": st.st_size < 1024,
+            "age_hours": round(age_h, 1),
+            "records": records,
+            "suspicious": bool(bad_size or bad_records),
+            "suspicious_why": ("包体过小" if bad_size
+                               else (f"记录数 {records} < 阈值 {threshold}" if bad_records else "")),
             "has_sha": sha_file.is_file(),
         })
     return {"dir": str(d), "dir_exists": d.is_dir(), "items": items,
-            "count": len(items)}
+            "count": len(items), "current_records": cur,
+            "suspicious_threshold": threshold}
 
 
 def make_backup(keep: int = 0) -> dict:

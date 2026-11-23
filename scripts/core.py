@@ -316,6 +316,22 @@ DEFAULT_CONFIG = {
     # 补进 DEFAULT_CONFIG：原来只有读取方 .get(key, False) 兜底，config 里没有这个键，
     # 面板设置页会显示成"未设置"、默认值也拿不到（P10 #68）。
     "extensions_enabled": False,
+    # —— 备份策略（P11 #72）——
+    # 按小时驱动而不是按天：原来 days=1 只在"当天第一次回合"跑一次，
+    # 之后十几小时的写入完全裸奔（实测缺 17%）。
+    "backup_interval_hours": 6,
+    # 变更量驱动：新增记录达到这个数就补一次备份（高频写入时不必等满 6 小时）
+    "backup_min_new_records": 50,
+    # 保留分层：小时内 / 天内 / 周内各留几份（GFS 思路，省空间又能回溯）
+    "backup_keep_hourly": 6,
+    "backup_keep_daily": 7,
+    "backup_keep_weekly": 4,
+    # —— 自动更新（P11 #75）——
+    # 默认关：自动改自己的代码风险高，必须用户显式开启。
+    # 开启后 cron 每 N 小时查一次，发现新版本才走 apply_update
+    # （原子 staging + 全量备份 + 回滚兜底），更新前强制先备份记忆库。
+    "auto_update": False,
+    "auto_update_interval_hours": 24,
     "session_state_cache": False,
     "session_state_ttl": 300,
     # 候选7 跨对话上下文摄取：把别的会话/宿主导出的对话（.jsonl/.md/.txt）

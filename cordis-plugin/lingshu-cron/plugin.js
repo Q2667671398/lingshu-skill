@@ -44,6 +44,10 @@ const DEFAULTS = {
   extractTurns: 4,        // 每 N 轮把攒下的对话文本静默 extract（即记即存）
   extractMinChars: 80,    // 攒的文本短于该值不触发（惊异门控在 brain.py extract 里有第二道）
   selfReviewDays: 3,      // 每 N 天触发 skill self-review
+  // P11：备份改按小时（原来 days:1 只在当天第一次回合跑，之后十几小时裸奔）
+  backupIntervalHours: 6,
+  // P11：自动更新检查间隔（真正的开关在 ~/.brain-memory/config.json 的 auto_update）
+  autoUpdateIntervalHours: 24,
   runUsage: true,         // 每轮 turn-stopping 静默跑 usage --reply
   injectReview: true,     // review 有 pending 时注入提醒（每会话一次，见 reviewNotice*）
   reviewNoticeMin: 5,     // v3.57：待审条数达到这个数才提醒（零星一两条不打扰）
@@ -233,6 +237,16 @@ function agentKey(agent) {
 function dueByDays(task, state) {
   const last = state?.days?.[task.id]
   return last !== todayStr()
+}
+
+// 按小时间隔判定（P11 #72）。备份原来用 days:1 —— 只在"当天第一次回合"跑一次，
+// 之后十几小时的写入完全裸奔（实测缺 17%）。改小时驱动后可按 config 调。
+function dueByHours(task, state, hours) {
+  const h = Number(hours) || 0
+  if (h <= 0) return false
+  const last = Number(state?.hours?.[task.id] || 0)
+  if (!last) return true
+  return Date.now() - last >= h * 3600 * 1000
 }
 
 // ---------------------------------------------------------------- 水位自动执行（影子模式 + 显式同意）
@@ -603,6 +617,22 @@ export function apply(ctx, config) {
           }
           stateSaver.flushNow() // 天级任务低频，立即落盘保证不丢标记
         }
+        // 小时级任务（备份/自动更新）单独记时间戳：与 days 互不干扰
+        if (task.hours) {
+          state.hours = state.hours || {}
+          if (out !== null) {
+            state.hours[task.id] = Date.now()
+            if (state.retries) delete state.retries[task.id]
+          } else {
+            state.retries = state.retries || {}
+            const r = state.retries[task.id] || { date: todayStr(), count: 0 }
+            if (r.date !== todayStr()) { r.date = todayStr(); r.count = 0 }
+            r.count += 1
+            state.retries[task.id] = r
+            logTaskFailure(task.id, `小时级任务失败（补跑第 ${r.count} 次）`)
+          }
+          stateSaver.flushNow()
+        }
       } catch (err) {
         // P6 #49：顶层异常也不能静默——写日志后照旧吞掉（守卫语义：异常不冒泡）
         logTaskFailure(task.id, `执行异常：${err?.message || String(err)}`)
@@ -751,7 +781,10 @@ export function apply(ctx, config) {
       const silentTasks = [
         { id: 'dream', turns: cfg.dreamTurns, argv: ['dream', '--auto'] },
         { id: 'daily', days: 1, argv: ['daily'] },
-        { id: 'backup', days: 1, argv: ['backup'] },
+        // 备份：按小时（config.backup_interval_hours，默认 6），不再是"每天一次"
+        { id: 'backup', hours: cfg.backupIntervalHours ?? 6, argv: ['backup'] },
+        // 自动更新：默认关（config.auto_update=false 时 auto-update 自己会跳过）
+        { id: 'autoupdate', hours: cfg.autoUpdateIntervalHours ?? 24, argv: ['auto-update'] },
         { id: 'conflicts', days: 1, argv: ['detect-conflicts'] },
         { id: 'selfreview', days: cfg.selfReviewDays, argv: ['skill', 'self-review'] },
         // 第④步：每日静默 persona drift —— 扫描近 1 天记忆的情感倾向，
@@ -764,6 +797,7 @@ export function apply(ctx, config) {
       for (const t of silentTasks) {
         if (t.turns && n % t.turns === 0) fire(t)
         if (t.days && dueByDays(t, state)) fire(t)
+        if (t.hours && dueByHours(t, state, t.hours)) fire(t)
       }
       if (cfg.runUsage) {
         // usage --reply 用"最后一条 assistant 回复"的真实文本统计记忆是否被用上；
