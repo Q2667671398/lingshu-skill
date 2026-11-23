@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.89（2026-11-23）
+
+> 主题：**P9 #57 新会话水位时序缺陷**——首次注入把上个会话的水位标成"本会话实测"。
+
+- **问题**：`agent/created` 生成 startup 文本时读 `.context-pressure.json`，但该文件是**上个会话** pre-step 写的（本会话 pre-step 尚未运行）→ 全新会话可能显示"水位 90%（本会话实测）"，误导 AI 在空会话里做梦/封存。
+- **修**：`context-pressure.js` 新增 `clearContextPressure()`；startup 插件在 `agent/created` 且 `source === 'startup'`（全新会话）时先清掉陈旧样本 → 首轮诚实显示"未知（本次尚未测量）"，pre-step 再写本会话真实值。**resume 不清**（同一会话续聊，样本仍有效）。
+- 实测：清除函数生效（文件存在→不存在）；无样本时 `_water_level` 正确报 `stale=True` + 保留 last_session_pct 供"上次记录"展示。
+
+验证：`tests/test_water_linkage.py` 3/3；JS 两文件 node --check；六项检查 + 行为基线 + 全量测试全过。
+
 ## v3.88（2026-11-23）
 
 > 主题：**P9 水位联动审查**——发现 v3.86 只接通了"显示"，注入降档仍读老机制（恒 full），本次打通联动。

@@ -1,12 +1,12 @@
 {
-  "version": "3.88",
+  "version": "3.89",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "4addf07b56c10a68b175b7f01565a935a86cece8d52cad92c8b51879b2133653",
-      "size": 276912
+      "sha256": "6419e2695cf325bbc5742ed3e4a8d784624cc24dccbb37d2eb0c0468b644a3df",
+      "size": 277953
     },
     "README.md": {
-      "sha256": "db6f4e669ee52d262db322c5931d9b15fb0c673be13e29fb0ff9a66147bf92ca",
+      "sha256": "7330ba4159584d2d4af66dbf8582458ef4af9a6a15d63e00f2698bd2507746ca",
       "size": 64472
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "6a83aa8c5a2dcb701015096167f300534d9380bd6760c7f9e7e79f39855bb7e4",
+      "sha256": "25bd652edc05f2f685d7da2dc8afe4484629ceb69449432d4d361c064e7e7d7b",
       "size": 35253
     },
     "assets/panel.html": {
@@ -54,8 +54,8 @@
       "size": 8190
     },
     "cordis-plugin/lingshu-startup/context-pressure.js": {
-      "sha256": "3b831e5250b7f9a96074246270a15ec73bf7ff206317b949583b4e4b8c339f60",
-      "size": 3250
+      "sha256": "d8527bcc45767748385b4b3af8a5557d1c40eb996c6396e8c7cbc0d2ebb16f24",
+      "size": 3930
     },
     "cordis-plugin/lingshu-startup/cordis.patch.yml": {
       "sha256": "8c125c21e0d742527a5ea951012f25a788abd3417ed0e235961750be3af24f91",
@@ -70,8 +70,8 @@
       "size": 1391
     },
     "cordis-plugin/lingshu-startup/plugin.js": {
-      "sha256": "01e330f7410dfeddc09406e0a082e2f27cb7eb1eaf3f3d328e8eed224effe2d0",
-      "size": 18324
+      "sha256": "e2a0c3d3259e94f8a25834ebe4150a38bf58b080ef4e6db675c44f3bab402fae",
+      "size": 18706
     },
     "cordis.patch.yml": {
       "sha256": "f0c18e561c15f2afa40e77ed71ca08a220b11487ccf8975da47b684c6055eead",
@@ -110,15 +110,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "41f394e348f8ee8ad4d5870b1d29a24062f66bd5b2f9d02f640d937f7dff8b46",
-      "size": 102380
+      "sha256": "bc996d70448e545a92af686a5126783344f28b4335a3ea450c58bfae70fe6d7b",
+      "size": 103006
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "659c377e6823c006dd7ad45e1ba9f4ae0432d16f7f9b497533544de7ffd79b9a",
+      "sha256": "81e8ed35cd84adf153165275f42162bfba3f90c2a081c6d41d90ab6fee0d5eb4",
       "size": 1341
     },
     "scripts/assembler.py": {

@@ -12,7 +12,7 @@
 // - 任何异常都吞掉（pre-step 是 wrapping 监听器，抛异常会破坏请求）；
 // - ctx.tokenMeter 不存在（旧版 DSH/未挂载）时静默跳过，写 availability=false 让 Python 侧知道。
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -77,4 +77,18 @@ function write(file, out) {
     writeFileSync(file, JSON.stringify(out, null, 2) + '\n', 'utf8')
   } catch { /* 写失败不影响请求 */ }
   return out
+}
+
+/**
+ * 新会话启动时清掉上个会话留下的样本（P9 #57）。
+ *
+ * 为什么需要：`agent/created` 生成 startup 文本时，`.context-pressure.json`
+ * 还是**上个会话** pre-step 写的（本会话 pre-step 尚未运行）。不清掉的话，
+ * 全新会话会显示"水位 90%（本会话实测）"——误导 AI 在空会话里做梦/封存。
+ * 清掉后首轮诚实显示"未知（本次尚未测量）"，pre-step 再写本会话真实值。
+ */
+export function clearContextPressure() {
+  try {
+    rmSync(join(memoryHome(), '.context-pressure.json'), { force: true })
+  } catch { /* 清不掉也不影响：首轮只是显示旧值 */ }
 }

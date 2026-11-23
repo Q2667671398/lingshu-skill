@@ -25,7 +25,7 @@ import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { sampleContextPressure } from './context-pressure.js'
+import { clearContextPressure, sampleContextPressure } from './context-pressure.js'
 
 // 刻意零外部依赖：不 import @deepseek-ai/schemastery。原因——link: 安装时模块
 // 真实路径留在技能目录，Node 从那里向上找 node_modules 一路到盘符根都找不到
@@ -265,6 +265,10 @@ export function apply(ctx, config) {
       if (source !== 'startup' && source !== 'resume') return
       if (source === 'resume' && !cfg.injectResume) return
       if (pending.has(agent)) return
+      // P9 #57：全新会话先清掉上个会话留下的水位样本——否则首轮注入会把
+      // 上个会话的"水位 90%"标成"本会话实测"，误导 AI 在空会话里做梦/封存。
+      // resume 不清：同一会话续聊，样本仍属本会话，清掉反而丢有效值。
+      if (source === 'startup') clearContextPressure()
 
       const brainPy = await findBrainPy(cfg.brainPy, ctx)
       if (!brainPy) {
