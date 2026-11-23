@@ -3097,8 +3097,37 @@ def injectable_lessons(query: str = "", k: int = 5) -> list:
 # 光有记忆不够，必须在**行动前自动检索并注入**，否则就是"有记忆但没搜"
 # （reactive agent）——模型会从零重新调研已经做过的事。
 
-_PRIOR_MEM_SCORE = 0.35      # 记忆命中门槛：低于此不展示（防噪音）
+_PRIOR_MEM_SCORE = 0.35      # 记忆综合分下限（相关度+新鲜度+重要性，仅作次要排序）
 _PRIOR_MAX_ITEMS = 3         # 每类最多展示几条
+
+
+def _prior_need(q_terms: set) -> int:
+    """要判定"相关"至少得命中几个查询词。
+
+    为什么不能只看 recall 的综合分：它是 相关度+**新鲜度**+**重要性** 的加权，
+    最近/重要的记忆天然拿 0.35+，于是"完全无关但很新"的条目也能过线
+    （实测某次注入命中两条覆盖仅 3% 的垃圾）。改按"查询关键词实际命中数"卡：
+    短查询要 2 个，长查询按 30% 递增（封顶 4），不够就**弃权不注入**
+    （CBR 的"无适用案例"原则——强行复用错误案例比不给更糟）。
+    """
+    n = len(q_terms)
+    if n <= 3:
+        return 2
+    return min(4, max(2, int(n * 0.3 + 0.999)))
+
+
+def _prior_hits(q_terms: set, text: str) -> int:
+    return len(q_terms & terms(text))
+
+
+def _is_weak_text(text: str) -> bool:
+    """标题碎片/极短片段不适合当"以前做过"的证据（如只有 ## 七、崩溃与检查）。"""
+    s = str(text or "").strip()
+    body = re.sub(r"^#{1,6}\s*", "", s)
+    body = re.sub(r"[\s\W_]+", "", body)
+    if len(body) < 12:
+        return True
+    return bool(re.match(r"^#{1,6}\s", s)) and len(body) < 40
 
 
 def prior_work(task: str, k: int = 6) -> dict:
@@ -3115,11 +3144,40 @@ def prior_work(task: str, k: int = 6) -> dict:
            "total": 0, "latest_ts": None, "summary": ""}
     if not task:
         return out
+    # 相关性门槛（v3.96，v3 版）：用**查询词覆盖率**（命中数 / 查询词数）判定。
+    # 为什么不看 recall 综合分：它含新鲜度/重要性，最近记忆天然 0.35+，等于没筛。
+    # 为什么不用"命中词数"：中文 terms() 是字符二元组，"有没/没有/查下/研下"这类
+    # 跨词碎片能凑够好几个"命中"，无关旧对话也能过线。
+    # 实测区分度（真库）：真命中覆盖率 60~100%，垃圾 13~17% → 门槛 35% 且命中≥2。
+    # 不够就**弃权不注入**（CBR 的"无适用案例"原则：给错案例比不给更糟）。
+    _COV_MIN = 0.35
+    _HIT_MIN = 2
+    q_terms = {x for x in terms(task) if len(x) >= 2}
+    out["gate"] = {"query_terms": len(q_terms), "min_coverage": _COV_MIN, "min_hits": _HIT_MIN}
+
+    def _cov(text: str) -> float:
+        if not q_terms or not text:
+            return 0.0
+        return len(q_terms & terms(text)) / len(q_terms)
+
+    def _relevant(text: str) -> bool:
+        if not q_terms or not text or _is_weak_text(text):
+            return False
+        hit = len(q_terms & terms(text))
+        return hit >= _HIT_MIN and (hit / len(q_terms)) >= _COV_MIN
+
+    def _pass_text(text: str) -> bool:
+        return bool(text) and not _is_weak_text(text)
+
     # 1) 知识：已确认的结论优先复用（pending 的标出来，提醒"还没定论"）
     try:
         import growth as _growth
-        for rec, score in _growth.search_knowledge(task, k=k)[:_PRIOR_MAX_ITEMS]:
+        for rec, score in _growth.search_knowledge(task, k=k * 2):
+            if len(out["knowledge"]) >= _PRIOR_MAX_ITEMS:
+                break
             if _agg_like(rec):
+                continue
+            if not _relevant(f"{rec.get('title') or ''} {rec.get('body') or ''}"):
                 continue
             out["knowledge"].append({
                 "id": rec.get("id", ""),
@@ -3129,8 +3187,12 @@ def prior_work(task: str, k: int = 6) -> dict:
                 "created": int(_num(rec.get("created"), 0)),
             })
         # 1b) 笔记：交接笔记/日记里常有"这轮做了什么、结论是什么"的浓缩
-        for rec, score in _growth.search_notes(task, k=k)[:2]:
-            if score <= 0.02 or _agg_like(rec):
+        for rec, score in _growth.search_notes(task, k=k * 2):
+            if len(out["notes"]) >= 2:
+                break
+            if _agg_like(rec):
+                continue
+            if not _relevant(f"{rec.get('title') or ''} {rec.get('body') or ''}"):
                 continue
             out["notes"].append({
                 "id": rec.get("id", ""),
@@ -3140,10 +3202,16 @@ def prior_work(task: str, k: int = 6) -> dict:
             })
     except Exception as exc:  # noqa: BLE001
         log_event("prior", f"查知识/笔记失败（不影响其它来源）：{exc}", level="warn")
-    # 2) 教训：踩过的坑（词面命中优先）
+
+    # 2) 教训：只留 injectable_lessons 自己判为真命中的（它用词面交集/jaccard 打
+    #    _hit 标记）；没打标记的是它"补足到 k"塞进来的无关条目。
     try:
-        for les in injectable_lessons(task, k=k)[:_PRIOR_MAX_ITEMS]:
-            if _agg_like(les):
+        for les in injectable_lessons(task, k=k * 2):
+            if len(out["lessons"]) >= _PRIOR_MAX_ITEMS:
+                break
+            if not les.get("_hit") or _agg_like(les):
+                continue
+            if not _relevant(str(les.get("text") or "")):
                 continue
             out["lessons"].append({
                 "id": les.get("id", ""),
@@ -3153,21 +3221,24 @@ def prior_work(task: str, k: int = 6) -> dict:
             })
     except Exception as exc:  # noqa: BLE001
         log_event("prior", f"查教训失败：{exc}", level="warn")
+
     # 3) 记忆：过程记录（strengthen=False 只读；mode="fast" 强制词面——
     # 这是每轮开工前的钩子，auto 会去调 embedding（实测 4.1s vs 37ms），
     # 每轮多 4 秒的延迟换那点语义收益不值。）
+    # 门槛看 parts['relevance']（纯相关度），**不看** recall 的综合分——后者含
+    # 新鲜度/重要性，最近记忆天然 0.35+，等于没筛。
     try:
-        for m, score, _parts in recall(task, k=k, strengthen=False, mode="fast")[:_PRIOR_MAX_ITEMS]:
-            if score < _PRIOR_MEM_SCORE:
-                continue
-            # 做梦机械聚合条目对"以前做过吗"没有增量信息（原文各自还在库里），跳过
-            if _agg_like(m):
+        for m, score, _parts in recall(task, k=k * 3, strengthen=False, mode="fast"):
+            if len(out["memories"]) >= _PRIOR_MAX_ITEMS:
+                break
+            rel = _num((_parts or {}).get("relevance"), 0.0)
+            if _agg_like(m) or not _relevant(str(m.get("text") or "")):
                 continue
             out["memories"].append({
                 "id": m.get("id", ""),
                 "text": str(m.get("text") or "")[:200],
                 "created": int(_num(m.get("created"), 0)),
-                "score": round(float(score), 2),
+                "score": round(float(rel), 3),
             })
     except Exception as exc:  # noqa: BLE001
         log_event("prior", f"查记忆失败：{exc}", level="warn")
