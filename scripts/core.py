@@ -1135,7 +1135,38 @@ def read_pressure(cfg: dict | None = None) -> dict | None:
     返回形状：`{"pct": 78.0, "at": 1795240000, "stale": False, "tier": "lazy"|"minimal"|"full", ...}`
     """
     try:
+        # 先读老机制文件：手工 check-context --used 写的值若新鲜，应**优先于**
+        # tokenMeter——用户显式给的数就是"我比你准"。平时它陈旧/不存在，才用 token。
+        legacy = None
         path = HOME / _PRESSURE_FILE
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8-sig"))
+                if isinstance(raw, dict):
+                    _lp, _la = raw.get("pct"), raw.get("at")
+                    if (not isinstance(_lp, bool) and isinstance(_lp, (int, float))
+                            and 0 <= float(_lp) <= 100
+                            and isinstance(_la, (int, float)) and not isinstance(_la, bool)
+                            and now_ts() - float(_la) <= _PRESSURE_TTL):
+                        legacy = {"pct": float(_lp), "at": float(_la),
+                                  "source": str(raw.get("source") or "manual")}
+            except Exception:
+                pass
+        tp = token_context_pressure()
+        if legacy is not None:
+            th = pressure_thresholds(cfg if cfg is not None else load_config())
+            pct = legacy["pct"]
+            tier = ("minimal" if pct >= th["minimal_at"]
+                    else "lazy" if pct >= th["lazy_at"] else "full")
+            return {"pct": pct, "at": legacy["at"], "stale": False, "tier": tier,
+                    "thresholds": th, "source": legacy["source"]}
+        if tp is not None:
+            th = pressure_thresholds(cfg if cfg is not None else load_config())
+            pct = float(tp["pct"])
+            tier = ("minimal" if pct >= th["minimal_at"]
+                    else "lazy" if pct >= th["lazy_at"] else "full")
+            return {"pct": pct, "at": tp["ts"], "stale": False, "tier": tier,
+                    "thresholds": th, "source": "token-meter"}
         if not path.exists():
             return None
         raw = json.loads(path.read_text(encoding="utf-8-sig"))

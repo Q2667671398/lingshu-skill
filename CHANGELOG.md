@@ -1,5 +1,15 @@
 # 更新日志
 
+## v3.88（2026-11-23）
+
+> 主题：**P9 水位联动审查**——发现 v3.86 只接通了"显示"，注入降档仍读老机制（恒 full），本次打通联动。
+
+- **`read_pressure()` 优先用 tokenMeter 实时水位**（P9 #54/55）：v3.86 的 token 快照只接进 `_water_level`（显示），而 `build_injection` 的预算 ×0.7/×0.45、lazy/minimal 裁剪、水位守则提示全走 `read_pressure()`→老 `_pressure.json`（只在手工 check-context 时写，平时恒空/陈旧）→ 结果"显示 44% 但注入恒 full、快满也不缩包"。现在 `read_pressure()` 优先序：**手工新鲜值（check-context 显式 --used，我比你准）> tokenMeter 实时快照 > 陈旧老文件兜底**。下游三处消费者全部受益，不破坏老环境兼容。
+- **水位守则提示 pct 随之变实时**（#56）：minimal 档的"上下文已偏满（X%）"现在取 tokenMeter 值，不再是陈旧老文件。
+- 实测：read_pressure 在 5%/75%/90% → full/lazy/minimal 档（source=token-meter）；高水位注入包确实变短；手工新鲜 60% 优先于 token 5.4%。
+
+验证：`tests/test_water_linkage.py` 2/2；六项检查 + 行为基线 + 全量测试全过。
+
 ## v3.87（2026-11-23）
 
 > 主题：**修 v3.86 上线后暴露的水位百分比显示 bug**——采集器实测 44%，但 startup/status 显示 0%/60%。
