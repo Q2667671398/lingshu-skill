@@ -2875,6 +2875,24 @@ def _is_noise_text(text: str) -> bool:
     return len(rest) < 40
 
 
+# 做梦机械聚合条目：`最近关于「X」的一组事情（N 条）：原文；原文；…`
+# 它不是结论，只是把 N 条原文用「；」连起来——对"以前做过吗"没有增量信息
+# （原文各自还在库里，recall 能单独取到），却会占满注入预算。真库实测占 6%。
+_AGG_RE = re.compile(r"^最近关于「[^」]*」的一组事情（\d+\s*条）[:：]")
+
+
+def _is_dream_aggregate(text: str) -> bool:
+    """是否是做梦机械拼接的聚合条目（低信息量，不该进注入/prior）。"""
+    return bool(_AGG_RE.match(str(text or "").lstrip()))
+
+
+def _agg_like(rec: dict) -> bool:
+    """记录（记忆/知识/笔记）是否本质是做梦聚合条目——标题或正文命中都算。"""
+    if not isinstance(rec, dict):
+        return False
+    return any(_is_dream_aggregate(rec.get(k, "")) for k in ("text", "title", "body"))
+
+
 
 def _split_segments(text: str) -> list:
     """把一段会话原文切成可独立成条的片段：空行 / 分隔线 / 说话人切换。
@@ -3095,6 +3113,8 @@ def prior_work(task: str, k: int = 6) -> dict:
     try:
         import growth as _growth
         for rec, score in _growth.search_knowledge(task, k=k)[:_PRIOR_MAX_ITEMS]:
+            if _agg_like(rec):
+                continue
             out["knowledge"].append({
                 "id": rec.get("id", ""),
                 "title": str(rec.get("title") or "")[:120],
@@ -3104,7 +3124,7 @@ def prior_work(task: str, k: int = 6) -> dict:
             })
         # 1b) 笔记：交接笔记/日记里常有"这轮做了什么、结论是什么"的浓缩
         for rec, score in _growth.search_notes(task, k=k)[:2]:
-            if score <= 0.02:
+            if score <= 0.02 or _agg_like(rec):
                 continue
             out["notes"].append({
                 "id": rec.get("id", ""),
@@ -3117,6 +3137,8 @@ def prior_work(task: str, k: int = 6) -> dict:
     # 2) 教训：踩过的坑（词面命中优先）
     try:
         for les in injectable_lessons(task, k=k)[:_PRIOR_MAX_ITEMS]:
+            if _agg_like(les):
+                continue
             out["lessons"].append({
                 "id": les.get("id", ""),
                 "text": str(les.get("text") or "")[:200],
@@ -3131,6 +3153,9 @@ def prior_work(task: str, k: int = 6) -> dict:
     try:
         for m, score, _parts in recall(task, k=k, strengthen=False, mode="fast")[:_PRIOR_MAX_ITEMS]:
             if score < _PRIOR_MEM_SCORE:
+                continue
+            # 做梦机械聚合条目对"以前做过吗"没有增量信息（原文各自还在库里），跳过
+            if _agg_like(m):
                 continue
             out["memories"].append({
                 "id": m.get("id", ""),
@@ -3170,6 +3195,9 @@ def prior_work(task: str, k: int = 6) -> dict:
         kept = []
         for it in out[key]:
             s = _sig(it)
+            # 内容过短的退化条目（如 body 只有一个 "list"）没有复用价值
+            if len(s) < 10:
+                continue
             if _dup(s, seen):
                 continue
             seen.append(s)
@@ -3901,7 +3929,8 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
     _recent40 = []
     try:
         _recent40 = [m for m in recent(40)
-                     if not m.get("frozen") and _inject_memory_visible(m, cfg)]
+                     if not m.get("frozen") and _inject_memory_visible(m, cfg)
+                     and not _is_dream_aggregate(m.get("text", ""))]
         _mistakes = [m for m in _recent40 if m.get("kind") == "mistake"
                      and m.get("layer") != "dust"][:3]
         _rels = [m for m in _recent40 if m.get("kind") == "relationship"
@@ -4072,7 +4101,8 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
     if query:
         mems = [(m, score, parts)
                 for m, score, parts in recall(query, k=10, strengthen=not READONLY)
-                if _inject_memory_visible(m, cfg)]
+                if _inject_memory_visible(m, cfg)
+                and not _is_dream_aggregate(m.get("text", ""))]
         header = f"\n## 与「{query[:24]}」相关的记忆"
         new_mem: list = []
     else:
