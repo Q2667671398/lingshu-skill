@@ -1744,6 +1744,91 @@ async function runInject(){
   }
 }
 
+// ---------------------------------------------------------------- 设置页
+// 后端只允许改 panel_settings.py 白名单里的键（带类型/范围/枚举校验）；
+// 面板这边只负责渲染 + 保存，不在前端重复一套校验（两边不一致才是灾难）。
+let _settingsLoaded = false;
+
+function _settingRow(it){
+  const id = "cfg-" + String(it.key).replace(/[^\w]/g, "-");
+  const def = (it.default === undefined || it.default === null || it.default === "")
+    ? "" : ` <span class="set-def">默认 ${esc(String(it.default))}</span>`;
+  const badge = it.restart ? '<span class="set-badge">需重启</span>' : "";
+  let ctl;
+  if (it.kind === "bool"){
+    ctl = `<input type="checkbox" id="${id}" data-key="${esc(it.key)}"${it.value ? " checked" : ""}>`;
+  } else if (it.kind === "choice"){
+    const opts = (it.choices || []).map(c =>
+      `<option value="${esc(c)}"${String(it.value) === c ? " selected" : ""}>${esc(c)}</option>`).join("");
+    ctl = `<select id="${id}" data-key="${esc(it.key)}">${opts}</select>`;
+  } else {
+    const step = it.step != null ? it.step : (it.kind === "float" ? 0.05 : 1);
+    const min = it.min != null ? ` min="${it.min}"` : "";
+    const max = it.max != null ? ` max="${it.max}"` : "";
+    ctl = `<input type="number" id="${id}" data-key="${esc(it.key)}" value="${esc(String(it.value))}"`
+      + ` step="${step}"${min}${max}>`;
+  }
+  return `<div class="set-row">
+      <div class="set-main">
+        <div class="set-name">${esc(it.label)}${badge}${def}</div>
+        <div class="set-hint">${esc(it.hint || "")}</div>
+      </div>
+      <label class="set-ctl">${ctl}</label>
+    </div>`;
+}
+
+async function renderSettings(force){
+  const box = $("settings-body");
+  if (!box) return;
+  if (_settingsLoaded && !force) return;
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  let data;
+  try {
+    data = await api("/api/config");
+  } catch (e) {
+    box.innerHTML = `<div class="empty">读取配置失败：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+  const items = (data && data.items) || [];
+  if (!items.length){
+    box.innerHTML = '<div class="empty">没有可调整的配置项。</div>';
+    return;
+  }
+  const order = [], byGroup = new Map();
+  for (const it of items){
+    if (!byGroup.has(it.group)){ byGroup.set(it.group, []); order.push(it.group); }
+    byGroup.get(it.group).push(it);
+  }
+  box.innerHTML = order.map(g => `<div class="card set-group">
+      <h2 style="margin-bottom:2px">${esc(g)}</h2>
+      ${byGroup.get(g).map(_settingRow).join("")}
+    </div>`).join("") + '<div class="sub" style="margin-top:6px">改完即生效；标「需重启」的要重启面板。'
+    + '更细的配置项用 <code>brain.py config show</code> 查看。</div>';
+  box.onchange = async (ev) => {
+    const el = ev.target;
+    const key = el && el.dataset ? el.dataset.key : "";
+    if (!key) return;
+    let value = el.type === "checkbox" ? el.checked : el.value;
+    if (el.type === "number" && el.value === "") return;   // 空输入不提交，等用户填
+    el.disabled = true;
+    try {
+      const r = await api("/api/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({key, value}),
+      });
+      if (r && r.ok) toast(`已保存：${key} = ${JSON.stringify(r.value)}`);
+      else toast("保存失败", true);
+    } catch (e) {
+      toast(e.message || "保存失败", true);
+      _settingsLoaded = false;   // 失败后允许重新拉取，恢复成磁盘上的真实值
+    } finally {
+      el.disabled = false;
+    }
+  };
+  _settingsLoaded = true;
+}
+
 function switchTab(tab){
   S.tab = tab || "overview";
   // 从人格页切走且还有未读高亮 → 看过即已读，下次进来不再闪
@@ -1768,7 +1853,8 @@ function switchTab(tab){
     logs: ["日志", "运行记录：锁冲突 / 内部异常 / 解析报错"],
     diag: ["自诊断", "归因异常：死链 / 冲突未裁决 / 数据膨胀 / 来源归属"],
     store: ["插件商店", "AstrBot / cordis 等宿主适配插件，点安装导出后接入宿主"],
-    ext: ["本地能力", "本地能力一键安装：Ollama 语义召回等"]
+    ext: ["本地能力", "本地能力一键安装：Ollama 语义召回等"],
+    settings: ["设置", "开关与数值：直接写进 config.json，改完即刻生效"]
   };
   const t = titles[tab] || titles.overview;   // 未知 tab（旧缓存/坏链接）兜底，别在标题上抛 TypeError
   $("pageTitle").textContent = t[0];
@@ -1776,6 +1862,7 @@ function switchTab(tab){
   if (tab === "memories") renderMemoryList();
   if (tab === "store") renderStore();
   if (tab === "ext") loadExtensionOllama();
+  if (tab === "settings") renderSettings();
   if (tab === "graph") loadGraph(Number($("graph-limit").value || 300));
   else { stopPhysics(); stopGraphAnim(); }   // 离开联想页即停模拟，不空耗 CPU
   if (tab === "logs") loadLogs();
@@ -1881,6 +1968,7 @@ async function loadExtensionOllama(){
 }
 
 $("btn-ext-refresh").addEventListener("click", loadExtensionOllama);
+$("btn-cfg-reload").addEventListener("click", () => renderSettings(true));
 
 // 告警卡「去处理 →」链接：切到对应页签（事件委托，卡片内容每次重渲染）
 document.addEventListener("click", (e) => {

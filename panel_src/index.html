@@ -15,20 +15,37 @@
     </div>
     <nav>
       <button class="active" data-tab="overview" aria-label="概览"><span class="ic">◉</span><span>概览</span></button>
-      <button data-tab="memories" aria-label="记忆"><span class="ic">◈</span><span>记忆</span></button>
-      <button data-tab="persona" aria-label="人格"><span class="ic">☾</span><span>人格</span></button>
-      <button data-tab="knowledge" aria-label="知识"><span class="ic">▤</span><span>知识</span></button>
-      <button data-tab="notes" aria-label="笔记"><span class="ic">✎</span><span>笔记</span></button>
-      <button data-tab="skills" aria-label="技能"><span class="ic">⚙</span><span>技能</span></button>
-      <button data-tab="emotion" aria-label="心情"><span class="ic">♡</span><span>心情</span></button>
-      <button data-tab="graph" aria-label="联想"><span class="ic">⌬</span><span>联想</span></button>
-      <button data-tab="growth" aria-label="成长"><span class="ic">↗</span><span>成长</span></button>
-      <button data-tab="dream" aria-label="梦"><span class="ic">✦</span><span>梦</span></button>
-      <button data-tab="logs" aria-label="日志"><span class="ic">☰</span><span>日志</span></button>
-      <button data-tab="diag" aria-label="自诊断"><span class="ic">✚</span><span>诊断</span></button>
-      <button data-tab="store" aria-label="插件商店"><span class="ic">⇘</span><span>插件商店</span></button>
-      <button data-tab="ext" aria-label="本地能力"><span class="ic">⬢</span><span>本地能力</span></button>
-      <button id="btn-panels" aria-label="面板管理"><span class="ic">▧</span><span>面板</span></button>
+
+      <div class="nav-group">
+        <div class="nav-label">记忆</div>
+        <button data-tab="memories" aria-label="记忆"><span class="ic">◈</span><span>记忆</span></button>
+        <button data-tab="knowledge" aria-label="知识"><span class="ic">▤</span><span>知识</span></button>
+        <button data-tab="notes" aria-label="笔记"><span class="ic">✎</span><span>笔记</span></button>
+        <button data-tab="graph" aria-label="联想"><span class="ic">⌬</span><span>联想</span></button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">自我</div>
+        <button data-tab="persona" aria-label="人格"><span class="ic">☾</span><span>人格</span></button>
+        <button data-tab="emotion" aria-label="心情"><span class="ic">♡</span><span>心情</span></button>
+        <button data-tab="growth" aria-label="成长"><span class="ic">↗</span><span>成长</span></button>
+        <button data-tab="dream" aria-label="梦"><span class="ic">✦</span><span>梦</span></button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">能力</div>
+        <button data-tab="skills" aria-label="技能"><span class="ic">⚙</span><span>技能</span></button>
+        <button data-tab="store" aria-label="插件商店"><span class="ic">⇘</span><span>插件商店</span></button>
+        <button data-tab="ext" aria-label="本地能力"><span class="ic">⬢</span><span>本地能力</span></button>
+        <button id="btn-panels" aria-label="面板管理"><span class="ic">▧</span><span>面板</span></button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">系统</div>
+        <button data-tab="logs" aria-label="日志"><span class="ic">☰</span><span>日志</span></button>
+        <button data-tab="diag" aria-label="自诊断"><span class="ic">✚</span><span>诊断</span></button>
+        <button data-tab="settings" aria-label="设置"><span class="ic">⚒</span><span>设置</span></button>
+      </div>
     </nav>
     <div class="sidefoot" id="sidefoot"></div>
   </aside>
@@ -690,6 +707,21 @@
         </div>
         <div id="ext-ollama" style="margin-top:12px"><div class="empty">加载中…</div></div>
       </div>
+    </section>
+
+    <section class="view" id="view-settings">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">设置</h2>
+            <div class="sub">开关与数值直接写进 config.json，改完即刻生效（标「需重启」的除外）。只列出可安全调整的项。</div>
+          </div>
+          <div class="row" style="margin-left:auto">
+            <button class="ghost" id="btn-cfg-reload">重新读取</button>
+          </div>
+        </div>
+      </div>
+      <div id="settings-body"><div class="empty">加载中…</div></div>
     </section>
   </main>
 </div>

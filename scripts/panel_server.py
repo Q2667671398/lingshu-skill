@@ -54,6 +54,8 @@ _WRITE_ENDPOINTS = {
     "/api/panels", "/api/panels/scaffold",
     # 拓展商店：导出内置宿主适配插件（写 extensions/installed/）
     "/api/extensions",
+    # 设置页：改 config.json（只允许 panel_settings 白名单里的键）
+    "/api/config",
     # 云端面板市场：发布/下载/配置（token 写 config.json）
     "/api/panels/cloud",
     # Ollama 扩展：下载写 zip / 安装写程序目录与 config.json / setup 一键全流程
@@ -777,6 +779,11 @@ class Handler(BaseHTTPRequestHandler):
             # 拓展商店清单：内置宿主适配插件 + 自定义已装拓展
             self._json(panels.list_extensions())
             return
+        if path == "/api/config":
+            # 设置页清单：白名单键的元数据 + 当前值 + 默认值（不返回任何密钥）
+            import panel_settings
+            self._json({"items": panel_settings.all_items()})
+            return
         if path == "/api/extensions/ollama/status":
             # Ollama 扩展状态：安装/服务/模型/配置 + 下载安装进度（轮询用）
             # 顺带触发一次自动探测接管（后台线程、幂等、失败静默）：
@@ -972,6 +979,25 @@ def _api_persona_update(self, path, data):
     rejected = brain.update_persona(updates, why="面板编辑")
     self._json({"ok": True, "rejected": rejected, "persona": brain.load_persona()})
 
+
+
+def _api_config(self, path, data):
+    """改一项配置：{key, value}。只允许 panel_settings 白名单里的键，
+    并按 schema 校验类型/范围（配错一个键就能让注入崩掉，不能任写）。"""
+    import panel_settings
+    key = str(data.get("key") or "").strip()
+    if not key or "value" not in data:
+        self._json({"error": "需要 key 与 value"}, 400)
+        return
+    try:
+        val = panel_settings.set_value(key, data.get("value"))
+    except KeyError as exc:
+        self._json({"error": str(exc).strip("'\"")}, 400)
+        return
+    except ValueError as exc:
+        self._json({"error": str(exc)}, 400)
+        return
+    self._json({"ok": True, "key": key, "value": val})
 
 
 def _api_persona_changes_viewed(self, path, data):
@@ -2584,6 +2610,8 @@ _POST_ROUTES = {
         # 首页与记忆写入
         "/api/home/migrate": _api_home_migrate,
         "/api/remember": _api_remember,
+        # 设置页
+        "/api/config": _api_config,
         # 人格 / 心智 / 情绪
         "/api/persona": _api_persona_update,
         "/api/persona/changes-viewed": _api_persona_changes_viewed,

@@ -723,6 +723,41 @@ _NUMERIC_CONFIG_KEYS = {"budget_tokens", "review_threshold", "dream_threshold",
 _BOOLEAN_CONFIG_KEYS = {"extensions_enabled"}   # 布尔开关：值能当 JSON 布尔解析，或 true/false/1/0 文本
 
 
+def _set_cfg_path(cfg: dict, key: str, val) -> None:
+    """按点号路径写配置：`embed.timeout_sec` 会写进 cfg["embed"]["timeout_sec"]。
+
+    原来只做 `cfg[key] = val`，于是 `config set embed.timeout_sec 30` 会写成一个
+    字面键 "embed.timeout_sec"，而读取方（`_embed_cfg()` 读 cfg.get("embed")）
+    永远看不到——配了等于没配。中间层不是 dict 时重建（宁可覆盖坏值，也别静默丢配置）。
+    """
+    parts = [x for x in str(key).split(".") if x]
+    if len(parts) <= 1:
+        cfg[str(key)] = val
+        return
+    node = cfg
+    for seg in parts[:-1]:
+        nxt = node.get(seg)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            node[seg] = nxt
+        node = nxt
+    node[parts[-1]] = val
+
+
+def _unset_cfg_path(cfg: dict, key: str) -> None:
+    parts = [x for x in str(key).split(".") if x]
+    if len(parts) <= 1:
+        cfg.pop(str(key), None)
+        return
+    node = cfg
+    for seg in parts[:-1]:
+        nxt = node.get(seg)
+        if not isinstance(nxt, dict):
+            return
+        node = nxt
+    node.pop(parts[-1], None)
+
+
 def config_set(key: str, value: str) -> dict:
     """改一项配置（值能当 JSON 解析就当 JSON，否则按字符串存）。"""
     try:
@@ -762,7 +797,7 @@ def config_set(key: str, value: str) -> dict:
     ensure_home()
     with _locked(HOME / "config.json"):
         cfg = load_config()
-        cfg[key] = val
+        _set_cfg_path(cfg, key, val)
         atomic_json(HOME / "config.json", cfg)
     return cfg
 
@@ -771,7 +806,7 @@ def config_unset(key: str) -> dict:
     ensure_home()
     with _locked(HOME / "config.json"):
         cfg = load_config()
-        cfg.pop(key, None)
+        _unset_cfg_path(cfg, key)
         atomic_json(HOME / "config.json", cfg)
     return cfg
 
