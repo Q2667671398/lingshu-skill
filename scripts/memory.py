@@ -624,26 +624,38 @@ def _seal_chain(records: list) -> None:
 
 
 def verify_integrity() -> dict:
-    """v3.02 #25：校验记忆哈希链完整性（热层 + 归档层）。
+    """v3.02 #25：校验记忆哈希链完整性。
 
-    返回 {"ok": bool, "broken_at": id 或 None, "count": n}。无 h 的条目
-    （历史存量）跳过不计为断裂；坏链只报告不修复。注意本函数只读不写。
+    v3.90（P9 #59 / P6 #24）：**按文件粒度校验**——`write_jsonl` 是每个记忆层
+    文件各自封链（每条文件 prev 从空开始），原来这里把 hippocampus+cortex+dust+
+    archive 当一条连续链校验，必然误报断裂（真库实测清理前就 ok=false）。
+    现在与封链粒度对齐：每个文件独立校验，返回是哪个文件、第几条断。
+
+    返回 {"ok", "broken_at", "count", "broken_pos", "broken_file"}。
+    无 h 的条目（历史存量）跳过不计为断裂；坏链只报告不修复。本函数只读不写。
     """
-    rows = load_all() + load_archive()
-    prev = ""
-    broken_at, broken_id = -1, None
-    for i, m in enumerate(rows):
-        if not isinstance(m, dict) or not m.get("h"):
-            continue  # 存量无哈希：跳过，不计断裂
-        if broken_at < 0:
-            # 链断判定：自身哈希对不上（内容被改），或 p_h 与前一条带哈希的 h 对不上（条目被插/删）
-            if _mem_hash(m) != m["h"]:
-                broken_at, broken_id = i, m["id"]
-            elif prev and m.get("p_h") != prev:
-                broken_at, broken_id = i, m["id"]
-        prev = m["h"]
-    return {"ok": broken_at < 0, "broken_at": broken_id, "count": len(rows),
-            "broken_pos": broken_at if broken_at >= 0 else None}
+    total = 0
+    broken_at, broken_id, broken_file = -1, None, None
+    for name in ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl", "archive.jsonl"):
+        p = HOME / name
+        if not p.is_file():
+            continue
+        rows = read_jsonl(p)
+        total += len(rows)
+        prev = ""
+        for i, m in enumerate(rows):
+            if not isinstance(m, dict) or not m.get("h"):
+                continue  # 存量无哈希：跳过，不计断裂
+            if broken_at < 0:
+                # 链断判定：自身哈希对不上（内容被改），或 p_h 与前一条带哈希的 h 对不上
+                if _mem_hash(m) != m["h"]:
+                    broken_at, broken_id, broken_file = i, m.get("id"), name
+                elif prev and m.get("p_h") != prev:
+                    broken_at, broken_id, broken_file = i, m.get("id"), name
+            prev = m["h"]
+    return {"ok": broken_at < 0, "broken_at": broken_id, "count": total,
+            "broken_pos": broken_at if broken_at >= 0 else None,
+            "broken_file": broken_file}
 
 
 def load_all() -> list:
@@ -851,8 +863,6 @@ def archive_run(dry_run: bool = False) -> dict:
 
 
 def save_all(records: list) -> None:
-    if not READONLY:
-        _seal_chain(records)  # v3.02 #25：写盘前封哈希链（只读降级不写任何字段）
     groups = {"hippo": [], "cortex": [], "dust": []}
     for r in records:
         layer = r.get("layer", "hippo")
@@ -860,6 +870,14 @@ def save_all(records: list) -> None:
         # archive 记录走专用通道（load_archive 维护），不带进整库覆写，避免把归档文件清空
         if layer != ARCHIVE_LAYER:
             groups[layer if layer in groups else "hippo"].append(r)
+    # v3.90（P9 #59）：**按文件各自封链**，与 core.write_jsonl 的粒度一致。
+    # 原来在整库合并列表上封一条链（dust 首条的 p_h 指向 hippocampus 末条），
+    # 而 write_jsonl 是每文件 prev 从空开始——两条写路径语义不同，verify 必然
+    # 误报断裂。统一成"每文件一条链"后，校验与封链对齐，且跨层移动（forget）
+    # 不会再把链弄断。
+    if not READONLY:
+        for rows in groups.values():
+            _seal_chain(rows)  # v3.02 #25：写盘前封哈希链（只读降级不写任何字段）
     # 三文件尽量同步落盘：先把三个临时文件都写好，再依次 replace。
     # 把"存了一半"的窗口压到最小——只有进程恰好在两次 replace 之间挂掉才可能不一致，
     # 而不是像原来那样每写一个文件就有一个完整窗口。
