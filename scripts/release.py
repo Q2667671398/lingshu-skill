@@ -137,20 +137,28 @@ def do_bump(new_ver: str, title: str) -> int:
 def do_verify() -> int:
     bad = []
     for name, args in CHECKS:
-        code, _ = _run(args)
+        code, out = _run(args, capture=True)
         print(f"  {name}: {'OK' if code == 0 else 'FAIL'}")
         if code != 0:
             bad.append(name)
+            tail = (out or "").strip().splitlines()[-3:]
+            for ln in tail:
+                print(f"     {ln}", file=sys.stderr)
     print("[release] 行为基线...")
     code, _ = _run(["scripts/behavior_baseline.py", "check"])
     print(f"  baseline: {'OK' if code == 0 else 'FAIL'}")
     if code != 0:
         bad.append("baseline")
     print("[release] 全量测试...")
-    code, _ = _run(["scripts/run_tests.py"])
+    code, out = _run(["scripts/run_tests.py"], capture=True)
+    print(out.rstrip()[-400:] if out else "")   # 透出末尾统计行
     print(f"  tests: {'OK' if code == 0 else 'FAIL'}")
     if code != 0:
         bad.append("tests")
+        # 失败时必须点名：否则发版日志只说"tests: FAIL"，事后无法定位
+        fails = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("FAIL ")]
+        for ln in fails[:10]:
+            print(f"     {ln}", file=sys.stderr)
     if bad:
         print(f"[release] 验证失败：{', '.join(bad)}", file=sys.stderr)
         return 1
