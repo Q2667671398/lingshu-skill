@@ -1744,6 +1744,83 @@ async function runInject(){
   }
 }
 
+// ---------------------------------------------------------------- 数据页（备份/恢复）
+// 恢复是不可逆操作：二次确认 + 明确提示"会先自动备份现状"。
+// 备份默认**不修剪**历史（keep=0），手动点一下不该静默删旧备份。
+let _dataLoaded = false;
+
+function _fmtSize(n){
+  const v = Number(n) || 0;
+  if (v >= 1048576) return (v / 1048576).toFixed(1) + " MB";
+  if (v >= 1024) return (v / 1024).toFixed(0) + " KB";
+  return v + " B";
+}
+
+async function renderData(force){
+  const statsBox = $("data-stats"), listBox = $("data-backups"), dirBox = $("data-dir");
+  if (!statsBox || !listBox) return;
+  if (_dataLoaded && !force) return;
+  listBox.innerHTML = '<div class="empty">加载中…</div>';
+  let d;
+  try {
+    d = await api("/api/data");
+  } catch (e) {
+    listBox.innerHTML = `<div class="empty">读取失败：${esc(e.message || String(e))}</div>`;
+    return;
+  }
+  const st = (d && d.stats) || {};
+  const layers = st.layers || {};
+  const rows = Object.entries(layers).filter(([, v]) => v && (v.count || v.bytes));
+  statsBox.innerHTML = rows.length
+    ? `<div class="metrics">${rows.map(([k, v]) =>
+        `<div class="metric"><div class="k">${esc(k)}</div><div class="v">${v.count}</div>`
+        + `<div class="sub">${_fmtSize(v.bytes)}</div></div>`).join("")}`
+      + `<div class="metric"><div class="k">合计</div><div class="v">${_fmtSize(st.total_bytes)}</div></div></div>`
+    : '<div class="empty">记忆库还是空的。</div>';
+
+  const b = (d && d.backups) || {};
+  if (dirBox) dirBox.textContent = b.dir ? `目录：${b.dir}` : "";
+  const items = b.items || [];
+  if (!items.length){
+    listBox.innerHTML = '<div class="empty">还没有备份。点右上「立即备份」生成第一份。</div>';
+    _dataLoaded = true;
+    return;
+  }
+  listBox.innerHTML = `<div class="list">${items.map((it, i) => `
+      <div class="row" style="align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px">${esc(it.name)}
+            ${it.suspicious ? '<span class="set-badge">疑似空壳</span>' : ""}
+            ${it.has_sha ? "" : '<span class="set-badge">无校验</span>'}
+          </div>
+          <div class="sub">${esc(it.mtime_text)} · ${_fmtSize(it.size)}</div>
+        </div>
+        <button class="ghost" data-restore="${esc(it.name)}" ${it.suspicious ? "disabled" : ""}>恢复</button>
+      </div>`).join("")}</div>`;
+  listBox.onclick = async (ev) => {
+    const btn = ev.target.closest("[data-restore]");
+    if (!btn) return;
+    const name = btn.dataset.restore;
+    if (!confirm(`从「${name}」恢复记忆库？\n\n恢复前会自动把当前状态再备份一份。\n恢复后建议重启面板与新会话。`)) return;
+    btn.disabled = true;
+    try {
+      const r = await api("/api/data/restore", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name}),
+      });
+      if (r && r.ok) toast(`已从 ${name} 恢复`);
+      else toast("恢复失败", true);
+    } catch (e) {
+      toast(e.message || "恢复失败", true);
+    } finally {
+      btn.disabled = false;
+      renderData(true);
+    }
+  };
+  _dataLoaded = true;
+}
+
 // ---------------------------------------------------------------- 设置页
 // 后端只允许改 panel_settings.py 白名单里的键（带类型/范围/枚举校验）；
 // 面板这边只负责渲染 + 保存，不在前端重复一套校验（两边不一致才是灾难）。
@@ -1854,6 +1931,7 @@ function switchTab(tab){
     diag: ["自诊断", "归因异常：死链 / 冲突未裁决 / 数据膨胀 / 来源归属"],
     store: ["插件商店", "AstrBot / cordis 等宿主适配插件，点安装导出后接入宿主"],
     ext: ["本地能力", "本地能力一键安装：Ollama 语义召回等"],
+    data: ["数据", "备份与恢复：整个记忆库打包成 zip，恢复前自动备份现状"],
     settings: ["设置", "开关与数值：直接写进 config.json，改完即刻生效"]
   };
   const t = titles[tab] || titles.overview;   // 未知 tab（旧缓存/坏链接）兜底，别在标题上抛 TypeError
@@ -1863,6 +1941,7 @@ function switchTab(tab){
   if (tab === "store") renderStore();
   if (tab === "ext") loadExtensionOllama();
   if (tab === "settings") renderSettings();
+  if (tab === "data") renderData();
   if (tab === "graph") loadGraph(Number($("graph-limit").value || 300));
   else { stopPhysics(); stopGraphAnim(); }   // 离开联想页即停模拟，不空耗 CPU
   if (tab === "logs") loadLogs();
@@ -1969,6 +2048,27 @@ async function loadExtensionOllama(){
 
 $("btn-ext-refresh").addEventListener("click", loadExtensionOllama);
 $("btn-cfg-reload").addEventListener("click", () => renderSettings(true));
+$("btn-data-refresh").addEventListener("click", () => renderData(true));
+$("btn-data-backup").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/data/backup", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({}),
+    });
+    if (r && r.ok) {
+      const n = (r.created && r.created.name) || "新备份";
+      toast(`已备份：${n}`);
+    } else toast("备份失败", true);
+  } catch (e) {
+    toast(e.message || "备份失败", true);
+  } finally {
+    btn.disabled = false;
+    renderData(true);
+  }
+});
 
 // 告警卡「去处理 →」链接：切到对应页签（事件委托，卡片内容每次重渲染）
 document.addEventListener("click", (e) => {

@@ -56,6 +56,8 @@ _WRITE_ENDPOINTS = {
     "/api/extensions",
     # 设置页：改 config.json（只允许 panel_settings 白名单里的键）
     "/api/config",
+    # 数据页：备份 / 恢复（都写盘；恢复前 cmd_restore 会先自动备份现状）
+    "/api/data/backup", "/api/data/restore",
     # 云端面板市场：发布/下载/配置（token 写 config.json）
     "/api/panels/cloud",
     # Ollama 扩展：下载写 zip / 安装写程序目录与 config.json / setup 一键全流程
@@ -779,6 +781,12 @@ class Handler(BaseHTTPRequestHandler):
             # 拓展商店清单：内置宿主适配插件 + 自定义已装拓展
             self._json(panels.list_extensions())
             return
+        if path == "/api/data":
+            # 数据页：规模概览 + 备份列表（只读）
+            import panel_data
+            self._json({"stats": panel_data.data_stats(),
+                        "backups": panel_data.list_backups()})
+            return
         if path == "/api/config":
             # 设置页清单：白名单键的元数据 + 当前值 + 默认值（不返回任何密钥）
             import panel_settings
@@ -979,6 +987,32 @@ def _api_persona_update(self, path, data):
     rejected = brain.update_persona(updates, why="面板编辑")
     self._json({"ok": True, "rejected": rejected, "persona": brain.load_persona()})
 
+
+
+def _api_data_backup(self, path, data):
+    """立即备份。keep 可调（默认 20，与 CLI 一致）。"""
+    import panel_data
+    try:
+        r = panel_data.make_backup(keep=_to_int(data.get("keep"), 20) or 20)
+    except PermissionError as exc:
+        self._json({"error": str(exc)}, 403)
+        return
+    self._json(r)
+
+
+def _api_data_restore(self, path, data):
+    """从备份恢复。name 只取文件名（防穿越）；cmd_restore 会先自动备份现状。"""
+    import panel_data
+    name = str(data.get("name") or "").strip()
+    try:
+        r = panel_data.restore_backup(name, exact=bool(data.get("exact")))
+    except PermissionError as exc:
+        self._json({"error": str(exc)}, 403)
+        return
+    except (FileNotFoundError, ValueError) as exc:
+        self._json({"error": str(exc)}, 400)
+        return
+    self._json(r)
 
 
 def _api_config(self, path, data):
@@ -2610,6 +2644,9 @@ _POST_ROUTES = {
         # 首页与记忆写入
         "/api/home/migrate": _api_home_migrate,
         "/api/remember": _api_remember,
+        # 数据页
+        "/api/data/backup": _api_data_backup,
+        "/api/data/restore": _api_data_restore,
         # 设置页
         "/api/config": _api_config,
         # 人格 / 心智 / 情绪

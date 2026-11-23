@@ -44,6 +44,7 @@
         <div class="nav-label">系统</div>
         <button data-tab="logs" aria-label="日志"><span class="ic">☰</span><span>日志</span></button>
         <button data-tab="diag" aria-label="自诊断"><span class="ic">✚</span><span>诊断</span></button>
+        <button data-tab="data" aria-label="数据"><span class="ic">⛁</span><span>数据</span></button>
         <button data-tab="settings" aria-label="设置"><span class="ic">⚒</span><span>设置</span></button>
       </div>
     </nav>
@@ -706,6 +707,27 @@
           </div>
         </div>
         <div id="ext-ollama" style="margin-top:12px"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-data">
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">数据</h2>
+            <div class="sub">备份与恢复。备份是整个记忆库的 zip，恢复前会自动把现状再备份一份。</div>
+          </div>
+          <div class="row" style="margin-left:auto">
+            <button class="ghost" id="btn-data-refresh">刷新</button>
+            <button id="btn-data-backup">立即备份</button>
+          </div>
+        </div>
+        <div id="data-stats" style="margin-top:12px"><div class="empty">加载中…</div></div>
+      </div>
+      <div class="card">
+        <h2 style="margin-bottom:2px">备份历史</h2>
+        <div class="sub" id="data-dir" style="margin-bottom:10px"></div>
+        <div id="data-backups"><div class="empty">加载中…</div></div>
       </div>
     </section>
 

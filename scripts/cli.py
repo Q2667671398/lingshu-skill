@@ -300,11 +300,20 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
     removed = 0
     if keep and keep > 0:
         # 按修改时间排序而不是文件名：跨日期时文件名字典序可能乱掉新旧关系
-        existing = sorted(out_dir.glob("brain-memory_*.zip*"),
-                          key=lambda p: p.stat().st_mtime, reverse=True)
+        # 只按**真备份文件**计数：原来 glob 是 brain-memory_*.zip* ，把同名
+        # .zip.sha256 校验文件也算进去，于是 keep=5 实际只留 2~3 份备份，
+        # 还会留下没有 zip 的孤儿 sha256（P10 #69）。
+        existing = sorted(
+            [p for p in out_dir.glob("brain-memory_*.zip*")
+             if p.name.endswith(".zip") or p.name.endswith(".zip.enc")],
+            key=lambda p: p.stat().st_mtime, reverse=True)
         for p in existing[keep:]:
             try:
                 p.unlink()
+                # 连带清掉它的 sha256 边车，别留孤儿
+                side = p.with_name(p.name + ".sha256")
+                if side.is_file():
+                    side.unlink()
                 removed += 1
             except Exception:
                 pass
