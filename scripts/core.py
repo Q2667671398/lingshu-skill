@@ -312,6 +312,10 @@ DEFAULT_CONFIG = {
     # 开启后，库文件 mtime 未变 + TTL 内的重复 startup 直接复用上次注入文本，
     # 跳过整库遍历与 recall 重算（跨天恢复首轮明显更快）。
     # 记忆/人格文件与非易失配置哈希都会入缓存键；TTL 只作最后兜底。
+    # 扩展模块默认关（扩展是任意本地代码，等于完全信任本机）。
+    # 补进 DEFAULT_CONFIG：原来只有读取方 .get(key, False) 兜底，config 里没有这个键，
+    # 面板设置页会显示成"未设置"、默认值也拿不到（P10 #68）。
+    "extensions_enabled": False,
     "session_state_cache": False,
     "session_state_ttl": 300,
     # 候选7 跨对话上下文摄取：把别的会话/宿主导出的对话（.jsonl/.md/.txt）
@@ -795,6 +799,10 @@ def config_set(key: str, value: str) -> dict:
                 raise ValueError(f"panel_port 需要在 1~65535 之间，收到：{value!r}")
             val = num
     ensure_home()
+    # 只读降级（含用户显式 --ro）下不允许改配置：面板设置页 / CLI config set
+    # 都走这里，函数层必须自己守一道（HTTP 层有门控，但 CLI 与脚本没有）。
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法修改配置。用 --home 指向可写目录。")
     with _locked(HOME / "config.json"):
         cfg = load_config()
         _set_cfg_path(cfg, key, val)
@@ -804,6 +812,8 @@ def config_set(key: str, value: str) -> dict:
 
 def config_unset(key: str) -> dict:
     ensure_home()
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法修改配置。用 --home 指向可写目录。")
     with _locked(HOME / "config.json"):
         cfg = load_config()
         _unset_cfg_path(cfg, key)

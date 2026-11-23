@@ -2722,10 +2722,21 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8765)
+    # 端口优先取 config.json 的 panel_port（设置页可改），再退回 8765。
+    # 原来 default 硬编码 8765，设置页改 panel_port 完全无效——是个假开关。
+    ap.add_argument("--port", type=int, default=None,
+                    help="监听端口；缺省读 config.json 的 panel_port，再退回 8765")
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--home", help="测试用：指定数据目录（透传给 brain，不影响正式数据）")
     a = ap.parse_args()
     if a.home:
         brain._override_home(["--home", a.home])
-    serve(a.port, not a.no_browser)
+    port = a.port
+    if port is None:
+        try:
+            port = int(brain.load_config().get("panel_port") or 8765)
+        except Exception:
+            port = 8765
+        if not (1 <= port <= 65535):
+            port = 8765
+    serve(port, not a.no_browser)

@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.98（2026-11-23）
+
+> 主题：**设置页上线后的自审修复**——三处真缺陷，其中一处是安全问题。
+
+- **① 只读模式仍能改配置（安全）**：`config_set` / `config_unset` 没有 `READONLY` 检查。面板 HTTP 层虽有只读门控，但函数层没守——CLI `config set`、脚本、设置页三条路径都能绕过；实测 `READONLY=True` 下写盘成功。
+  - 修：两个函数各加 `if READONLY: raise PermissionError(...)`。
+- **② `panel_port` 是假开关**：`panel_server.py --port` 的 default 硬编码 `8765`，从不读 config——设置页改端口完全无效。
+  - 修：`--port` 缺省时读 `config.json` 的 `panel_port`（带 1~65535 校验，坏值退回 8765）。实测设 18799 后服务确实监听 18799。
+- **③ `extensions_enabled` 不在 `DEFAULT_CONFIG`**：只有读取方 `.get(key, False)` 兜底，设置页拿不到默认值。
+  - 修：补进 `DEFAULT_CONFIG`（默认 False）。
+
+验证：设置页边界审计 6 项全过（布尔 8 种写法 / 浮点边界 / 整型拒小数 / 枚举大小写 / 父段缺失时建嵌套 / unset 不误删同级键）；只读拦截三函数实测；端口跟随 config 实测；全量测试 63/63。
+
 ## v3.97（2026-11-23）
 
 > 主题：**面板可用性**——把开关和数值搬到面板上，左侧栏按用途分组。
