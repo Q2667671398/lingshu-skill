@@ -1,12 +1,12 @@
 {
-  "version": "3.94",
+  "version": "3.95",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "b87d2a60b60eac739b4aaba696cf13bc8e44cbc3929140a34662e726e024f32b",
-      "size": 284408
+      "sha256": "77937e0e26b334e60ea9d4609b67e6f5cbc4709a7fbdf72d81905dda48432053",
+      "size": 285911
     },
     "README.md": {
-      "sha256": "e6f847bc8e8f021635a3796742884557c2471b89a899dbe40f1a138b1b8e0e56",
+      "sha256": "4bb385a27cf4b26b443e33c66fd64b18bf34d5503d30ca6d6ca41f5a48e1a412",
       "size": 64472
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "97d14585e55f3f5538109c86dbad22d42469d06aa00012d29f9e6de1064ce2c7",
+      "sha256": "8aedf3c5c720e6b4bb4371ad3865b3c69e33ecefcf03fddc5f7c46a228a52ba1",
       "size": 35777
     },
     "assets/panel.html": {
@@ -110,15 +110,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "665d8efed15e1ab77c27aeda06139b86ae74e337e9795667f48b49186da0cc6e",
-      "size": 108101
+      "sha256": "9cf29b093b39dfa5c7a929691e5a233ab5ef28566bb06a1d793835d3245aa49b",
+      "size": 109626
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "b00bca5e5efc4f1c73efaa4618739b0b31e7a6afb6e7623a1752ccbfba3d59ef",
+      "sha256": "8e7fcd3c77c9a9835f8cf9a8b60db8553b5d8019eb0253f2313d2e5cf1e9bc0e",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -154,8 +154,8 @@
       "size": 6681
     },
     "scripts/cli.py": {
-      "sha256": "8c2360874f633d9951aa9f19f1327278871a8d7011109c381c4c875c7a4c3adf",
-      "size": 278098
+      "sha256": "ff8f8ae6a2b36cb0134d16f8c4565d00b2b8826b481a06d76f8537f6ef3140c1",
+      "size": 278176
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
@@ -166,8 +166,8 @@
       "size": 95969
     },
     "scripts/dream.py": {
-      "sha256": "e25749c32fe6cb3b3845c9541ef663dffe8efaa0d9bd251f611e1359208800b9",
-      "size": 54968
+      "sha256": "c1ba3de2958fb045db7b6962a6dd0fcf70f225bfb4d372dd9c3e8584e4f759ce",
+      "size": 55675
     },
     "scripts/emotion.py": {
       "sha256": "c2928217a856c9201291ebd63dee33a4a641ff30dcd79964738c24e7a9d94672",
@@ -218,12 +218,12 @@
       "size": 10236
     },
     "scripts/mem_embed.py": {
-      "sha256": "9ac5caa55e7ce26fa1d572c35b55f8e13e921a56165218ce354cb4a9b745f81d",
-      "size": 6355
+      "sha256": "b98478243237221a5bce491a5cbf4ca2753de29285086abfb0a855e3473c27a8",
+      "size": 8388
     },
     "scripts/mem_lesson.py": {
-      "sha256": "6d9c26d4307dccb80f01d406e5253fe26f3540e0774b212f5fbd939d2ac442f0",
-      "size": 6986
+      "sha256": "e1520786315f3e41c829909c739e5af3eee89397da7db5026d106710b2b3c118",
+      "size": 7454
     },
     "scripts/mem_score.py": {
       "sha256": "95dcecba5f4db7c0c16ebc415434e1cb58cc7dd8b8213360b4df36e2a90faf6e",
@@ -234,8 +234,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "25643f70574d05e3756207afe657d52e753783f2c2bbf2601d8167f944520b76",
-      "size": 237877
+      "sha256": "00b8e567ef0296b8f1b8ad426aece2a41f582c0846f95234acc77cbfddbeb1c4",
+      "size": 238300
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",

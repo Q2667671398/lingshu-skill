@@ -94,8 +94,12 @@ def pending_memory_reviews(brief: bool = False) -> list:
     注入层用它省 token（10 条全文≈+750 token，40 字摘要≈+200 token）；
     review / audit 等给人看的路径保持默认全文。
     """
+    # 做梦机械聚合摘要（aggregate / 文本形态）是派生视图，不是需要人审的"新事实"，
+    # 不进审核队列——否则每天开局都挂着"待审核1条"却是垃圾（P9 #64）
     out = [m for m in load_all()
-           if m.get("review") == "pending" and m.get("layer") != "dust"]
+           if m.get("review") == "pending" and m.get("layer") != "dust"
+           and not m.get("aggregate")
+           and not _is_dream_aggregate(m.get("text", ""))]
     if not brief:
         return out
     res = []
@@ -126,7 +130,9 @@ def mark_auto_review_pending(mem_ids, review_source: str = "auto") -> int:
     with _locked(HOME / "hippocampus.jsonl"):
         records = load_all()
         for m in records:
-            if m.get("id") in want and not m.get("review"):
+            if (m.get("id") in want and not m.get("review")
+                    and not m.get("aggregate")
+                    and not _is_dream_aggregate(m.get("text", ""))):
                 m["review"] = "pending"
                 if not m.get("review_source"):
                     m["review_source"] = review_source

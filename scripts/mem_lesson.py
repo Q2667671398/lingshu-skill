@@ -157,4 +157,13 @@ def set_lesson_status(lesson_id: str, status: str) -> dict:
 
 
 def lessons_for_review() -> list:
-    return [l for l in load_lessons() if l.get("status") == "pending"]
+    """待审教训。过滤掉从做梦聚合摘要里机械挖出来的垃圾（P9 #64）——
+
+    这类条目正文以「最近关于「X」的一组事情（N 条）：…」开头，不是可执行教训，
+    挂着只会每天占「待审核 N 条」。
+    """
+    import re as _re
+    agg = _re.compile(r"^[「\s]*最近关于「[^」]*」的一组事情（\d+\s*条）[:：]")
+    return [l for l in load_lessons()
+            if l.get("status") == "pending"
+            and not agg.match(str(l.get("text") or "").lstrip())]

@@ -958,6 +958,7 @@ def auto_dream(trigger: str = "auto", dry_run: bool = False) -> dict:
             "tags": c["tags"],
             "entities": c["entities"],
             "source_ids": c["ids"],
+            "aggregate": True,   # P9 #64：派生摘要，不进审核队列
         })
     apply_doc["memories"] = memories
     if dry_run:

@@ -345,9 +345,15 @@ def _mine_lessons(records: list, max_lessons: int = 3) -> list:
                 return True
         return False
 
+    def _agg(m: dict) -> bool:
+        """聚合摘要（aggregate 标记或「最近关于X的一组事情」形态）不当教训素材——
+        正文是 N 条原文的拼接，抽不出可执行教训（P9 #64）。"""
+        return bool(m.get("aggregate")) or mem_mod._is_dream_aggregate(m.get("text", ""))
+
     # 1) correction 改口记录：从改口原文里抽可执行的一句
     corrections = [m for m in records
-                   if m.get("correction") and m.get("id") and m.get("text", "").strip()]
+                   if m.get("correction") and m.get("id") and m.get("text", "").strip()
+                   and not _agg(m)]
     for m in corrections[:max_lessons]:
         text = _lesson_sentence(str(m.get("text", "")))
         if not text or _dup(text):
@@ -364,10 +370,10 @@ def _mine_lessons(records: list, max_lessons: int = 3) -> list:
         if len(created) >= max_lessons:
             break
         new_id = m.get("superseded_by")
-        if not new_id or m.get("layer") == "dust":
+        if not new_id or m.get("layer") == "dust" or _agg(m):
             continue
         newer = by_id.get(new_id)
-        if not newer or not str(newer.get("text", "")).strip():
+        if not newer or not str(newer.get("text", "")).strip() or _agg(newer):
             continue
         core = str(newer.get("text", "")).strip()
         text = f"「{core[:120]}」已取代旧结论——别再按旧的说。"
@@ -952,8 +958,13 @@ def apply_dream(result: dict) -> dict:
             rec["consolidated"] = True
             rec["detail"] = 1.0
             # AI 整理出来的记忆先标"待审核"：防止做梦合并/编造的内容直接当事实沉淀。
-            rec["review"] = "pending"
-            rec["review_source"] = "dream"
+            # 例外：机械聚合摘要（aggregate=True）只是把 N 条原文用「；」连起来的派生视图，
+            # 没有可审的"新事实"，进待审只会每天占住"待审核1条"（P9 #64）。
+            if item.get("aggregate"):
+                rec["aggregate"] = True
+            else:
+                rec["review"] = "pending"
+                rec["review_source"] = "dream"
             # #46 Memex 索引解引用：合并/蒸馏产物带 evidence_ids 指针（指向原始证据记忆），
             # 召回命中摘要时按需解引用取原文，"概括"与"细节"两级可导航。
             # 证据 = AI 声明的 source_ids + 确实被本条取代的旧记忆，宁可多指针不丢证据。

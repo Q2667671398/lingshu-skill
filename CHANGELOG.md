@@ -1,5 +1,19 @@
 # 更新日志
 
+## v3.95（2026-11-23）
+
+> 主题：**两处"每天白耗"的隐性浪费**——审核队列里的派生垃圾、以及 Ollama 不可用时的超时白等。
+
+- **做梦聚合摘要混进审核队列（#64）**：`apply_dream` 把做梦产物一律标 `review=pending`，包含机械拼接的 `最近关于「X」的一组事情（N 条）`——派生视图没有可审的"新事实"，却让每次开局都挂"待审核 1 条"；`_mine_lessons` 还把聚合正文当证据挖成"教训"。
+  - 修：`auto_dream` 给聚合条目打 `aggregate=True`；`apply_dream` 对聚合条目不标 pending；`pending_memory_reviews` / `mark_auto_review_pending` / `lessons_for_review` / `_mine_lessons` 全部排除聚合。
+  - 实测：真库审核队列 1 条 → **0 条**，doctor 的 `audit` 由 WARN 转 **PASS**。
+- **embedding 冷却不跨进程（#65）**：`core._EMBED_DOWN_UNTIL` 只是模块全局，而 `brain.py` 每次调用都是新进程 → "失败后 300 秒不再重试"只在本次进程有效；Ollama 没开时每次 `recall` 都要白等满 `embed.timeout_sec`（默认 30s）才降级。
+  - 修：冷却状态持久化到 `HOME/_embed_state.json`（失败写、成功清），新进程先读盘判定。
+  - 实测：第 1 次失败写冷却 → 第 2 个新进程 245ms 直接降级。
+  - 注：`prior` 已固定 `mode="fast"` 不走嵌入；本修复救的是普通 `recall`。
+
+验证：`tests/test_embed_cooldown.py` 3/3；六项检查 + 行为基线 + 全量测试全过。
+
 ## v3.94（2026-11-23）
 
 > 主题：**发布门禁的可诊断性**——失败要能点名，别再让人白排查。

@@ -83,6 +83,44 @@ def fallback_encode_cached(text: str, dims: int) -> list | None:
         return None
 
 
+# v3.95（P9 #65）：冷却状态**持久化到磁盘**。原来 core._EMBED_DOWN_UNTIL 只是
+# 模块全局，而 brain.py 每次调用都是新进程 → 抑制永远只在本次进程内生效。
+# 后果：Ollama 没开/挂了时，每一次 recall/prior 都要白等满 embed.timeout_sec
+# （默认 30s）才降级。写盘后新进程也能直接走降级向量。
+_EMBED_STATE_FILE = "_embed_state.json"
+
+
+def _down_until_path():
+    try:
+        return _core().HOME / _EMBED_STATE_FILE   # core 是惰性获取的模块，不能直接引用
+    except Exception:
+        return None
+
+
+def _load_down_until() -> float:
+    try:
+        p = _down_until_path()
+        if p is None or not p.is_file():
+            return 0.0
+        return float((json.loads(p.read_text(encoding="utf-8")) or {}).get("down_until") or 0)
+    except Exception:
+        return 0.0
+
+
+def _save_down_until(ts: float) -> None:
+    try:
+        p = _down_until_path()
+        if p is None:
+            return
+        if ts <= 0:
+            p.unlink(missing_ok=True)          # 恢复成功：清掉冷却标记
+        else:
+            from core import atomic_json
+            atomic_json(p, {"down_until": float(ts)})
+    except Exception:
+        pass                                    # 状态落盘失败不能影响嵌入主链路
+
+
 def embed_texts(texts: list) -> list | None:
     """批量生成 embedding（Ollama /api/embeddings）。
 
@@ -94,7 +132,17 @@ def embed_texts(texts: list) -> list | None:
     if not texts:
         return None
     # 冷却期：上次连不上远端，这次直接走兜底，不再等满 timeout 也不重复告警
-    if cfg and time.time() < core._EMBED_DOWN_UNTIL:
+    # 冷却判定：**每个进程只在首次判断时读一次磁盘**，之后以内存为准。
+    # 这样既能跨进程继承冷却（新进程读到磁盘上的未来时间），又允许"把内存置 0
+    # 当作已过期"的显式重置生效（测试/排障会这么做）。
+    if not getattr(core, "_EMBED_STATE_LOADED", False):
+        try:
+            core._EMBED_DOWN_UNTIL = max(float(getattr(core, "_EMBED_DOWN_UNTIL", 0.0) or 0.0),
+                                         _load_down_until())
+        except Exception:
+            pass
+        core._EMBED_STATE_LOADED = True
+    if cfg and time.time() < float(getattr(core, "_EMBED_DOWN_UNTIL", 0.0) or 0.0):
         cfg = None
     # 未配置真嵌入服务时，先看降级向量兜底能不能接管（embed.fallback 默认开）；
     # 兜底也关了才真正返回 None（调用方按"无 Dense 能力"降级）。
@@ -131,6 +179,7 @@ def embed_texts(texts: list) -> list | None:
                 return None
             out.append([float(x) for x in vec])
         core._EMBED_DOWN_UNTIL = 0.0
+        _save_down_until(0)
         return out
     except Exception as exc:
         _cd = 300.0
@@ -139,6 +188,7 @@ def embed_texts(texts: list) -> list | None:
         except Exception:
             pass
         core._EMBED_DOWN_UNTIL = time.time() + _cd
+        _save_down_until(core._EMBED_DOWN_UNTIL)
         core.log_event("embed", f"embedding 调用失败，{int(_cd)} 秒内不再重试，先走降级向量：{exc}",
                        level="warn")
     # 降级兜底：真嵌入不可用（未配置/不可达）时用纯 stdlib hash 嵌入接管
