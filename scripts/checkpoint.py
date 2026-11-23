@@ -62,13 +62,44 @@ def _save_state(state: dict, home: Path | None = None) -> None:
         core.atomic_json(p, disk)
 
 
-def _git(repo: str, *args: str) -> str:
-    try:
-        r = subprocess.run(["git", "-C", repo, *args], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=15)
-        return r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:
-        return ""
+_GIT_TRANSIENT_WINERRORS = {5, 32, 33, 145}   # 拒绝访问 / 共享冲突 / 锁冲突 / 目录非空
+
+
+class GitUnavailable(RuntimeError):
+    """git 命令反复失败（瞬时占用/超时），不是"这不是仓库"——两者必须分开报。"""
+
+
+def _git(repo: str, *args: str, attempts: int = 3) -> str:
+    """跑 git 返回 stdout；**瞬时**失败重试，仍失败抛 GitUnavailable。
+
+    原来这里 `except Exception: return ""` 把瞬时占用/超时和"不是仓库"混为一谈，
+    一次杀软扫过就能让 checkpoint 误报"不是 git 仓库"（台账 #71）。
+    非零退出码（真的不是仓库、路径不对）仍返回 ""，由调用方按业务判断。
+    """
+    last = ""
+    for i in range(max(1, attempts)):
+        try:
+            r = subprocess.run(["git", "-C", repo, *args], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=20)
+            if r.returncode == 0:
+                return r.stdout.strip()
+            return ""          # 非零退出：业务层面的"没有/不是"，不重试
+        except subprocess.TimeoutExpired:
+            last = f"git {args[0] if args else ''} 超时"
+        except OSError as exc:
+            # Windows 原生错误看 winerror；纯 OSError(errno=32) 没有 winerror，也要认
+            winerr = getattr(exc, "winerror", None)
+            errno_ = getattr(exc, "errno", None)
+            if (winerr not in _GIT_TRANSIENT_WINERRORS
+                    and errno_ not in _GIT_TRANSIENT_WINERRORS
+                    and not isinstance(exc, PermissionError)):
+                raise GitUnavailable(f"git 不可用：{exc}") from exc
+            last = f"git 被占用（winerror={winerr} errno={errno_}）：{exc}"
+        except Exception as exc:  # noqa: BLE001
+            raise GitUnavailable(f"git 调用失败：{exc}") from exc
+        if i + 1 < attempts:
+            time.sleep(0.3 * (i + 1))    # 退避：0.3s / 0.6s
+    raise GitUnavailable(last or "git 多次失败")
 
 
 def collect(repo: str | None = None) -> dict | None:
@@ -76,6 +107,10 @@ def collect(repo: str | None = None) -> dict | None:
     base = str(repo or ".")
     root = _git(base, "rev-parse", "--show-toplevel")
     if not root:
+        # 空 root 有两种可能：真的不是仓库，或 git 反复失败。
+        # .git 存在说明"是仓库、只是这次取证没成功"——这时不能谎报"不是仓库"。
+        if (Path(base) / ".git").exists():
+            raise GitUnavailable("git 仓库存在，但取证失败（可能被杀软/索引器短暂占用），请稍后重试")
         return None
     head = _git(root, "rev-parse", "--short", "HEAD")
     branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
@@ -139,7 +174,11 @@ def build_text(ev: dict, note: str = "", extra: str = "") -> str:
 def checkpoint(repo: str | None = None, note: str = "", *, dry_run: bool = False,
                force: bool = False, home: Path | None = None) -> dict:
     """一步到位：收集 → 判断 → 写记忆 + 记状态。"""
-    ev = collect(repo)
+    try:
+        ev = collect(repo)
+    except GitUnavailable as exc:
+        # 取证失败 ≠ 不是仓库：给可重试的明确理由，别让用户以为路径给错了
+        return {"ok": False, "skipped": True, "transient": True, "reason": str(exc)}
     if ev is None:
         return {"ok": False, "skipped": True, "reason": "不是 git 仓库，没法取证（可显式传 --repo）"}
     state = _load_state(home)

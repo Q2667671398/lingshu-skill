@@ -134,10 +134,16 @@ def test_cli_json_roundtrip():
                             "checkpoint", "--repo", str(repo), "--json"],
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", env=env)
-        assert r.returncode == 0, r.stderr
+        # 失败时必须带上下文：原来这两条断言的消息是空的，flaky 时只知道"挂了"、
+        # 不知道是 returncode 非零还是 ok=False（台账 #71）。
+        ctx = (f"\n  returncode={r.returncode}"
+               f"\n  stdout={r.stdout!r}"
+               f"\n  stderr={r.stderr!r}"
+               f"\n  home={home}  repo={repo}")
+        assert r.returncode == 0, "CLI 返回码非零：" + ctx
         data = json.loads(r.stdout)
-        assert data["ok"] and data["memory_id"]
-        assert "任务收尾" in data["text"]
+        assert data.get("ok") and data.get("memory_id"), "ok/memory_id 缺失：" + ctx
+        assert "任务收尾" in data["text"], "text 缺关键词：" + ctx
 
 
 if __name__ == "__main__":

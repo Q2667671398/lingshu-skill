@@ -1,5 +1,18 @@
 # 更新日志
 
+## v4.01（2026-11-24）
+
+> 主题：**checkpoint 把瞬时故障说成了业务结论**——顺手修掉那个"偶发 flake"。
+
+- **根因（不是测试的错）**：`checkpoint._git()` 用 `except Exception: return ""` 把**瞬时占用**（杀软/索引器 WinError 5/32/33/145）与 **20s 超时**跟"这不是 git 仓库"混成一个空串；`collect()` 见空 root 就 `return None`，于是 `checkpoint()` 返回 `{"ok": False, "reason": "不是 git 仓库"}`——**用户会以为路径给错了**。测试里 `assert data["ok"]` 没带消息，所以表现为"偶发失败 + 空错误信息"（`io_retry_util` 按设计不重试 AssertionError，重试救不了）。
+- **修**：
+  - `_git()`：瞬时错误重试 3 次（退避 0.3/0.6s），仍失败抛 `GitUnavailable`；**非零退出码**（真不是仓库/路径不对）仍返回空串、不重试，语义不变。
+  - `collect()`：空 root 且 `.git` 存在 → 抛 `GitUnavailable`（"仓库存在但取证失败，请稍后重试"），不再谎报"不是仓库"。
+  - `checkpoint()`：捕获后返回 `transient: True` + 可重试理由，与"不是 git 仓库"明确区分。
+  - 测试：断言补上 `returncode / stdout / stderr / home / repo` 上下文，以后再 flake 能直接定位。
+  - 瞬时判定同时看 `winerror` 与 `errno`（纯 `OSError(32)` 没有 `winerror`）——首版漏了，靠回归测试抓出。
+- **验证**：新增 5 项回归（重试次数=3 / 非零退出不重试 / `.git` 存在但 git 失败要抛 / `transient` 标记且理由不含"不是仓库" / 正常仓库仍能写）；`test_checkpoint.py` 6/6；全量 65/65。
+
 ## v3.99（2026-11-23）
 
 > 主题：**面板「数据」页（备份/恢复）** + **一个备份修剪 bug 的修复（含一次数据损失事故，如实记录）**。
