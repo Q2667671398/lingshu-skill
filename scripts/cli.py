@@ -1698,7 +1698,9 @@ def _main(argv=None) -> int:
     p_forget.add_argument("id")
 
     p_ctx = sub.add_parser("check-context", help="检查上下文水位：60%% 清点 / 75%% 做梦 / 90%% 封存")
-    p_ctx.add_argument("--used", type=float, required=True, help="已用上下文百分比 0-100")
+    p_ctx.add_argument("--used", type=float, default=None,
+                       help="已用上下文百分比 0-100（缺省自动读 DSH tokenMeter 采集的 .context-pressure.json；"
+                            "读不到再退回最近一次手工记录）")
     p_ctx.add_argument("--unsaved", type=float, default=0,
                        help="本轮还没落盘的估计字数（凭感觉估即可，用来提示'该记没记'）")
     p_ctx.add_argument("--handoff", action="store_true",
@@ -4405,7 +4407,23 @@ def _main(argv=None) -> int:
             print(f"交接笔记已落盘：{rec.get('id', '')}（notes 里 kind=log，startup 会带出来）")
             return 0
         cfg = load_config()
-        used = float(args.used)
+        # v3.86：--used 缺省时按优先级取真实水位——
+        #   1) DSH tokenMeter 采集的 .context-pressure.json（准确、每轮更新）；
+        #   2) 最近一次 check-context 手工记下的 last_session_pct；
+        #   3) 都没有才报错要求显式给 --used（不再瞎猜）。
+        _tp = memory.token_context_pressure()
+        if args.used is not None:
+            used = float(args.used)
+        elif _tp:
+            used = _tp["pct"]
+            print(f"[水位] 来源：DSH tokenMeter（{_tp['pressure_tokens']}/{_tp['context_window']} tokens）")
+        elif _cfg_num(cfg, "last_session_pct", -1) >= 0:
+            used = _cfg_num(cfg, "last_session_pct")
+            print("[水位] 来源：最近一次手工 check-context（DSH tokenMeter 未采集到）")
+        else:
+            print("[错误] 拿不到上下文水位：请先让 DSH 跑一轮（tokenMeter 会采集），"
+                  "或显式传 --used <百分比>", file=sys.stderr)
+            return 1
         # 记下本次水位：status --json / startup 水位提醒块的"最近一次 session 结束水位"
         if not READONLY:
             try:

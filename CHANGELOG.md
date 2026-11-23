@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.86（2026-11-23）
+
+> 主题：**给灵枢加"自己测上下文占用"的能力**——原来宿主注入的"估算约 14%（来源 chars）"偏低（真实 39%），而灵枢代码明确写着"没有实时上下文可测"。本次接通 DSH 官方 tokenMeter。
+
+- **调研**（dsh-doc + DSH 安装源码实证）：`@deepseek-ai/dsh-token-meter`（已装 v0.2.2-rc.5）以 `ctx.tokenMeter` 挂载（`super(ctx, "tokenMeter")`），公开 `contextPressure(session) -> {pressureTokens, contextWindow}`——provider 上报的真实 prompt 大小 + 路由窗口。这是用户可见参考值（非计费输入），正是水位显示所需。
+- **采集器**（`cordis-plugin/lingshu-startup/context-pressure.js`）：startup 插件在 `agent/pre-step` 每轮请求前调一次 `sampleContextPressure(ctx, agent)`，把 `{pct, pressure_tokens, context_window, ts, available}` 写到 `HOME/.context-pressure.json`。服务未挂载/字段缺省（首轮还没 usage）时写 `available=false`，全部异常吞掉（pre-step 监听器不能冒泡）。
+- **Python 侧**（`core.token_context_pressure()`）：读该快照，10 分钟以上视为陈旧、`available=false`/字段无效一律返回 None；`check-context` 不带 `--used` 时优先用它（标注"来源：DSH tokenMeter"），再退回 last_session_pct，最后才报错要求显式给值；`_water_level`（startup 水位提醒块/面板/status 的唯一数据源）同步改为优先 token-meter，标 `source=token-meter`、`stale=False`。
+- **实测**：CLI `check-context` 不带参数自动读到模拟快照 39%（39000/100000 tokens）；token-meter 快照可用/过期/不可用三种情况测试 3/3。
+
+- **顺带修**：behavior_baseline.py 的时段归一化正则漏了“清晨/午间”（memory._time_context 5-11 点输出“清晨”），导致早上跑基线误报 6 处差异；补齐词表后行为基线 OK。
+
+验证：`tests/test_context_pressure.py` 3/3；JS 两插件 node --check；六项检查 + 行为基线 + 全量测试（57/57）全过。
+
 ## v3.85（2026-11-22）
 
 > 主题：**修 v3.84 发版自动化的 staged 轮询 bug**——publish 用 SKILL.md 的 X.Y 与 registry 的 X.Y.0 比较，永远匹配不上，导致发布成功后脚本空转 20 分钟；本次改从 package.json 读 X.Y.0。

@@ -1083,9 +1083,15 @@ def _water_level(used_pct: float | None = None) -> dict:
     last_pct_at = _cfg_num(cfg, "last_session_pct_at", 0)   # 那次记录的时间戳（v3.23）
 
     used_given = used_pct is not None
+    # v3.86：优先用 DSH tokenMeter 的准实时快照（每轮请求前采集），其次是显式
+    # --used，最后才是 config 里的历史手工值。只有显式或 token-meter 算"非 stale"。
+    _tp = None if used_given else token_context_pressure()
     if used_given:
         pct = float(used_pct)
         source = "explicit"
+    elif _tp:
+        pct = _tp["pct"]
+        source = "token-meter"
     elif last_session_pct is not None:
         pct = float(_cfg_num(cfg, "last_session_pct", 0))
         source = "config"      # 历史残留值，不是实时测量
@@ -1093,9 +1099,10 @@ def _water_level(used_pct: float | None = None) -> dict:
         pct = 0.0
         source = "default"
     # v3.23：非实时输入一律标 stale —— 旧版把几天前的 last_session_pct 当"当前水位"返回，
-    # 比没有更危险（看到 60% 会以为刚刚测过）。
-    stale = not used_given
-    age_hours = round((now - last_pct_at) / 3600, 1) if (stale and last_pct_at) else None
+    # 比没有更危险（看到 60% 会以为刚刚测过）。token-meter 是准实时，不算 stale。
+    stale = not used_given and not _tp
+    age_hours = round((now - _tp["ts"]) / 3600, 1) if _tp else (
+        round((now - last_pct_at) / 3600, 1) if (stale and last_pct_at) else None)
     if pct > 1.0:
         pct = pct / 100.0   # 兼容 0-100 口径：--used 65 与 0.65 等价
     review = _cfg_num(cfg, "review_threshold", 0.60)

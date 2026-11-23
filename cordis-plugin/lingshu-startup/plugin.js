@@ -25,6 +25,7 @@ import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { sampleContextPressure } from './context-pressure.js'
 
 // 刻意零外部依赖：不 import @deepseek-ai/schemastery。原因——link: 安装时模块
 // 真实路径留在技能目录，Node 从那里向上找 node_modules 一路到盘符根都找不到
@@ -328,6 +329,13 @@ export function apply(ctx, config) {
       // 先 await next()：让其他（wrapping）监听器先改完，保住它们的
       // startsRequestSeries / batch 语义，再在结果上追加。
       const decision = await next()
+      // v3.86：每轮请求前采一次 DSH 的准确 token 压力（ctx.tokenMeter），
+      // 写 HOME/.context-pressure.json 给 brain.py 读。必须在决策之后也不影响
+      // 注入语义；采集器自身吞掉所有异常，绝不让 pre-step 冒泡。
+      try {
+        const { agent: pa } = payload || {}
+        if (pa) sampleContextPressure(ctx, pa)
+      } catch { /* 采集失败不影响请求/注入 */ }
       if (!decision || decision.kind !== 'enter') return decision
       const { agent } = payload || {}
       const text = agent && pending.get(agent)

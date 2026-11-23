@@ -1180,6 +1180,39 @@ def write_pressure(pct: float, source: str = "") -> None:
         log_event("pressure", f"写上下文压力失败：{exc}", level="warn")
 
 
+# v3.86：DSH tokenMeter 采集的准确上下文压力（由 startup 插件写）。
+# 与 _pressure.json（灵枢自己按 check-context 记的降档档位）分开——
+# 这个文件是 DSH 官方 token 计量的只读快照，用来替代"没有实时上下文可测"的缺口。
+_TOKEN_PRESSURE_FILE = ".context-pressure.json"
+
+
+def token_context_pressure(max_age_sec: int = 600) -> dict | None:
+    """读 DSH 插件写的 .context-pressure.json，返回 {pct, pressure_tokens, context_window, ts}。
+
+    找不到 / 过期 / 字段无效一律返回 None（调用方再退回旧逻辑）。
+    max_age_sec 默认 600s：超过 10 分钟视为陈旧（会话可能已换），不采信。
+    """
+    try:
+        p = HOME / _TOKEN_PRESSURE_FILE
+        if not p.is_file():
+            return None
+        d = json.loads(p.read_text(encoding="utf-8-sig"))
+        if not isinstance(d, dict) or not d.get("available"):
+            return None
+        ts = _num(d.get("ts"), 0)
+        if ts <= 0 or (now_ts() - ts) > max(0, int(max_age_sec)):
+            return None
+        pct = _num(d.get("pct"), -1)
+        if not (0 <= pct <= 100):
+            return None
+        return {"pct": round(pct, 1),
+                "pressure_tokens": int(_num(d.get("pressure_tokens"), 0)),
+                "context_window": int(_num(d.get("context_window"), 0)),
+                "ts": int(ts)}
+    except Exception:
+        return None
+
+
 def clear_pressure() -> None:
     """清掉压力标记（回到满档）。"""
     if READONLY:
