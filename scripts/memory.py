@@ -3068,6 +3068,157 @@ def injectable_lessons(query: str = "", k: int = 5) -> list:
     return sorted(cand, key=lambda l: -_num(l.get("confidence"), 0.5))[:k]
 
 
+# ---------------------------------------------------------------- 开工前查（P9 #61）
+# 借鉴 ShellBrain 的 CBR"开工前 recall"+ mem0 的 proactive memory：
+# 光有记忆不够，必须在**行动前自动检索并注入**，否则就是"有记忆但没搜"
+# （reactive agent）——模型会从零重新调研已经做过的事。
+
+_PRIOR_MEM_SCORE = 0.35      # 记忆命中门槛：低于此不展示（防噪音）
+_PRIOR_MAX_ITEMS = 3         # 每类最多展示几条
+
+
+def prior_work(task: str, k: int = 6) -> dict:
+    """开工前先查：这件事以前做过 / 调研过吗。
+
+    聚合三处并按价值排序：知识（已确认结论，最该复用）> 教训（踩过的坑）>
+    记忆（过程记录）。**只读**：recall 用 strengthen=False，避免每轮自动查询
+    把 access_count 写爆。
+
+    返回 {task, knowledge, lessons, memories, total, latest_ts, summary}。
+    """
+    task = str(task or "").strip()
+    out = {"task": task, "knowledge": [], "lessons": [], "notes": [], "memories": [],
+           "total": 0, "latest_ts": None, "summary": ""}
+    if not task:
+        return out
+    # 1) 知识：已确认的结论优先复用（pending 的标出来，提醒"还没定论"）
+    try:
+        import growth as _growth
+        for rec, score in _growth.search_knowledge(task, k=k)[:_PRIOR_MAX_ITEMS]:
+            out["knowledge"].append({
+                "id": rec.get("id", ""),
+                "title": str(rec.get("title") or "")[:120],
+                "body": str(rec.get("body") or "")[:300],
+                "status": str(rec.get("status") or ""),
+                "created": int(_num(rec.get("created"), 0)),
+            })
+        # 1b) 笔记：交接笔记/日记里常有"这轮做了什么、结论是什么"的浓缩
+        for rec, score in _growth.search_notes(task, k=k)[:2]:
+            if score <= 0.02:
+                continue
+            out["notes"].append({
+                "id": rec.get("id", ""),
+                "title": str(rec.get("title") or "")[:100],
+                "body": str(rec.get("body") or "")[:260],
+                "created": int(_num(rec.get("created"), 0)),
+            })
+    except Exception as exc:  # noqa: BLE001
+        log_event("prior", f"查知识/笔记失败（不影响其它来源）：{exc}", level="warn")
+    # 2) 教训：踩过的坑（词面命中优先）
+    try:
+        for les in injectable_lessons(task, k=k)[:_PRIOR_MAX_ITEMS]:
+            out["lessons"].append({
+                "id": les.get("id", ""),
+                "text": str(les.get("text") or "")[:200],
+                "confidence": round(_num(les.get("confidence"), 0.5), 2),
+                "created": int(_num(les.get("created"), 0)),
+            })
+    except Exception as exc:  # noqa: BLE001
+        log_event("prior", f"查教训失败：{exc}", level="warn")
+    # 3) 记忆：过程记录（strengthen=False 只读；mode="fast" 强制词面——
+    # 这是每轮开工前的钩子，auto 会去调 embedding（实测 4.1s vs 37ms），
+    # 每轮多 4 秒的延迟换那点语义收益不值。）
+    try:
+        for m, score, _parts in recall(task, k=k, strengthen=False, mode="fast")[:_PRIOR_MAX_ITEMS]:
+            if score < _PRIOR_MEM_SCORE:
+                continue
+            out["memories"].append({
+                "id": m.get("id", ""),
+                "text": str(m.get("text") or "")[:200],
+                "created": int(_num(m.get("created"), 0)),
+                "score": round(float(score), 2),
+            })
+    except Exception as exc:  # noqa: BLE001
+        log_event("prior", f"查记忆失败：{exc}", level="warn")
+
+    # 4) 去重：同一条结论常被 lesson 三写（知识+笔记+记忆）同时命中，标题前缀
+    # 却不同（"教训 · X" / "记忆随记 · X"），所以按**正文**做字符二元组相似度判重，
+    # 保留"知识 > 笔记 > 教训 > 记忆"里最靠前的一份。
+    def _sig(it: dict) -> str:
+        base = it.get("body") or it.get("text") or it.get("title") or ""
+        s = str(base)
+        # 去掉做梦聚合条目的前缀与 lesson 三写的标题前缀，露出真正正文再比对
+        s = re.sub(r"^最近关于「[^」]*」的一组事情（\d+\s*条）[:：]", "", s)
+        s = re.sub(r"^(教训|记忆随记|关于「[^」]*」的\s*\d+\s*条经历)\s*[·:：]\s*", "", s)
+        return re.sub(r"[\s\W_]+", "", s)
+
+    def _dup(s: str, seen: list) -> bool:
+        if not s:
+            return True
+        for x in seen:
+            if s[:40] == x[:40]:
+                return True
+            if len(s) >= 20 and len(x) >= 20:
+                a = {s[i:i + 2] for i in range(len(s) - 1)}
+                b = {x[i:i + 2] for i in range(len(x) - 1)}
+                if a and b and len(a & b) / len(a | b) >= 0.75:
+                    return True
+        return False
+
+    seen: list = []
+    for key in ("knowledge", "notes", "lessons", "memories"):
+        kept = []
+        for it in out[key]:
+            s = _sig(it)
+            if _dup(s, seen):
+                continue
+            seen.append(s)
+            kept.append(it)
+        out[key] = kept
+
+    total = len(out["knowledge"]) + len(out["lessons"]) + len(out["notes"]) + len(out["memories"])
+    out["total"] = total
+    stamps = [x["created"] for x in (out["knowledge"] + out["lessons"]
+                                     + out["notes"] + out["memories"]) if x.get("created")]
+    out["latest_ts"] = max(stamps) if stamps else None
+    if total:
+        parts = []
+        if out["knowledge"]:
+            parts.append(f"{len(out['knowledge'])} 条结论")
+        if out["lessons"]:
+            parts.append(f"{len(out['lessons'])} 条教训")
+        if out["notes"]:
+            parts.append(f"{len(out['notes'])} 条笔记")
+        if out["memories"]:
+            parts.append(f"{len(out['memories'])} 条过程记录")
+        when = fmt_date(out["latest_ts"]) if out["latest_ts"] else "未知时间"
+        out["summary"] = f"找到 {total} 条相关历史（{'、'.join(parts)}），最近一次 {when}"
+    return out
+
+
+def render_prior(p: dict, budget_chars: int = 1400) -> str:
+    """把 prior_work 结果渲染成注入/显示用的紧凑文本（超预算按类截断）。"""
+    if not p or not p.get("total"):
+        return ""
+    lines = ["## 这件事以前做过吗", f"（{p['summary']}）"]
+    for k in p.get("knowledge") or []:
+        flag = "" if k.get("status") == "confirmed" else f"（{k.get('status') or '待定'}）"
+        body = k.get("body", "").strip()
+        lines.append(f"- [已有结论{flag}] {k.get('title', '')}"
+                     + (f"：{body}" if body else ""))
+    for les in p.get("lessons") or []:
+        lines.append(f"- [踩过的坑] {les.get('text', '')}")
+    for n in p.get("notes") or []:
+        lines.append(f"- [当时记录] {n.get('title', '')}：{n.get('body', '')}")
+    for m in p.get("memories") or []:
+        lines.append(f"- [做过] {m.get('text', '')}")
+    lines.append("→ 上面若已覆盖，**直接复用结论，不要重新调研**；"
+                 "确实没覆盖到再动手查，查完用 `remember`/`lesson` 记下来。")
+    text = "\n".join(lines)
+    return text[:budget_chars]
+
+
+
 def _lessons_injection(query: str = "") -> str:
     """注入包小节：active 教训按 confidence 注入，命中 query 的排最前并标「已有教训」。"""
     ls = injectable_lessons(query, k=5)

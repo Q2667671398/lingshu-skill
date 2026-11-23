@@ -20,8 +20,8 @@
 // 技能目录；brain.py 自身保证只读降级（HOME 不可写时照样注入）。
 
 import { spawn } from 'node:child_process'
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -71,6 +71,13 @@ const DEFAULTS = {
                       // 为什么：会话历史里已有一份完整记忆块，resume 再注入一整份
                       // 就是同一段上下文出现两遍（实测 1214 tokens x 2）。
   injectResume: true, // resume 来源（续聊）是否也注入
+  // —— P9 #61 开工前查（借鉴 ShellBrain CBR / mem0 proactive memory）——
+  // 每轮首个 pre-step 抽取用户消息，自动跑 `brain.py prior`，命中就注入
+  // "这件事以前做过吗"块，避免模型把已经做过/调研过的事重新来一遍。
+  priorAuto: true,    // 关掉则只在模型主动调 `prior` 时生效
+  priorBudget: 1200,  // prior 注入块字符上限（比 startup 小，它是每轮附加）
+  priorTimeoutMs: 6000, // prior 子进程超时（在请求关键路径上，宁可放弃也不拖住）
+  priorMinChars: 12,  // 用户消息少于这个长度不查（"继续""好"之类没有检索价值）
 }
 
 /** 合并用户配置与默认值（用户值非空/存在才覆盖） */
@@ -176,11 +183,11 @@ function findPythonExe(configured) {
  * 跑 brain.py startup，返回注入文本；失败返回 null（绝不抛异常、绝不阻塞会话）。
  * 找不到 python.exe 时退回 ComSpec 让 cmd 解析 PATHEXT（python.cmd 也能跑）。
  */
-function runStartup(pythonExe, pythonCmdFallback, brainPy, budget, timeoutMs) {
+function runBrainText(pythonExe, pythonCmdFallback, brainPy, extraArgs, timeoutMs) {
   return new Promise((resolve) => {
     let settled = false
     const done = (v) => { if (!settled) { settled = true; resolve(v) } }
-    const args = [brainPy, 'startup', '--budget', String(budget)]
+    const args = [brainPy, ...(extraArgs || [])]
     let child
     try {
       if (pythonExe) {
@@ -236,6 +243,62 @@ function runStartup(pythonExe, pythonCmdFallback, brainPy, budget, timeoutMs) {
   })
 }
 
+/** 启动注入：brain.py startup --budget N */
+function runStartup(pythonExe, pythonCmdFallback, brainPy, budget, timeoutMs) {
+  return runBrainText(pythonExe, pythonCmdFallback, brainPy,
+    ['startup', '--budget', String(budget)], timeoutMs)
+}
+
+/**
+ * 开工前查：brain.py prior --task-file <tmp> --render --budget N
+ *
+ * 任务文本来自**用户消息**，绝不拼进命令行——用户一句话里带引号/`&`/`|`
+ * 在 cmd 兜底分支就是命令注入（lingshu-im 那边踩过同款坑）。这里写临时文件、
+ * 只传路径，python 侧读完即删。
+ */
+function runPrior(pythonExe, pythonCmdFallback, brainPy, taskText, budget, timeoutMs) {
+  let taskFile = ''
+  try {
+    const dir = join(tmpdir(), 'lingshu-prior')
+    mkdirSync(dir, { recursive: true })
+    taskFile = join(dir, `t-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
+    writeFileSync(taskFile, String(taskText || '').slice(0, 2000), 'utf8')
+  } catch {
+    return Promise.resolve(null)
+  }
+  return runBrainText(pythonExe, pythonCmdFallback, brainPy,
+    ['prior', '--task-file', taskFile, '--render', '--budget', String(budget)],
+    timeoutMs).finally(() => {
+    // python 侧正常会删；异常/超时时这里兜底清理，避免临时文件堆积
+    try { rmSync(taskFile, { force: true }) } catch {}
+  })
+}
+
+/** 从 pre-step 决策的 messages 里抽出最后一条用户文本（含多模态里的 text 段） */
+export function lastUserText(messages) {
+  if (!Array.isArray(messages)) return ''
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!m || m.role !== 'user') continue
+    const c = m.content
+    if (typeof c === 'string') return c.trim()
+    if (Array.isArray(c)) {
+      const t = c.filter((x) => x && x.type === 'text' && x.text).map((x) => x.text).join('\n')
+      if (t.trim()) return t.trim()
+    }
+  }
+  return ''
+}
+
+/** 像"要做的事"吗：够长、不是纯问候/确认。避免每轮都白跑一次 python。 */
+export function looksLikeTask(text, minChars) {
+  const t = String(text || '').trim()
+  if (t.length < Math.max(4, Number(minChars) || 12)) return false
+  // 纯确认/寒暄短句（"继续""好的""嗯"…）没有检索价值
+  if (/^(继续|好的?|嗯+|行|可以|收到|谢谢|ok|okay|yes|no|继续吧|接着来)[。！!.\s]*$/i.test(t)) return false
+  return true
+}
+
 export function apply(ctx, config) {
   // v3.23：重复挂载守卫。profile 同时启用独立包与根包时，同一进程会出现两份 startup，
   // 每会话注入两遍人格/记忆（白烧 ~3k token，且两份可能来自不同版本引擎）。
@@ -253,6 +316,9 @@ export function apply(ctx, config) {
   // 宿主重复派发 agent/created 都可能触发重注入。同一份内容只进一次上下文，
   // 这也正是提示词缓存友好的做法（只在末尾追加、不重复历史）。
   const injectedDigests = new Map()
+  // P9 #61：每个 agent 已查过「开工前」的用户消息指纹（sha256 前 16 位）。
+  // 同一条消息只查一次，避免模型多步工具调用时反复触发 python 子进程。
+  const priorDigests = new Map()
   // 配置类失败只告警一次：静默吞掉配置错误会让插件"看似在工作、实际没注入"
   let warnedOnce = false
 
@@ -342,19 +408,56 @@ export function apply(ctx, config) {
       } catch { /* 采集失败不影响请求/注入 */ }
       if (!decision || decision.kind !== 'enter') return decision
       const { agent } = payload || {}
+      const extra = []
+      // ① 启动注入（每次会话一次）
       const text = agent && pending.get(agent)
-      if (!text) return decision
-      pending.delete(agent) // 只注入一次：不删的话每条 pre-step 都会重复塞
+      if (text) {
+        pending.delete(agent) // 只注入一次：不删的话每条 pre-step 都会重复塞
+        extra.push(text)
+      }
+      // ② 开工前查（P9 #61）：每轮首个 pre-step 抽用户消息 → prior → 命中才注入。
+      // 同一条消息只查一次（digest 去重）；查不到就不注入，避免白占上下文。
+      if (cfg.priorAuto && agent) {
+        try {
+          const userText = lastUserText(decision.messages)
+          if (looksLikeTask(userText, cfg.priorMinChars)) {
+            const dig = createHash('sha256').update(userText).digest('hex').slice(0, 16)
+            let seen = priorDigests.get(agent)
+            if (seen === undefined) {
+              seen = new Set()
+              priorDigests.set(agent, seen)
+            }
+            if (!seen.has(dig)) {
+              seen.add(dig)
+              if (seen.size > 200) {   // 防长会话无限增长
+                const keep = [...seen].slice(-100)
+                priorDigests.set(agent, new Set(keep))
+              }
+              const brainPy = await findBrainPy(cfg.brainPy, ctx)
+              const pythonExe = findPythonExe(cfg.python)
+              const block = brainPy
+                ? await runPrior(pythonExe, cfg.python, brainPy, userText,
+                  cfg.priorBudget, cfg.priorTimeoutMs)
+                : null
+              if (block) extra.push(block)
+            }
+          }
+        } catch { /* 查不到/失败都不影响本轮请求 */ }
+      }
+      if (!extra.length) return decision
       return {
         ...decision,
-        messages: [...decision.messages, {
-          id: randomUUID(),
-          role: 'user',
-          content: [{ type: 'text', text }],
-          // v3.59：用自己的 source.name，别和 cron 的 'lingshu-cron' 撞。
-          // 撞了会被 cron 的 pruneInjected 当成本插件自己的旧提醒删掉。
-          source: { kind: 'skill-invocation', name: INJECT_SOURCE, form: 'instructions' },
-        }],
+        messages: [
+          ...decision.messages,
+          ...extra.map((t) => ({
+            id: randomUUID(),
+            role: 'user',
+            content: [{ type: 'text', text: t }],
+            // v3.59：用自己的 source.name，别和 cron 的 'lingshu-cron' 撞。
+            // 撞了会被 cron 的 pruneInjected 当成本插件自己的旧提醒删掉。
+            source: { kind: 'skill-invocation', name: INJECT_SOURCE, form: 'instructions' },
+          })),
+        ],
       }
     } catch (e) {
       try { ctx.logger?.warn?.('lingshu-startup: pre-step 注入失败', e) } catch {}

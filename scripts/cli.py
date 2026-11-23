@@ -1405,6 +1405,16 @@ def _main(argv=None) -> int:
     p_rec.add_argument("--agent-id", default="",
                        help="只召回该 agent 的记忆 + 全局记忆（agentId 维度隔离）")
 
+    p_prior = sub.add_parser("prior", help="开工前先查：这件事以前做过/调研过吗（P9 #61）")
+    p_prior.add_argument("task", nargs="*", help="当前任务/问题的描述")
+    p_prior.add_argument("--task-file", default="",
+                         help="从文件读任务描述（插件用：避免命令行转义/注入）")
+    p_prior.add_argument("--k", type=int, default=6)
+    p_prior.add_argument("--budget", type=int, default=1400, help="渲染文本的字符上限")
+    p_prior.add_argument("--json", action="store_true")
+    p_prior.add_argument("--render", action="store_true",
+                         help="只输出可直接注入的紧凑文本（插件用）")
+
     p_deref = sub.add_parser("deref", help="按需解引用：取一条记忆的证据原文（#46 Memex）")
     p_deref.add_argument("memory_id", help="记忆 id（通常是合并/蒸馏产物的 id）")
     p_deref.add_argument("--json", action="store_true")
@@ -2152,6 +2162,40 @@ def _main(argv=None) -> int:
         except Exception as exc:
             print(f"[extract] 静默失败：{exc}", file=sys.stderr)
             return 2
+
+    if args.cmd == "prior":
+        task = " ".join(args.task).strip()
+        _tf = (getattr(args, "task_file", "") or "").strip()
+        if _tf:
+            try:
+                from pathlib import Path as _P
+                task = _P(_tf).read_text(encoding="utf-8-sig").strip()
+            except OSError as exc:
+                print(f"[错误] 读不到 --task-file：{exc}", file=sys.stderr)
+                return 1
+            finally:
+                try:
+                    _P(_tf).unlink(missing_ok=True)   # 用完即删，别留临时文件
+                except OSError:
+                    pass
+        if not task:
+            print('用法：prior "要做的事/要查的问题"', file=sys.stderr)
+            return 1
+        p = memory.prior_work(task, k=args.k)
+        if args.render:
+            txt = memory.render_prior(p, budget_chars=args.budget)
+            if txt:
+                print(txt)
+            return 0
+        if args.json:
+            print(json.dumps(p, ensure_ascii=False, indent=2))
+            return 0
+        if not p["total"]:
+            print(f"没有找到与「{task[:40]}」相关的历史——这次是新的，可以放心调研。")
+            print("（查完记得 `remember` 结论、`lesson` 记坑，下次就不用重来。）")
+            return 0
+        print(memory.render_prior(p, budget_chars=args.budget))
+        return 0
 
     if args.cmd == "recall":
         # P5 #21：按 id 展开逐字原文——先于普通召回处理，绕过 query 逻辑

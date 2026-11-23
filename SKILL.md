@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 3.91
+version: 3.92
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -236,6 +236,7 @@ python scripts/brain.py ext rm <名字>                    # 删除
 
 ## 实时沉淀与画像同步（v3.01）
 
+- **开工前先查（v3.92，最重要的一条）**：接任何任务/调研任何问题之前，先 `prior "要做的事"`——它一次返回相关的**已有结论 / 踩过的坑 / 当时记录 / 做过的过程**，命中就直接复用，**不要重新调研已经做过的事**；只有确实没覆盖到才动手查，查完用 `remember`/`lesson` 记下来（下次就不用重来）。插件已在你每轮开工前自动跑一次并注入结果，看到「## 这件事以前做过吗」块就按它说的做。
 - **教训三写**：遇到报错/返工，先 `recall`/知识库检索是否遇到过（recall 命中知识条目会提示「该问题曾有记录」）；没有则 `lesson "教训"` 一条命令沉淀三处——memory(mistake) + knowledge(status=pending，带 memory_id 来源) + note。
 - **remember 自动落笔记**：importance≥7 或 kind∈{insight,mistake,fact} 时自动追加一条笔记（带 memory_id 反向引用，fail-open 不阻塞主写入）；insight/mistake 同时进知识库待审闸。
 - **人格画像自动归纳**：`persona suggest scan` 扫描记忆里的偏好/关系/错误/事实与笔记知识，产出候选特征（带证据链）；`persona suggest adopt N` 采纳、`discard N` 忽略——人格从记忆派生、确认后才进 persona，防记忆幻觉污染人格。
