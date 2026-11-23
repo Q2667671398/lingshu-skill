@@ -93,6 +93,16 @@ def do_bump(new_ver: str, title: str) -> int:
     if not re.fullmatch(r"\d+\.\d+", new_ver):
         print(f"[release] 版本格式应为 X.Y，收到 {new_ver!r}", file=sys.stderr)
         return 1
+    # semver 不允许前导零：npm 会把 4.01.0 规范化成 4.1.0 发布出去，
+    # 而本地 package.json 仍写 4.01.0，publish 轮询 registry 就永远等不到
+    # 4.01.0（v4.01 就这么卡死过一次）。在这里挡掉。
+    _bad = [seg for seg in new_ver.split(".")
+            if len(seg) > 1 and seg.startswith("0") and seg.isdigit()]
+    if _bad:
+        fixed = ".".join(str(int(s)) if s.isdigit() else s for s in new_ver.split("."))
+        print(f"[release] 版本号 {new_ver} 含前导零段 {_bad}（semver 不允许），"
+              f"请改用 {fixed}", file=sys.stderr)
+        return 1
     old = cur_version()
     if _ver_tuple(new_ver) <= _ver_tuple(old):
         print(f"[release] 新版本 {new_ver} 必须大于当前 {old}", file=sys.stderr)

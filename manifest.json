@@ -1,13 +1,13 @@
 {
-  "version": "4.01",
+  "version": "4.1",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "aa01f6ecce5ac22052b70e8d077c755057009079df2d6d185b7a60c51f3df779",
-      "size": 293762
+      "sha256": "b1eb2b92b6acfb98f71373e81a4a7431457b69d1d1dadd18d9263983aab63a00",
+      "size": 293761
     },
     "README.md": {
-      "sha256": "ac0092153301be772e994998cadce599a1770ca4e4bfc174571234553062303a",
-      "size": 64472
+      "sha256": "a5ae6242c6705312a2725959b2c44737aaaf7c2fdb6136447b60b0205bb1cba7",
+      "size": 64471
     },
     "SKILL-lite.md": {
       "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
@@ -18,8 +18,8 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "e70a1d9320f3a2f7365252853ae18ef791928c988a187c25049ece4f85c3de4c",
-      "size": 35777
+      "sha256": "5fd713d3b3891078e0eae39ffe6f27dd9552621b0d9edc008750b665eff4c11f",
+      "size": 35776
     },
     "assets/panel.html": {
       "sha256": "fa74670435029deed1515726cf560dd4a8fe56b49ebe8a6f346b05d656c66c91",
@@ -110,16 +110,16 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "59e39f059923d6dc21691451848a99449203ead055ec87c9fdfd5085c7674800",
-      "size": 116833
+      "sha256": "d2489dc5b7a00366919e326078c9f498c182730202669375ea5f0fc2d9b014a2",
+      "size": 116832
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "286691ea1113efba19f461124f05a88093dc420edaaf96396a5e9c9c72b7e01b",
-      "size": 1341
+      "sha256": "152415dd61f9f52d0189430c03bc356e1c216616ff209649df21b9639501b3a9",
+      "size": 1340
     },
     "scripts/assembler.py": {
       "sha256": "084e1b0157feda76539f0acd57f813edc4fa4df65c7d418912ef874174622db6",
@@ -270,8 +270,8 @@
       "size": 107976
     },
     "scripts/release.py": {
-      "sha256": "2552fb634cc06050fcdcf7cdf34f5966df99c938ffb9ed021ef0c91e66c6838b",
-      "size": 9386
+      "sha256": "ed2e81308458e5292e0a22c8c2214301304e08e0869b6babe3a4fd718c78d73a",
+      "size": 10014
     },
     "scripts/retriever.py": {
       "sha256": "85a35f8f660767cff1c068e722b51e3b5623c4dffe4822527eee96f9220240d3",
