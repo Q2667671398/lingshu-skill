@@ -117,13 +117,17 @@
       "sha256": "ed0b8b64ad46ebb63b5000b1aaf053e623e43196c93dfd578aa7dba7f5a3bc5b",
       "size": 2074
     },
+    "docs/借鉴-易经与古典算法.md": {
+      "sha256": "8b9ab4a6d589b16a4ccfc66b520a450fb12e614a314f08fcacc43cb206c6a195",
+      "size": 14372
+    },
     "docs/发布自动化.md": {
       "sha256": "dd1b9631cb88596561bf40317a8a7a2322f57ac121d925d0c27daa39c88401aa",
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "e0924c6567e80eb9d483c9d8cff204e0db6d1af164aafdc70d5f19b5a9a74861",
-      "size": 130862
+      "sha256": "d6fdb8c94fc884cbc96438b4b81a00ae1fcd05faa7fe112b2514de202eb3a711",
+      "size": 133056
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
