@@ -1,12 +1,12 @@
 {
-  "version": "5.0",
+  "version": "5.1",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "72d040ebbad0a2f3f355202721b9a90200b0a70fc6d7c27590089e93226dd967",
-      "size": 306062
+      "sha256": "6b172915a0624f32ab996d6baa0f5d8dd95fa6fc88ca7df117c1399d43b22c3a",
+      "size": 307391
     },
     "README.md": {
-      "sha256": "d06b18883cf8349951702c28555f74d1db62d9dcb74847543670ab08ba4ec25c",
+      "sha256": "5e606f577d1688331ced22fc31cc7581f4c8e1d528505a0fe10a09d311c417a9",
       "size": 64471
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "6ebbcc175208091f93813f08353f63e557e8990824c1bb95ece8bdeda3963a0f",
+      "sha256": "b6d933791c02af9471bfde804746d8bd42a2c8cf07bb8bf67d0f00df4897307c",
       "size": 36183
     },
     "assets/lingshu-icon-preview.png": {
@@ -118,23 +118,23 @@
       "size": 2074
     },
     "docs/借鉴-易经与古典算法.md": {
-      "sha256": "c52f3ac199e4d6611d1343f1ff9db97935e0ee7bd9411d2110203a99e0eb9dff",
-      "size": 18448
+      "sha256": "88f343b84c0f7586af8d33944066fce0da5f9c26207792a7e01a3e4ab0e56dcd",
+      "size": 19200
     },
     "docs/发布自动化.md": {
       "sha256": "dd1b9631cb88596561bf40317a8a7a2322f57ac121d925d0c27daa39c88401aa",
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "2b10f18b4182cc540060211822acdde0683c06e067ffb58138ac2606e3c3734d",
-      "size": 135135
+      "sha256": "83ffd837bca55e2dec02911dd91227ebf599e9af0798f6d1d4751255b3621751",
+      "size": 136442
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "aa38c3de2320fad33c4e8596438f4e0eb3f55edf733922970cd4d6b2e43bb45d",
+      "sha256": "f0c6131cb503c6900c2d0efb4962911f584cade1fb645e389a675ac194b071e0",
       "size": 1340
     },
     "scripts/assembler.py": {
@@ -170,8 +170,8 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "f5b4095a9bac5b4ab9c47a5bbfb7fc32a821465604456a65bdd3b246c57caa5a",
-      "size": 292806
+      "sha256": "4aa8845390fda6ffa81373da8bd4604a3463cef710727bc38a70cc06e2c1497e",
+      "size": 293066
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
@@ -258,8 +258,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "b3e98536b7abd446ed2b5716e1735117d2db072845ff6fdbfde48577bae81acd",
-      "size": 247286
+      "sha256": "d16efbd9f964f4cb2e10c3e2359da5aa6530f2cd99b1c8f492c01e928c610202",
+      "size": 249314
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",

@@ -1938,6 +1938,36 @@ def dereference(memory_id: str) -> list:
     return out
 
 
+# ---------------------------------------------------------------- 错卦：否定极性
+# 「错卦」在易经里是六爻全变（按位取反）。借到检索上就是**否定极性**：
+# "用 X" 和 "不要用 X" 是两个方向，不该拿到同一批无标记的结果。
+#
+# 实测问题（2026-11-24，隔离库三条记忆）：
+#   recall "用 DiskGenius 恢复分区"      → ①不要用…（排第一）②用…可行 ③先做镜像
+#   recall "不要用 DiskGenius 恢复分区"  → ①不要用… ③先做镜像 ②用…可行
+# 结果集 3/3 完全重合，且**肯定查询把「不要用」的禁止记忆排到第一位、无任何标记**。
+# 模型看到这个很容易读反，所以这里不静默降权（把禁令藏起来更危险），
+# 而是**把冲突标出来**，交给调用方/模型自己判断。
+_POLARITY_NEG = re.compile(
+    r"不要|别用|别再|别碰|别动|不要再|勿|切勿|禁止|避免|不能|不可|禁用|放弃|"
+    r"不推荐|不建议|不需要|无需|千万别")
+
+
+def _polarity_of(text: str) -> str:
+    """文本的否定极性：'neg'（否定/禁止）或 'pos'（肯定）。空文本返回 ''。"""
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    return "neg" if _POLARITY_NEG.search(s) else "pos"
+
+
+def _memory_polarity(rec: dict) -> str:
+    """一条记忆的极性：显式 avoid 标记优先，否则看正文。"""
+    if rec.get("avoid"):
+        return "neg"
+    return _polarity_of(rec.get("text") or "")
+
+
 def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
            strengthen: bool = True, include_dust: bool = False,
            include_archive: bool = False,
@@ -2301,6 +2331,19 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             kept_terms.append(t)
             kept_texts.append(txt)
         result = kept
+
+    # 错卦（v5.1）：标注"查询方向"与"记忆极性"的冲突。
+    # 只在**方向相反**时打标（查询肯定↔记忆禁止，或反之），一致时不打扰。
+    try:
+        _qp = _polarity_of(query)
+        if _qp:
+            for _m, _s, _p in result:
+                _mp = _memory_polarity(_m)
+                if _mp and _mp != _qp and isinstance(_p, dict):
+                    _p["polarity"] = _mp
+                    _p["polarity_conflict"] = True
+    except Exception:
+        pass
 
     if strengthen and not READONLY:
         touched = [m for m, _, _ in result]

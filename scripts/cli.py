@@ -1301,6 +1301,9 @@ def _print_mem(m: dict, score: float | None = None, parts: dict | None = None) -
     print(head)
     print(f"  {m['id']}")
     print(f"  {display_text(m)}")
+    # 错卦（v5.1）：方向相反的记忆要明说，否则"不要用 X"会被当成"要用 X"读
+    if parts and parts.get("polarity_conflict"):
+        print("  ⚠ 这条是禁止/否定方向（avoid），与你的查询方向相反——别读反")
     if m.get("tags") or m.get("entities"):
         print(f"  标签: {'、'.join(m.get('tags', []))}  实体: {'、'.join(m.get('entities', []))}")
     print()
