@@ -629,7 +629,10 @@ export function apply(ctx, config) {
             if (r.date !== todayStr()) { r.date = todayStr(); r.count = 0 }
             r.count += 1
             state.retries[task.id] = r
-            logTaskFailure(task.id, `小时级任务失败（补跑第 ${r.count} 次）`)
+            logTaskFailure(task.id,
+              `小时级任务失败（补跑第 ${r.count} 次）；`
+              + `命令: brain.py ${(task.argv || []).join(' ')}；`
+              + '可能是超时(timeoutMs)或非零退出，先手动跑一次确认')
           }
           stateSaver.flushNow()
         }
@@ -782,7 +785,9 @@ export function apply(ctx, config) {
         { id: 'dream', turns: cfg.dreamTurns, argv: ['dream', '--auto'] },
         { id: 'daily', days: 1, argv: ['daily'] },
         // 备份：按小时（config.backup_interval_hours，默认 6），不再是"每天一次"
-        { id: 'backup', hours: cfg.backupIntervalHours ?? 6, argv: ['backup'] },
+        // ⚠ 必须带 --yes：非交互环境下 `backup` 会打印"已取消"并 exit 0，
+        // 什么都不建却算成功 —— 按小时备份会永远空转（实测踩过）。
+        { id: 'backup', hours: cfg.backupIntervalHours ?? 6, argv: ['backup', '--yes'] },
         // 自动更新：默认关（config.auto_update=false 时 auto-update 自己会跳过）
         { id: 'autoupdate', hours: cfg.autoUpdateIntervalHours ?? 24, argv: ['auto-update'] },
         { id: 'conflicts', days: 1, argv: ['detect-conflicts'] },

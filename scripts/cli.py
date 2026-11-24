@@ -212,8 +212,16 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
         if sys.stdin and sys.stdin.isatty():
             try:
                 ans = input("本次备份不加口令，将生成含全部记忆原文的明文 zip。继续？[y/N] ")
-            except (EOFError, KeyboardInterrupt):
-                ans = ""
+            except EOFError:
+                # **无法确认**（没有输入可读）≠ 用户说不。以前一律 return 0，
+                # 于是自动化忘了 --yes 时会静默什么都不做却报成功（实测：按小时备份
+                # 空转、state 照样推进）。这里必须报错退出，让调用方看得见。
+                print("[错误] 无法确认（当前环境读不到输入）：请显式加 --yes，"
+                      "或加 --password <口令> 生成加密备份。", file=sys.stderr)
+                return 3
+            except KeyboardInterrupt:
+                print("已取消。加 --password <口令> 可生成加密备份（.zip.enc）。")
+                return 0
             if ans.strip().lower() not in ("y", "yes"):
                 print("已取消。加 --password <口令> 可生成加密备份（.zip.enc）。")
                 return 0
