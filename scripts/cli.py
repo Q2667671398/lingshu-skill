@@ -1570,6 +1570,8 @@ def _main(argv=None) -> int:
     p_sc.add_argument("--name", default="灵枢面板", help="快捷方式名字（默认 灵枢面板）")
     p_sc.add_argument("--port", type=int, default=0, help="固定端口（默认读 config.panel_port）")
     p_sc.add_argument("--remove", action="store_true", help="删除桌面快捷方式")
+    p_sc.add_argument("--ensure", action="store_true",
+                      help="幂等：桌面没有才建（安装后自动调用就是这个）")
 
     # P11 #75 自动更新灵枢
     p_au = sub.add_parser("auto-update", help="检查/执行自动更新灵枢（默认跟随 config.auto_update）")
@@ -2587,7 +2589,13 @@ def _main(argv=None) -> int:
             print(f"已删除桌面快捷方式：{r.get('path')}" if r.get("removed")
                   else "桌面没有该快捷方式（无需删除）")
             return 0 if r.get("ok") else 1
-        r = _ds.create(args.name, args.port or None)
+        if args.ensure:
+            r = _ds.ensure(args.name)
+            if r.get("skipped"):
+                print(f"跳过：{r.get('reason')}")
+                return 0
+        else:
+            r = _ds.create(args.name, args.port or None)
         if r.get("ok"):
             print(f"已在桌面创建「{args.name}」：{r['path']}")
             print(f"  启动器：{r['launcher']}")

@@ -58,18 +58,27 @@ jobs:
       # 失败时把「哪一条测试挂了」直接打成 annotation（公开仓库可不带 token 读 annotations，
       # 而日志接口要鉴权——不然只能看到一句 "Process completed with exit code 1"）。
       - name: tests
+        # 注意：这里**不给**整段 loop 设 BRAIN_MEMORY_HOME——每个测试文件在循环里
+        # 各自建独立临时 HOME。共用一份会让前面的测试污染后面的（实测
+        # test_context_ab.py 跑完，test_inject_lazy.py 的预算用例必挂、单跑必过）。
+        # 与 scripts/run_tests.py 的约定保持一致：「每个测试文件独立临时 HOME」。
         env:
-          BRAIN_MEMORY_HOME: ${{ runner.temp }}/ls-ci-home
-          LINGSHU_GLOBAL_SKILLS: ${{ runner.temp }}/ls-ci-skills
+          LS_CI_ROOT: ${{ runner.temp }}
         shell: bash
         run: |
           set -e
-          mkdir -p "$BRAIN_MEMORY_HOME" "$LINGSHU_GLOBAL_SKILLS"
           echo "python: $(python -V 2>&1) · $(uname -a)"
           fail=0
+          i=0
           for t in tests/test_*.py; do
+            i=$((i + 1))
             echo "::group::$t"
             out="$(mktemp)"
+            # 每个测试文件独立 HOME / 技能目录，互不污染
+            export BRAIN_MEMORY_HOME="$LS_CI_ROOT/ls-ci-home-$i"
+            export LINGSHU_GLOBAL_SKILLS="$LS_CI_ROOT/ls-ci-skills-$i"
+            rm -rf "$BRAIN_MEMORY_HOME" "$LINGSHU_GLOBAL_SKILLS"
+            mkdir -p "$BRAIN_MEMORY_HOME" "$LINGSHU_GLOBAL_SKILLS"
             if python "$t" >"$out" 2>&1; then
               tail -n 1 "$out" || true
             else

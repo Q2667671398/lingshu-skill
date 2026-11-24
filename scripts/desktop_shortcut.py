@@ -54,13 +54,23 @@ def _panel_script() -> Path:
     return root / "panel_server.py"
 
 
-def _write_launcher(port: int | None = None) -> Path:
-    """在数据目录写一个静默启动器的 .vbs。"""
+def _icon_path() -> Path | None:
+    """快捷方式图标：程序目录 assets/lingshu.ico（由 scripts/make_icon.py 生成）。"""
+    ico = Path(__file__).resolve().parent.parent / "assets" / ICON_NAME
+    return ico if ico.is_file() else None
+
+
+def _write_launcher(port: int | None = None, script: Path | None = None) -> Path:
+    """在数据目录写一个静默启动器的 .vbs。
+
+    `script` 可显式指定 panel_server.py（安装到全局技能目录后，快捷方式应指向
+    那一份，而不是当前运行的开发副本）。
+    """
     home = Path(core.HOME)
     home.mkdir(parents=True, exist_ok=True)
     launcher = home / LAUNCHER_NAME
     pyw = _pythonw()
-    script = _panel_script()
+    script = Path(script) if script else _panel_script()
     arg = f" --port {port}" if port else ""
     # VBS：0 = 隐藏窗口运行；路径含空格用双引号包住（VBS 里 "" 表示一个 "）。
     # ⚠ 必须以 **UTF-16LE + BOM** 写盘：wscript 默认按 ANSI 解析 .vbs，
@@ -83,14 +93,23 @@ def _ps_quote(s: str) -> str:
     return "'" + str(s).replace("'", "''") + "'"
 
 
-def create(name: str = SHORTCUT_NAME, port: int | None = None) -> dict:
+def _icon_ps() -> str:
+    """快捷方式图标那一段 PowerShell（没图标文件就返回空串，保持原样）。"""
+    ico = _icon_path()
+    if not ico:
+        return ""
+    return f"$s.IconLocation = {_ps_quote(str(ico) + ',0')}; "
+
+
+def create(name: str = SHORTCUT_NAME, port: int | None = None,
+           script: Path | None = None) -> dict:
     """在桌面创建「灵枢面板」快捷方式；已存在则覆盖。返回结果字典。"""
     if os.name != "nt":
         return {"ok": False, "reason": "只支持 Windows"}
     desktop = _desktop_dir()
     if not desktop.is_dir():
         return {"ok": False, "reason": f"桌面目录不存在：{desktop}"}
-    launcher = _write_launcher(port)
+    launcher = _write_launcher(port, script)
     lnk = desktop / f"{name}.lnk"
     ps = (
         "$ws = New-Object -ComObject WScript.Shell; "
@@ -99,7 +118,8 @@ def create(name: str = SHORTCUT_NAME, port: int | None = None) -> dict:
         f"$s.Arguments = '\"{launcher}\"'; "
         f"$s.WorkingDirectory = {_ps_quote(str(Path(launcher).parent))}; "
         f"$s.Description = '启动灵枢可视化面板'; "
-        "$s.WindowStyle = 7; "
+        + _icon_ps()
+        + "$s.WindowStyle = 7; "
         "$s.Save(); "
         "Write-Output 'ok'"
     )
@@ -130,6 +150,23 @@ def remove(name: str = SHORTCUT_NAME) -> dict:
     except OSError as exc:
         return {"ok": False, "reason": f"删除失败：{exc}"}
     return {"ok": True, "removed": removed, "path": str(lnk)}
+
+
+def ensure(name: str = SHORTCUT_NAME, script: Path | None = None) -> dict:
+    """**幂等**：桌面没有才创建，已有就不动。
+
+    给"安装完成后自动生成"用——重复安装不该反复覆盖用户的快捷方式
+    （用户可能自己改过图标/位置）。受 config.desktop_shortcut 控制（默认开）。
+    """
+    try:
+        if not bool(core.load_config().get("desktop_shortcut", True)):
+            return {"ok": True, "skipped": True, "reason": "config.desktop_shortcut=false"}
+    except Exception:
+        pass
+    if shortcut_exists(name):
+        return {"ok": True, "skipped": True, "reason": "桌面已有快捷方式，未改动",
+                "path": str(_desktop_dir() / f"{name}.lnk")}
+    return create(name, script=script)
 
 
 def shortcut_exists(name: str = SHORTCUT_NAME) -> bool:

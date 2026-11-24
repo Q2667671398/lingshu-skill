@@ -2653,6 +2653,14 @@ def install_skill(name: str, force: bool = False, from_dir: str | None = None,
         pass
     if _is_lingshu(name, meta, from_dir):
         _accept_risk(name)  # 记下：用户已明确接受灵枢的风险
+    # P12：装完自动在桌面放「灵枢面板」快捷方式（幂等、可关、失败不影响安装）
+    try:
+        import desktop_shortcut as _ds
+        _panel = Path(dst) / "scripts" / "panel_server.py"
+        _ds.ensure(script=_panel if _panel.is_file() else None)
+    except Exception as exc:  # noqa: BLE001
+        brain.log_event("shortcut", f"自动创建桌面快捷方式失败（不影响安装）：{exc}",
+                        level="warn")
     return {"name": name, "state": "installed", "path": str(dst), "agents": str(agents),
             "legacy": _legacy_global_dir(name), "stale": stale}
 

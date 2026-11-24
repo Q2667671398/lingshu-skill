@@ -1,12 +1,12 @@
 {
-  "version": "4.4",
+  "version": "4.5",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "60235fbe577797ceec0514a74dda5eadc6c9d6aa724320a8f0f58614de318f70",
-      "size": 298612
+      "sha256": "bc99b40a9b31b1e936f3746df253264a185503ceea5115d4cf9909297eb049a1",
+      "size": 300391
     },
     "README.md": {
-      "sha256": "e75bf24c604a990a65e17064a341aa02989602edc458d131f5ec9f7530af45cd",
+      "sha256": "eee3d3ab62966c0072a244c0328f52531ca236963fbd1b049d1c724357eecccb",
       "size": 64471
     },
     "SKILL-lite.md": {
@@ -18,8 +18,16 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "cc3e90e6a5443fa7e71eceec17b65d69728c078cff023401c7f8fe8bd7751c2d",
+      "sha256": "808e5e3a40113a9159d58ba85ef4174c4113c445fe6cc6ba67ea76cec21cecd7",
       "size": 36183
+    },
+    "assets/lingshu-icon-preview.png": {
+      "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
+      "size": 30948
+    },
+    "assets/lingshu.ico": {
+      "sha256": "03feacf1dd21587d04b5784a5313e7754bb9192e64540b3dd4a1993fd1551b3c",
+      "size": 53917
     },
     "assets/panel.html": {
       "sha256": "015e0b5d38f5bd14b26920998aa849657cb8441cd65f07c81c3fd979f0fe21f0",
@@ -78,8 +86,8 @@
       "size": 54
     },
     "docs/commands.md": {
-      "sha256": "e023e47ce94503ad40c3a0398f67ee5cfcf05dea810fecd2644a5c909dbf5a15",
-      "size": 27556
+      "sha256": "ede9351a28478bcb8f5a8af2b63fccb1965d5e995fda1eecb470c72e7b8a69c5",
+      "size": 27957
     },
     "docs/mechanics.md": {
       "sha256": "e8a6602a434ed5b78cac64a98884f65a6888eb48daa7a1c0be1f6c3984041b34",
@@ -110,15 +118,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "8bb1db71c324f9464cc72f8e781961edb32d41359a920fb8d9d88590adb76d0c",
-      "size": 123423
+      "sha256": "83e0ce7a0cf719aa0cb1308d611fcc84ac73e4a8ecfd64544754404650eea648",
+      "size": 125687
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "7f4a65f0c7387aff8aa30f9a94d6923cb4698e3ddc5cdbd4e452eaa6df0a5628",
+      "sha256": "efbee2b851fdf29f6ea6cc5aff9dcd7b934fecb0c8a587794e9f2ecb8aa877aa",
       "size": 1340
     },
     "scripts/assembler.py": {
@@ -154,20 +162,20 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "9f18946a755a0c03bf17736988712c74bd74fcc651f090021e8176bdeaedb309",
-      "size": 286358
+      "sha256": "d74bed5414da2bfdc03d70d3187df3026560f31844e29b70765e292b9f21ee86",
+      "size": 286701
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
       "size": 9928
     },
     "scripts/core.py": {
-      "sha256": "4797a9e32a097f64bb09f28aaca5b4f589e5bfd1391a87be9aa92dc53edddba5",
-      "size": 98845
+      "sha256": "778ec1935722c0a32ee0a4b416f6676fd7599541fd1d50b2d78dbe4aaaee60c8",
+      "size": 98990
     },
     "scripts/desktop_shortcut.py": {
-      "sha256": "f2b9bfe4f62597ce237d0468e4e25c88405b84cc961f1988a1ab8239cbead240",
-      "size": 5123
+      "sha256": "d94cdfb18c7d3e1e615c5f339f57298b5ab2bd7ab85bc443fed04c89cbe82c3e",
+      "size": 6697
     },
     "scripts/dream.py": {
       "sha256": "c1ba3de2958fb045db7b6962a6dd0fcf70f225bfb4d372dd9c3e8584e4f759ce",
@@ -186,8 +194,8 @@
       "size": 4363
     },
     "scripts/growth.py": {
-      "sha256": "fc9784c790f3c33cc1de58c660957e9c2e3accd29cede38eb6139315d595833a",
-      "size": 223166
+      "sha256": "8953ffbe14a05ed6e9a7900db2a872845d8f06092cd2d2f1af33a5a7db64b97b",
+      "size": 223638
     },
     "scripts/growth_parts.py": {
       "sha256": "d8f8d1808d4097630e7a0425d1ad9bc8f3826c11a64625304e25336f2a8aa592",
@@ -208,6 +216,10 @@
     "scripts/make_dsh_tgz.py": {
       "sha256": "d7371a4e521925d9b0cafee374c940baf5b2d5d96f4971f941b57fe46be355b2",
       "size": 3631
+    },
+    "scripts/make_icon.py": {
+      "sha256": "0bc823c4061e5d281db9d7e042c2e5a39dc5b7b4102dedea57514e4b38baf60a",
+      "size": 5191
     },
     "scripts/make_manifest.py": {
       "sha256": "637b2fbfaf6e540356f87329526f83a96ca1d51f019f54aac31e9c1113ffc65b",

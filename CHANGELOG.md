@@ -1,5 +1,32 @@
 # 更新日志
 
+## v4.5（2026-11-24）
+
+> 主题：**图标换新 + 装完自动建快捷方式 + GitHub CI 全红修复**。
+
+### 图标（#80）
+
+- 新增 `scripts/make_icon.py`（Pillow，**仅开发工具**，运行时仍零依赖）：深色圆角底 + 琥珀神经核 + 6 卫星节点，配色沿用面板变量（amber `#d9a441`）。
+- 产出 `assets/lingshu.ico`：**16/24/32/48/64/128/256 七个尺寸**，4 倍超采样后 LANCZOS 缩小（Pillow 不自动抗锯齿）。16px 也要认得出，所以刻意压低细节密度、加粗线条。
+- 快捷方式通过 `IconLocation` 用上该图标。
+
+### 装完自动建桌面快捷方式（#81）
+
+- `growth.install_skill()` 成功后调用 `desktop_shortcut.ensure()`：
+  - **幂等**（桌面已有就不动，不覆盖用户改过的图标/位置）；
+  - **可关**（`config.desktop_shortcut`，默认 True）；
+  - **fail-open**（失败只写 warn，绝不让安装失败）；
+  - 指向**装好的那份** `panel_server.py`，不是开发副本。
+- 新增 `brain.py shortcut --ensure`。
+
+### GitHub CI 全红（#82）
+
+- **现象**：`ci / consistency` ubuntu 与 windows 双平台 15~29 秒失败。
+- **根因**：CI 的 `tests` 步骤让 43 个测试文件**共用一个 `BRAIN_MEMORY_HOME`**，前面测试写进共享库的记忆污染后面——二分定位到 `test_context_ab.py` 之后 `test_inject_lazy.py` 的预算用例必挂（单跑必过）。项目约定本来是「每个测试文件独立临时 HOME」（`run_tests.py` 一贯如此）。
+- **修**：`ci.yml` 循环内按序号建 `ls-ci-home-$i` / `ls-ci-skills-$i`。实测 43/43 全过。
+
+验证：`tests/test_p12_icon_shortcut_ci.py` 5/5（图标多尺寸/生成器可重跑/快捷方式带图标且幂等/可关/CI 每文件独立 HOME）。
+
 ## v4.4（2026-11-24）
 
 > 主题：**垃圾桶的自净**——回归测试不该往用户真实垃圾桶里丢文件。

@@ -331,6 +331,8 @@ DEFAULT_CONFIG = {
     # 开启后 cron 每 N 小时查一次，发现新版本才走 apply_update
     # （原子 staging + 全量备份 + 回滚兜底），更新前强制先备份记忆库。
     "auto_update": False,
+    # 安装完成后是否自动在桌面生成「灵枢面板」快捷方式（默认开；已存在不覆盖）
+    "desktop_shortcut": True,
     "auto_update_interval_hours": 24,
     "session_state_cache": False,
     "session_state_ttl": 300,
