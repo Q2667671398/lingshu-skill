@@ -1558,6 +1558,13 @@ def _main(argv=None) -> int:
     p_ck.add_argument("--force", action="store_true", help="即使和上次一致也写一条")
     p_ck.add_argument("--json", action="store_true")
 
+    # 「垃圾桶」规矩：AI 只移不删，用户自己清
+    p_tr = sub.add_parser("trash", help="把文件/目录移进程序目录的「垃圾桶」（不删除，可找回）")
+    p_tr.add_argument("paths", nargs="*", help="要移入垃圾桶的路径（可多个）")
+    p_tr.add_argument("--why", default="", help="为什么待删（会写进来源记录）")
+    p_tr.add_argument("--list", action="store_true", help="查看垃圾桶里有什么")
+    p_tr.add_argument("--json", action="store_true")
+
     # P11 #76 桌面快捷方式「灵枢面板」
     p_sc = sub.add_parser("shortcut", help="在桌面生成/删除「灵枢面板」快捷方式（静默启动面板）")
     p_sc.add_argument("--name", default="灵枢面板", help="快捷方式名字（默认 灵枢面板）")
@@ -2094,6 +2101,7 @@ def _main(argv=None) -> int:
             or (args.cmd == "rebuild-embeds")                          # 重建向量写回各层文件
             or (args.cmd == "drift")                                   # 漂移走 persona.json 写盘
             or (args.cmd == "auto-archive" and not args.dry_run)
+            or (args.cmd == "trash" and not args.list)  # 移动文件
             or (args.cmd == "shortcut")                # 写桌面 .lnk
             or (args.cmd == "auto-update" and not args.check)   # 改自身代码
         )
@@ -2540,6 +2548,37 @@ def _main(argv=None) -> int:
         print(json.dumps(rep, ensure_ascii=False, indent=2) if args.json
               else f"OK {rep}")
         return 0
+
+    if args.cmd == "trash":
+        import trash as _trash
+        if args.list:
+            info = _trash.list_trash()
+            if args.json:
+                print(json.dumps(info, ensure_ascii=False, indent=2))
+                return 0
+            print(f"垃圾桶：{info['dir']}")
+            if not info["items"]:
+                print("  （空）")
+            for it in info["items"]:
+                print(f"  {'[目录] ' if it['is_dir'] else ''}{it['name']}  {it['mtime']}")
+            print("\n清空由你自己做（AI 不删文件）。")
+            return 0
+        if not args.paths:
+            print("用法：brain.py trash <路径...> [--why 原因]；查看用 trash --list",
+                  file=sys.stderr)
+            return 1
+        res = _trash.move_to_trash(args.paths, args.why)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0 if res["ok"] else 1
+        for m in res["moved"]:
+            print(f"已移入垃圾桶：{m['from']}")
+            print(f"  → {m['to']}")
+        for f in res["failed"]:
+            print(f"[跳过] {f['path']}：{f['error']}", file=sys.stderr)
+        if res["moved"]:
+            print("没有删除任何东西；要清空请你自己动手。")
+        return 0 if res["ok"] else 1
 
     if args.cmd == "shortcut":
         import desktop_shortcut as _ds
