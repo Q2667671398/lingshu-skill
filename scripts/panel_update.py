@@ -27,24 +27,51 @@ def enabled() -> bool:
     return bool(_cfg().get("auto_update"))
 
 
-def check(force_pull: bool = False) -> dict:
-    """查有没有新版本（只读）。"""
+def _normalize(res: dict) -> dict:
+    """把 growth.update_check 的字段名补成调用方好用的别名，**不改原字段**。
+
+    历史坑：run() 判断的是 `update_available`，而 update_check 返回的是 `outdated`，
+    于是自动更新永远走"已是最新"分支——功能等于没接上。
+    """
+    if not isinstance(res, dict):
+        return res
+    if "update_available" not in res:
+        res["update_available"] = bool(res.get("outdated"))
+    res.setdefault("current", res.get("installed_version"))
+    res.setdefault("latest", res.get("source_version") or res.get("version"))
+    return res
+
+
+def check(force_pull: bool = False, source: str | None = None) -> dict:
+    """查有没有新版本（只读）。`source` 可强制 "npm" / "git"。"""
     import growth
     try:
-        return growth.update_check("lingshu", force_pull=force_pull)
+        if source:
+            # 强制指定源时先把它解析出来（顺带把"能不能拿到"这件事暴露给调用方）
+            src, kind = growth.resolve_source("lingshu", force_pull=force_pull,
+                                              prefer=source)
+            res = growth.update_check("lingshu", force_pull=force_pull,
+                                      prefer=source)
+            if isinstance(res, dict):
+                res["source"] = kind
+                res["source_kind"] = kind
+                res["target_path"] = str(src)
+            return _normalize(res)
+        return _normalize(growth.update_check("lingshu", force_pull=force_pull,
+                                              prefer=source))
     except Exception as exc:  # noqa: BLE001
         core.log_event("update", f"检查更新失败：{exc}", level="warn")
         return {"ok": False, "error": str(exc)}
 
 
-def run(force: bool = False) -> dict:
-    """执行一次自动更新（含更新前备份）。返回结果字典。"""
+def run(force: bool = False, source: str | None = None) -> dict:
+    """执行一次自动更新（含更新前备份）。`source` 可强制 "npm" / "git"。"""
     if core.READONLY:
         return {"ok": False, "reason": "记忆库只读，跳过自动更新"}
     if not force and not enabled():
         return {"ok": False, "skipped": True, "reason": "auto_update 未开启"}
 
-    chk = check(force_pull=True)
+    chk = check(force_pull=True, source=source)
     if not chk or not chk.get("update_available"):
         return {"ok": True, "skipped": True,
                 "reason": "已是最新", "current": chk.get("current"),
@@ -67,15 +94,17 @@ def run(force: bool = False) -> dict:
     # ② 原子更新
     try:
         import growth
-        src, kind = growth.resolve_source("lingshu", force_pull=False)
+        src, kind = growth.resolve_source("lingshu", force_pull=False,
+                                          prefer=source)
         res = growth.install_skill("lingshu", force=True, from_dir=str(src))
     except Exception as exc:  # noqa: BLE001
         core.log_event("update", f"自动更新失败：{exc}", level="error")
         return {"ok": False, "reason": f"更新失败（已回滚）：{exc}", "backup": bak}
 
-    core.log_event("update", f"自动更新完成：{chk.get('current')} → {chk.get('latest')}；"
-                             f"更新前备份 {bak}")
+    core.log_event("update", f"自动更新完成（来源 {chk.get('source') or 'auto'}）："
+                             f"{chk.get('current')} → {chk.get('latest')}；更新前备份 {bak}")
     return {"ok": True, "updated": True, "backup": bak,
+            "source": chk.get("source") or "auto",
             "from": chk.get("current"), "to": chk.get("latest"),
             "detail": res if isinstance(res, dict) else str(res),
             "at": int(time.time())}

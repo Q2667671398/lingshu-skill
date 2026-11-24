@@ -340,6 +340,8 @@ DEFAULT_CONFIG = {
     # 面板空闲多少分钟自动退出（0 = 永不）。页面挂着长轮询保活（不受后台定时器节流影响），
     # 关掉网页后连接断开 → 到点自退。默认 1 分钟：关掉尽快回收，不占后台。
     "panel_idle_minutes": 1,
+    # 更新下载源：auto=npm 优先（失败退回 Gitee/GitHub）/ npm=只走 npm / git=只走 Gitee/GitHub
+    "update_source": "auto",
     "auto_update_interval_hours": 24,
     "session_state_cache": False,
     "session_state_ttl": 300,

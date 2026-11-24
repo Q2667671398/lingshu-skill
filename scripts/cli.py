@@ -1608,6 +1608,9 @@ def _main(argv=None) -> int:
     p_au.add_argument("--check", action="store_true", help="只检查有没有新版本，不安装")
     p_au.add_argument("--force", action="store_true", help="忽略 auto_update 开关强制执行一次")
     p_au.add_argument("--json", action="store_true")
+    p_au.add_argument("--source", choices=["auto", "npm", "git"], default="auto",
+                      help="下载源：auto（npm 优先，失败退回 Gitee/GitHub）/ npm（只走 npm）/ "
+                           "git（只走 Gitee/GitHub）")
 
     # 附录 C P2 收尾：触发 + 落盘 + 回滚
     p_ss = sub.add_parser("session-summary",
@@ -2655,15 +2658,17 @@ def _main(argv=None) -> int:
 
     if args.cmd == "auto-update":
         import panel_update as _pu
+        _src = None if args.source == "auto" else args.source
         if args.check:
-            res = _pu.check(force_pull=True)
+            res = _pu.check(force_pull=True, source=_src)
             if args.json:
                 print(json.dumps(res, ensure_ascii=False, indent=2))
                 return 0
             print(f"当前 {res.get('current')} / 最新 {res.get('latest')} "
+                  f"（来源 {res.get('source') or 'auto'}）"
                   f"→ {'有新版可更新' if res.get('update_available') else '已是最新'}")
             return 0
-        res = _pu.run(force=args.force)
+        res = _pu.run(force=args.force, source=_src)
         if args.json:
             print(json.dumps(res, ensure_ascii=False, indent=2))
             return 0 if res.get("ok") else 1
@@ -2671,7 +2676,8 @@ def _main(argv=None) -> int:
             print(f"跳过：{res.get('reason')}")
             return 0
         if res.get("ok"):
-            print(f"已更新：{res.get('from')} → {res.get('to')}；更新前备份 {res.get('backup')}")
+            print(f"已更新（来源 {res.get('source') or 'auto'}）："
+                  f"{res.get('from')} → {res.get('to')}；更新前备份 {res.get('backup')}")
             return 0
         print(f"[错误] {res.get('reason')}", file=sys.stderr)
         return 1

@@ -76,6 +76,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
      "hint": "送进 rerank 的候选条数，越大越准也越慢"},
 
     # —— 面板与宿主 ——
+    {"key": "update_source", "group": "自动更新与备份", "label": "更新下载源",
+     "kind": "enum", "options": ["auto", "npm", "git"],
+     "hint": "auto=npm 优先（失败退回 Gitee/GitHub）；npm=只走 npm 官方包；git=只走 Gitee/GitHub"},
     {"key": "panel_idle_minutes", "group": "面板与宿主", "label": "空闲自动退出（分钟）",
      "kind": "int", "min": 0, "max": 1440, "step": 5,
      "hint": "关掉网页后，多少分钟没请求就自动退出服务（默认 1）；0=永不退出（需重启面板生效）"},

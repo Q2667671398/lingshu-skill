@@ -3605,7 +3605,9 @@ async function checkUpdate(auto){
       dot.style.display = "inline-block";
       // auto 模式只点亮红点不弹窗：自动检查的本意是"不打扰"，弹窗会打断用户手头操作
       if (auto) return;
-      const srcLabel = r.source_kind === "dev" ? "来源：本地开发仓库"
+      const srcLabel = r.source_kind === "npm" || r.source === "npm"
+                       ? "来源：npm 官方包" + (r.npm && r.npm.version ? "（v" + r.npm.version + "）" : "")
+                     : r.source_kind === "dev" ? "来源：本地开发仓库"
                      : r.source_kind === "remote" ? "来源：Gitee 远程"
                      : r.source === "gitee" ? "来源：Gitee 远程"
                      : r.source === "github" ? "来源：GitHub 远程"
@@ -3669,6 +3671,31 @@ async function checkUpdate(auto){
 }
 function showUpdModal(title, detail, canApply){
   $("upd-title").textContent = title;
+  // 有更新时才显示"下载源"选择：npm 官方包 vs Gitee/GitHub，各有所长
+  const srcRow = $("upd-src-row");
+  if (srcRow) srcRow.style.display = canApply ? "flex" : "none";
+  // 记住上次选的下载源：用户特意选了 npm/git，下次不该又跳回"跟随设置"
+  const sel = $("upd-source");
+  if (sel && !sel.dataset.inited) {
+    sel.dataset.inited = "1";
+    try {
+      const last = localStorage.getItem("ls-upd-source");
+      if (last) sel.value = last;
+    } catch (_) {}
+    sel.addEventListener("change", () => {
+      try { localStorage.setItem("ls-upd-source", sel.value); } catch (_) {}
+    });
+  }
+  const npmInfo = $("upd-npm-info");
+  if (npmInfo) {
+    const nm = updLastCheck && updLastCheck.npm;
+    if (nm && nm.version) {
+      const kb = nm.unpacked ? "，解包约 " + Math.round(Number(nm.unpacked) / 1024) + " KB" : "";
+      npmInfo.textContent = "npm 最新 v" + nm.version + kb + (nm.cached ? "（缓存）" : "");
+    } else {
+      npmInfo.textContent = "";
+    }
+  }
   $("upd-detail").innerHTML = String(detail).replace(/\n/g, "<br>");
   $("upd-detail").parentElement.style.maxHeight = "60vh";   // 更新说明可能很长，限高
   $("upd-detail").parentElement.style.overflowY = "auto";
@@ -3776,7 +3803,12 @@ $("upd-apply").addEventListener("click", async () => {
   updApplyBusy = true;
   try {
     // 更新前确认：明确标注来源类型与目标路径，杜绝"有更新但点了无响应"的疑虑
-    const kindTxt = updLastCheck.source_kind === "dev" ? "从本地开发仓库同步"
+    // 用户在弹窗里选的下载源（auto=跟随设置）。显式选了就覆盖检查时的来源说明。
+    const pickedSrc = ($("upd-source") && $("upd-source").value) || "auto";
+    const kindTxt = pickedSrc === "npm" ? "从 npm 官方包更新"
+                  : pickedSrc === "git" ? "从 Gitee / GitHub 更新"
+                  : updLastCheck.source_kind === "npm" ? "从 npm 官方包更新（跟随设置）"
+                  : updLastCheck.source_kind === "dev" ? "从本地开发仓库同步"
                   : updLastCheck.source_kind === "remote" || updLastCheck.source_kind === "gitee"
                   || updLastCheck.source_kind === "github" ? "从远程仓库（Gitee/GitHub）更新"
                   : "从已安装本地版本同步";
@@ -3794,7 +3826,8 @@ $("upd-apply").addEventListener("click", async () => {
     let r;
     try {
       r = await post("/api/skill", {action: "install", name: "lingshu",
-                                    force: true, yes: updRiskAccepted ? true : undefined},
+                                    force: true, source: pickedSrc === "auto" ? undefined : pickedSrc,
+                                    yes: updRiskAccepted ? true : undefined},
                     {signal: AbortSignal.timeout(APPLY_TIMEOUT)});
     } catch (netErr) {
       // 网络层失败（超时/断连）：给一次自动重试的机会——远程源拉取对匿名风控
@@ -3803,7 +3836,8 @@ $("upd-apply").addEventListener("click", async () => {
                    "\n\n可能是网络抖动或匿名限流。要自动重试一次吗？（点取消放弃本次更新）")) throw netErr;
       btn.textContent = "重试中…";
       r = await post("/api/skill", {action: "install", name: "lingshu",
-                                    force: true, yes: updRiskAccepted ? true : undefined},
+                                    force: true, source: pickedSrc === "auto" ? undefined : pickedSrc,
+                                    yes: updRiskAccepted ? true : undefined},
                     {signal: AbortSignal.timeout(APPLY_TIMEOUT)});
     }
     const st = r.result && r.result.state;
@@ -3821,7 +3855,8 @@ $("upd-apply").addEventListener("click", async () => {
     if (st === "failed" || r.ok === false) throw new Error((r.result && r.result.error) || "更新失败");
     progress.set(100);
     updRiskAccepted = false;   // 下次更新重新走一遍风险告知
-    toast("灵枢本体已更新——重启面板（关掉再开）后新版本才生效");
+    const doneSrc = (r.result && r.result.source) || pickedSrc;
+    toast("灵枢本体已更新（来源 " + doneSrc + "）——重启面板（关掉再开）后新版本才生效");
     $("upd-modal").classList.add("hidden");
     const dot2 = $("upd-dot"); if (dot2) dot2.style.display = "none";
     await loadWS();

@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v5.10**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v5.11**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -794,7 +794,7 @@ python scripts/brain.py doctor               # 看 desktop-shortcut 一项是否
 **默认关**（自动改自己的代码风险高，必须显式开启）：`config.auto_update` + 面板「设置」页开关。
 
 ```bash
-python scripts/brain.py auto-update [--check] [--force]
+python scripts/brain.py auto-update [--check] [--force] [--source auto|npm|git]
 ```
 
 执行顺序是**死的**，任一步失败都不留半新半旧：
@@ -802,9 +802,31 @@ python scripts/brain.py auto-update [--check] [--force]
 ```
 ① 查有没有新版（没有就跳过）
 ② 先备份记忆库 —— 备份失败就中止（宁可旧代码，不能丢记忆）
-③ growth.apply_update 原子替换（SHA256 校验 / 全量备份 / 回滚兜底）
+③ 下载源解析 → 原子替换（SHA256 校验 / 全量备份 / 回滚兜底）
 ④ 写审计日志
 ```
+
+### 下载源：npm 优先，Gitee/GitHub 兜底
+
+面板「检查更新」弹窗里可以选**下载源**，也可以改设置页的「更新下载源」：
+
+| 源 | 说明 |
+|---|---|
+| **npm**（默认优先） | 官方发布渠道 `npm i lingshu-skill`。CDN 快、有版本号、有 **shasum（sha1）可校验**；比 Gitee/GitHub 的 zip 下载稳（后者受匿名限额与网络波动影响） |
+| **Gitee / GitHub** | 仓库 zip 兜底。npm 不可用时自动回退 |
+| **跟随设置** | 默认 `update_source=auto`：先 npm，失败再 Gitee/GitHub |
+
+**零依赖实现**：`urllib` 取 registry 元数据 → 下 tarball → 校验 sha1 → `tarfile` 解包（只取 `package/` 前缀、**逐条拒绝 `../` 路径穿越与符号链接**）。不需要装 npm CLI。
+
+**切换源即作废缓存**：检查结果缓存里记了来源，把 `update_source` 从 git 改成 npm 后，
+旧的 git 结论不会冒充"已是最新"。
+
+### 修掉一个"功能等于没接上"的 bug
+
+`panel_update.run()` 判断的是 `chk["update_available"]`，而 `growth.update_check()` 返回的字段叫
+**`outdated`** —— 于是 CLI / cron 的自动更新**永远**走"已是最新"分支，从不真正更新。
+现在 `panel_update.check()` 做字段归一化（补 `update_available` / `current` / `latest`），
+并在 `tests/test_p24_update_npm.py` 里钉死。
 
 ## 多群/多会话：通道三元组（v2.34）
 

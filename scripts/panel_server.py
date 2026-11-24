@@ -737,17 +737,34 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(url.query)
             auto = (qs.get("auto") or ["0"])[0] in ("1", "true", "yes")
             refresh = (qs.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+            src_pref = (qs.get("source") or [""])[0].strip().lower()
+            if src_pref not in ("npm", "git"):
+                src_pref = ""
             res = growth.update_check("lingshu", force_pull=refresh, auto=auto)
             # 透出源类型（dev/remote/installed/none）与源目标路径，供前端确认框展示。
             # 注意：这里不能再 force_pull=refresh——update_check 刚拉过一遍远程并写了
             # 缓存，再来一遍等于把整条 Gitee/GitHub 拉取链路跑两次，手动检查必然超时。
             if isinstance(res, dict) and res.get("cached") is not False:
                 try:
-                    src, kind = growth.resolve_source("lingshu", force_pull=False)
+                    src, kind = growth.resolve_source("lingshu", force_pull=False,
+                                                      prefer=(src_pref or None))
                     res["source_kind"] = kind
+                    res["source"] = kind
                     res["target_path"] = str(src)
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
                     res.setdefault("source_kind", res.get("source", "none"))
+                    res["source_error"] = str(exc)[:200]
+            # 手动检查时附带 npm 版本信息（走缓存，不打二次网络）：前端能显示
+            # "npm 最新 vX（~N KB）"，让用户知道这个下载方式可用、多大。
+            if isinstance(res, dict) and refresh and not auto:
+                try:
+                    nm = growth.npm_latest(force=False)
+                    if nm.get("ok"):
+                        res["npm"] = {"version": nm.get("version"),
+                                      "unpacked": nm.get("unpacked"),
+                                      "cached": bool(nm.get("cached"))}
+                except Exception:
+                    pass
             self._json(res)
             return
         if path == "/api/workspace":
@@ -1634,14 +1651,29 @@ def _api_skill(self, path, data):
                                 data.get("append"), data.get("description"))
         self._json({"ok": True, "skill": res, "workspace": workspace()})
     elif act == "install":
-        # 面板安装忽略 from_dir：本地 CLI 才能指外部目录，防远程乱指
-        res = growth.install_skill(data.get("name", ""),
+        # 面板安装忽略前端传的 from_dir：本地 CLI 才能指外部目录，防远程乱指。
+        # 但允许传**下载源枚举**（npm/git）：目录由服务端自己 resolve，客户端拿不到路径控制权。
+        _name = data.get("name", "")
+        _src_pref = str(data.get("source") or "").strip().lower()
+        _from = None
+        if _src_pref in ("npm", "git") and _name:
+            try:
+                _dir, _kind = growth.resolve_source(_name, force_pull=True,
+                                                    prefer=_src_pref)
+                _from = str(_dir)
+            except KeyError as exc:
+                self._json({"error": f"{_src_pref} 下载源不可用：{exc}"}, 502)
+                return
+        res = growth.install_skill(_name,
                                    bool(data.get("force")),
-                                   None,
+                                   _from,
                                    accept_risk=bool(data.get("yes")))
+        if isinstance(res, dict):
+            res.setdefault("source", _src_pref or "auto")
         # 面板触发的更新/安装要留痕（特别是本体 lingshu）：事后能查谁在何时更新到什么状态
-        brain.log_event("panel", f"安装/更新技能 {data.get('name', '')} "
-                                 f"(force={bool(data.get('force'))}) → {res.get('state')}")
+        brain.log_event("panel", f"安装/更新技能 {_name} "
+                                 f"(源={_src_pref or 'auto'}, force={bool(data.get('force'))}) "
+                                 f"→ {res.get('state')}")
         self._json({"ok": True, "result": res, "workspace": workspace()})
         return
     elif act == "uninstall":

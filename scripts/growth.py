@@ -19,11 +19,13 @@ import http.client
 import json
 import os
 import subprocess
+import tarfile
 import re
 import shutil
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -1178,6 +1180,13 @@ def list_skills() -> list:
 # base64 拉取。Gitee 匿名 API 会触发 IP 风控（403），GitHub 匿名限额 60 次/小时
 # 按 IP 共享易耗尽；可在 config.json 配 gitee_token / github_token 走认证
 # （python scripts/brain.py config set gitee_token <token>）。token 绝不写日志。
+# npm 官方发布渠道：`npm i lingshu-skill`。CDN 快、有版本号与 shasum 可校验，
+# 比 Gitee/GitHub 的 zip 下载稳（后者受匿名限额与网络波动影响）。
+NPM_PACKAGE = "lingshu-skill"
+NPM_REGISTRY = "https://registry.npmjs.org"
+NPM_META_TTL = 600            # 版本信息缓存 10 分钟，别每次点都打 registry
+NPM_MAX_BYTES = 60 * 1024 * 1024   # 包体上限（防被塞个巨大文件）
+
 GITEE_API_BASE = "https://gitee.com/api/v5/repos/htmcwy_0/lingshu-skill"
 GITEE_BRANCH = "main"
 GITHUB_REPO = "Q2667671398/lingshu-skill"
@@ -1973,6 +1982,140 @@ def _lingshu_remote_source_locked(force: bool) -> tuple[Path | None, str, str]:
     return None, "none", err
 
 
+def _npm_meta_cache_path() -> Path:
+    return brain.HOME / "npm-meta.json"
+
+
+def npm_latest(force: bool = False, timeout: int = 20) -> dict:
+    """查 npm 上 lingshu-skill 的最新版本（只读，带缓存）。
+
+    返回 {ok, version, tarball, shasum, unpacked, fetched_at} 或 {ok: False, error}。
+    """
+    cache_p = _npm_meta_cache_path()
+    if not force:
+        try:
+            c = json.loads(cache_p.read_text(encoding="utf-8"))
+            if isinstance(c, dict) and time.time() - float(c.get("fetched_at") or 0) < NPM_META_TTL:
+                return {**c, "cached": True}
+        except (OSError, ValueError, TypeError):
+            pass
+    url = f"{NPM_REGISTRY}/{NPM_PACKAGE}/latest"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "lingshu-skill-updater",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        dist = data.get("dist") or {}
+        out = {"ok": True, "version": str(data.get("version") or ""),
+               "tarball": str(dist.get("tarball") or ""),
+               "shasum": str(dist.get("shasum") or ""),
+               "unpacked": int(dist.get("unpackedSize") or 0),
+               "fetched_at": int(time.time())}
+        if not out["version"] or not out["tarball"]:
+            return {"ok": False, "error": "npm 返回的版本信息不完整"}
+        try:
+            cache_p.parent.mkdir(parents=True, exist_ok=True)
+            cache_p.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _safe_extract_tgz(tgz_path: Path, dest: Path) -> Path:
+    """解包 npm tarball，只取 package/ 下的内容，且**逐条防路径穿越**。"""
+    dest.mkdir(parents=True, exist_ok=True)
+    root = None
+    with tarfile.open(tgz_path, "r:gz") as tf:
+        for m in tf.getmembers():
+            name = m.name.replace("\\", "/")
+            if m.issym() or m.islnk():
+                continue                      # 链接一律跳过（可指向包外）
+            if name.startswith("/") or ".." in Path(name).parts:
+                raise KeyError(f"npm 包内有可疑路径，已中止：{name}")
+            if not (name == "package" or name.startswith("package/")):
+                continue                      # 只解 package/ 前缀
+            rel = name[len("package"):].lstrip("/")
+            if not rel:
+                continue
+            target = dest / rel
+            if m.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not m.isfile():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            f = tf.extractfile(m)
+            if f is None:
+                continue
+            with open(target, "wb") as out:
+                shutil.copyfileobj(f, out)
+            if root is None:
+                root = dest
+    return root or dest
+
+
+def _lingshu_npm_source(force: bool = False) -> tuple[Path, str]:
+    """下载并解出 npm 版灵枢，返回 (源目录, "npm")；失败抛 KeyError 带原因。"""
+    meta = npm_latest(force=force)
+    if not meta.get("ok"):
+        raise KeyError(f"npm 版本查询失败：{meta.get('error')}")
+    ver = str(meta["version"])
+    dest = brain.HOME / "sources" / f"npm-{NPM_PACKAGE}-{ver}"
+    if (dest / "SKILL.md").is_file():
+        return dest, "npm"                   # 已经下过这个版本，直接复用
+    tmp_dir = dest.parent / f".npm-tmp-{ver}-{uuid.uuid4().hex[:8]}"
+    tgz = tmp_dir.with_suffix(".tgz")
+    try:
+        tmp_dir.parent.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(meta["tarball"],
+                                     headers={"User-Agent": "lingshu-skill-updater"})
+        h = hashlib.sha1()
+        got = 0
+        with urllib.request.urlopen(req, timeout=60) as r, open(tgz, "wb") as out:
+            while True:
+                chunk = r.read(256 * 1024)
+                if not chunk:
+                    break
+                got += len(chunk)
+                if got > NPM_MAX_BYTES:
+                    raise KeyError(f"npm 包体超过上限（>{NPM_MAX_BYTES // (1024 * 1024)}MB），已中止")
+                h.update(chunk)
+                out.write(chunk)
+        want = str(meta.get("shasum") or "")
+        if want and h.hexdigest() != want:
+            raise KeyError(f"npm 包校验失败（sha1 不符）：期望 {want[:12]}…，实得 {h.hexdigest()[:12]}…")
+        _safe_extract_tgz(tgz, tmp_dir)
+        if not (tmp_dir / "SKILL.md").is_file():
+            raise KeyError("npm 包里没有 SKILL.md，可能不是灵枢技能包")
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        tmp_dir.rename(dest)
+        try:
+            brain.log_event("update", f"已从 npm 下载灵枢 v{ver}（{got // 1024} KB，sha1 校验通过）")
+        except Exception:
+            pass
+        return dest, "npm"
+    except KeyError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise KeyError(f"npm 下载失败：{type(exc).__name__}: {exc}") from exc
+    finally:
+        try:
+            if tgz.is_file():
+                tgz.unlink()
+        except OSError:
+            pass
+        try:
+            if tmp_dir.is_dir():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
     """检查本地源与全局已装副本的差异，返回「更新了什么」明细。
 
@@ -2131,12 +2274,24 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
     return out
 
 
-def _load_update_cache() -> dict | None:
-    """读「检查更新」结果缓存；文件不存在/损坏返回 None。"""
+def _load_update_cache(prefer: str | None = None) -> dict | None:
+    """读「检查更新」结果缓存；文件不存在/损坏返回 None。
+
+    prefer 给了就做**来源一致性检查**：用户把 update_source 从 git 改成 npm 后，
+    旧的 git 结果不能冒充新来源的已是最新，否则切了源还是看到旧结论。
+    """
     try:
         if not UPDATE_CACHE_FILE.is_file():
             return None
-        return _read_json(UPDATE_CACHE_FILE)
+        data = _read_json(UPDATE_CACHE_FILE)
+        if not isinstance(data, dict):
+            return None
+        pref = str(prefer or "").strip().lower()
+        if pref in ("npm", "git"):
+            cached_src = str(data.get("source") or "").strip().lower()
+            if cached_src and cached_src != pref:
+                return None          # 来源换了：缓存作废，让调用方重新查
+        return data
     except (OSError, ValueError):
         return None
 
@@ -2149,19 +2304,22 @@ def _save_update_cache(result: dict) -> None:
         return
     try:
         UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        brain.atomic_json(UPDATE_CACHE_FILE, {"ts": int(time.time()), "result": result})
+        brain.atomic_json(UPDATE_CACHE_FILE, {"ts": int(time.time()),
+                                   "source": str(result.get("source") or ""),
+                                   "result": result})
     except (OSError, ValueError):
         pass
 
 
-def update_check(name: str = "lingshu", force_pull: bool = False, auto: bool = False) -> dict:
+def update_check(name: str = "lingshu", force_pull: bool = False, auto: bool = False,
+                 prefer: str | None = None) -> dict:
     """检查更新（带缓存）：auto=True 严格只读缓存绝不联网，force_pull=True 联网并刷新缓存。
 
     面板服务启动时后台用 force_pull=True 检测一次并写缓存；浏览器刷新面板
     用 auto=True（毫秒级返回，永不联网、永不阻塞页面），缓存不存在就返回
     cached=False 由前端自行降级。用户手动点「检查更新」才走 force_pull=True。
     """
-    cache = _load_update_cache()
+    cache = _load_update_cache(prefer)
     if auto:
         if cache and isinstance(cache.get("result"), dict):
             res = dict(cache["result"])
@@ -2377,8 +2535,8 @@ def _accept_risk(name: str) -> None:
             pass
 
 
-def resolve_source(name: str = "lingshu", force_pull: bool = False
-                   ) -> tuple[Path, str]:
+def resolve_source(name: str = "lingshu", force_pull: bool = False,
+                   prefer: str | None = None) -> tuple[Path, str]:
     """更新源解析的单一入口：dev → remote → installed，返回 (源目录, source_kind)。
 
     - dev：本地开发目录配置（config.json 里 sources.<name> 指向含 SKILL.md 的目录，
@@ -2387,31 +2545,65 @@ def resolve_source(name: str = "lingshu", force_pull: bool = False
       拉取失败抛出带原因的 KeyError。
     - installed：已安装本地版本（唯一保底，永远可解析）。
 
+    `prefer`：显式指定远程源（"npm" / "git"）。给了就**跳过 dev 判断**——
+    面板「从 npm 更新」与排障命令需要它，否则开发仓库里永远被 dev 抢先。
+
     update_check / install_skill / apply 流程统一从这里拿源，不再各写一套交织判断。
     """
     name = _require_slug(name)
-    # 1) 本地开发目录配置
+    _prefer_in = str(prefer or "").strip().lower()
+    if _prefer_in not in ("npm", "git"):
+        _prefer_in = ""
+    # 1) 本地开发目录配置（显式指定远程源时跳过，避免 dev 把 npm/git 抢掉）
     try:
         cfg = _read_json(brain.HOME / "config.json")
         dev = str((cfg.get("sources") or {}).get(name) or "").strip()
-        if dev and (Path(dev).expanduser() / "SKILL.md").is_file():
+        if (not _prefer_in and dev
+                and (Path(dev).expanduser() / "SKILL.md").is_file()):
             return Path(dev).expanduser(), "dev"
     except (OSError, ValueError, AttributeError):
         pass
     # 2) 面板跑在开发仓库里：自身目录即源（且不是已装副本自己比自己）
     try:
         self_dir = Path(__file__).resolve().parent.parent
-        if ((self_dir / "SKILL.md").is_file() and _is_lingshu(name, {}, None)
+        if (not _prefer_in
+                and (self_dir / "SKILL.md").is_file() and _is_lingshu(name, {}, None)
                 and self_dir.resolve() != _find_installed(name).resolve()):
             return self_dir, "dev"
     except (OSError, ValueError, KeyError):
         pass
     # 3) 远程拉取（灵枢本体专属能力）
+    #    优先 **npm**：官方发布渠道、CDN 快、有版本号与 shasum 可校验；
+    #    Gitee/GitHub 的 zip 下载受匿名限额与网络波动影响（历史上"远程拉取失败"多卡在这）。
     if _is_lingshu(name, {}, None):
+        _prefer = "auto"
+        if _prefer_in:
+            _prefer = _prefer_in          # 显式参数优先于配置
+        else:
+            try:
+                _prefer = str((_read_json(brain.HOME / "config.json")
+                               .get("update_source") or "auto")).strip().lower()
+            except (OSError, ValueError, AttributeError):
+                _prefer = "auto"
+        if _prefer not in ("auto", "npm", "git"):
+            _prefer = "auto"
+        _npm_err = None
+        if _prefer in ("auto", "npm"):
+            try:
+                _dir, _kind = _lingshu_npm_source(force=force_pull)
+                return _dir, _kind
+            except KeyError as e:
+                _npm_err = str(e)
+                if _prefer == "npm":
+                    raise KeyError(f"npm 下载失败：{_npm_err}") from e
         remote, source, err = _lingshu_remote_source(force=force_pull)
         if remote is not None:
             return remote, source if source in ("gitee", "github") else "remote"
-        raise KeyError(f"远程拉取更新源失败（Gitee/GitHub 均不可用）：{err}")
+        _parts = []
+        if _npm_err:
+            _parts.append(f"npm：{_npm_err}")
+        _parts.append(f"Gitee/GitHub：{err}")
+        raise KeyError("远程拉取更新源失败（" + "；".join(_parts) + "）")
     # 4) 已安装本地版本兜底
     installed = _find_installed(name)
     if (installed / "SKILL.md").is_file():

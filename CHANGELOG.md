@@ -1,5 +1,26 @@
 # 更新日志
 
+## v5.11（2026-11-24）
+
+> 主题：**更新按钮支持 npm 下载** + 修掉「自动更新永不触发」。
+
+### 新：npm 作为首选下载源
+
+- **零依赖实现**（`urllib` + `tarfile`，不需要 npm CLI）：查 registry → 下 tarball → **校验 `dist.shasum`（sha1）** → 解包。
+- **安全边界**：只取 `package/` 前缀、**逐条拒绝 `../` 路径穿越**、**跳过符号/硬链接**、包体上限 60 MB。
+- **源优先级**：`dev` → **npm** → Gitee → GitHub → 已装副本。新配置 `update_source`（`auto` 默认 / `npm` / `git`），设置页可改。
+- `resolve_source(..., prefer="npm")`：显式指定时**跳过 dev**，否则开发仓库里永远被 dev 抢先。
+- **面板**：更新弹窗新增「下载源」下拉（跟随设置 / npm 官方包 / Gitee·GitHub，**记住上次选择**）+ 显示「npm 最新 vX，解包约 N KB」；确认框说清走哪条路。
+- **CLI**：`auto-update --source auto|npm|git`。
+
+### 修：自动更新其实一直没生效
+
+- `panel_update.run()` 判断 `chk["update_available"]`，而 `growth.update_check()` 返回的字段叫 **`outdated`** —— 于是 CLI / cron 的自动更新**永远**走"已是最新"分支，**从不真正更新**。
+- 修：`panel_update.check()` 做字段归一化（补 `update_available` / `current` / `latest`）；CLI 的 `--check` 也从"当前 None / 最新 None"变成显示真实版本。
+- **缓存一致性**：更新缓存记 `source`，切换下载源后旧缓存自动作废。
+
+验证：`tests/test_p24_update_npm.py` 8/8（含**路径穿越拒绝**、符号链接跳过、`prefer=npm` 跳过 dev、**npm 目录必须在 brain.HOME 内**、切源作废缓存）；接口实测 `?source=npm` → `source_kind=npm` + npm 版本体积，`auto=1` 0.00 秒离线返回。
+
 ## v5.10（2026-11-24）
 
 > 主题：**面板全量体检**——16 页签 / 86 接口 / 联动全查，修三处，并固化成回归测试。
