@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -55,9 +56,24 @@ def _panel_script() -> Path:
 
 
 def _icon_path() -> Path | None:
-    """快捷方式图标：程序目录 assets/lingshu.ico（由 scripts/make_icon.py 生成）。"""
-    ico = Path(__file__).resolve().parent.parent / "assets" / ICON_NAME
-    return ico if ico.is_file() else None
+    """快捷方式图标：优先用**数据目录**里的 ASCII 路径副本。
+
+    为什么不直接用 `assets/lingshu.ico`：程序目录常常含中文
+    （如 `E:\\丁厚同\\文档\\程序\\灵枢-skill`），Explorer 有概率加载不了
+    IconLocation，回退成 wscript.exe 的**白色脚本图标**（实测踩过）。
+    所以把图标复制到 `~/.brain-memory/lingshu.ico`（纯 ASCII、稳定存在）再用。
+    """
+    src = Path(__file__).resolve().parent.parent / "assets" / ICON_NAME
+    if not src.is_file():
+        return None
+    try:
+        dst = Path(core.HOME) / ICON_NAME
+        if not dst.is_file() or dst.stat().st_size != src.stat().st_size:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        return dst
+    except Exception:
+        return src      # 复制失败就退回原路径，总比没有图标好
 
 
 def _write_launcher(port: int | None = None, script: Path | None = None) -> Path:

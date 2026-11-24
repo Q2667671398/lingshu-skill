@@ -627,8 +627,17 @@ class Handler(BaseHTTPRequestHandler):
             content = content.replace("/*__PANEL_TOKEN__*/", TOKEN)
             self._send(200, content.encode("utf-8"), "text/html; charset=utf-8")
             return
-        if path == "/favicon.ico":
-            # 浏览器自动请求，返回透明 1x1 PNG，避免控制台刷 404
+        if path in ("/favicon.ico", "/apple-touch-icon.png"):
+            # 浏览器自动请求。优先返回真图标（assets/lingshu.ico，由 make_icon.py 生成），
+            # 没有才退回透明 1x1 PNG（避免控制台刷 404）。
+            # 原来这里恒返回透明 PNG，标签页图标就是空白（用户反馈"图标白了"）。
+            ico = ASSETS / "lingshu.ico"
+            try:
+                if ico.is_file():
+                    self._send(200, ico.read_bytes(), "image/x-icon")
+                    return
+            except OSError:
+                pass
             self._send(200, bytes.fromhex(
                 "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
                 "0000000d4944415478da63fcffff3f030005fe02fea72d1e480000000049454e44ae426082"),
