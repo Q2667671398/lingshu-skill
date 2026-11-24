@@ -1,5 +1,16 @@
 # 更新日志
 
+## v4.7（2026-11-24）
+
+> 主题：**面板左上角图标换成真图标**——原来那个是 CSS 画的渐变圆点，跟桌面/标签页不是同一个东西。
+
+- `make_icon.py` 额外产出 `assets/lingshu-icon.png`：**直接按 128px 绘制**（不是把 256 缩下来），边缘更锐。
+- `panel_server` 新增 `/icon.png` 路由（独立文件而非内联 data-URI——图标可能被替换，独立文件能用缓存头区分新旧）。
+- `index.html`：`<div class="orb">` → `<img class="orb" src="/icon.png">`。
+- `base.css`：`.orb` 从 `radial-gradient` 圆点改成图片样式（26×26、圆角 7px、`object-fit:contain`、保留琥珀外发光）。
+
+验证：`/icon.png` 返回 200 / 12930 字节 / `image/png` / PNG 魔数正确；页面无残留空 `div.orb`；无头 Edge 截图 + 视觉核对确认"深色圆角底 + 琥珀圆核 + 周围小光点、与文字垂直居中对齐"。
+
 ## v4.6（2026-11-24）
 
 > 主题：**图标换新 + 装完自动建快捷方式 + GitHub CI 全红修复**。

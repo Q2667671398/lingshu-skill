@@ -134,6 +134,11 @@ def main() -> int:
     pp = Path(a.preview)
     prev.save(pp, format="PNG")
     print(f"已生成预览 {pp}")
+
+    # 面板左上角 brand 用的 PNG（直接按 128px 绘制，不是把 256 缩下来，边缘更锐）
+    brand_png = Path(a.out).with_name("lingshu-icon.png")
+    draw_icon(128).save(brand_png, format="PNG")
+    print(f"已生成面板图标 {brand_png}（{brand_png.stat().st_size} bytes）")
     return 0
 
 

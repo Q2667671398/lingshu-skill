@@ -627,6 +627,18 @@ class Handler(BaseHTTPRequestHandler):
             content = content.replace("/*__PANEL_TOKEN__*/", TOKEN)
             self._send(200, content.encode("utf-8"), "text/html; charset=utf-8")
             return
+        if path == "/icon.png":
+            # 面板左上角 brand 图标（由 make_icon.py 生成）。走独立路由而不是内联
+            # data-URI：图标可能被替换，独立文件能靠缓存头区分新旧。
+            icon = ASSETS / "lingshu-icon.png"
+            try:
+                if icon.is_file():
+                    self._send(200, icon.read_bytes(), "image/png")
+                    return
+            except OSError:
+                pass
+            self._send(404, b"icon missing", "text/plain; charset=utf-8")
+            return
         if path in ("/favicon.ico", "/apple-touch-icon.png"):
             # 浏览器自动请求。优先返回真图标（assets/lingshu.ico，由 make_icon.py 生成），
             # 没有才退回透明 1x1 PNG（避免控制台刷 404）。

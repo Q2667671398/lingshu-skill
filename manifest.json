@@ -1,12 +1,12 @@
 {
-  "version": "4.6",
+  "version": "4.7",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "73cef10aa404c5b5206adff47d82b337428f1f8b64f80a167753084c491b9043",
-      "size": 300391
+      "sha256": "366aa60c64d0e2f53d3f715e7caecaaf7f584ff1589391cce3e130bc9f7c24c2",
+      "size": 301307
     },
     "README.md": {
-      "sha256": "a07dc56aa271a65237195e4ed92fb92e55f259a2a7f7f51b8abdde7726361a6d",
+      "sha256": "299b3484897ef8b1b610b1c5de73a79994b90296674b83ac44c8226cd75ab903",
       "size": 64471
     },
     "SKILL-lite.md": {
@@ -18,20 +18,24 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "29b0d281fe82cc1559ebbd254218d683946c4d0b8881f88fde0783df3c5cae5c",
+      "sha256": "e4c940700d0a405b9c668b682705a0b3f4c58ccfd2fa843e6b894aa5a5cbec39",
       "size": 36183
     },
     "assets/lingshu-icon-preview.png": {
       "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
       "size": 30948
     },
+    "assets/lingshu-icon.png": {
+      "sha256": "47e9fc302221b555f10623bfbfc7f95d56634d77c2593c4164d3e64052690f0a",
+      "size": 12929
+    },
     "assets/lingshu.ico": {
       "sha256": "03feacf1dd21587d04b5784a5313e7754bb9192e64540b3dd4a1993fd1551b3c",
       "size": 53917
     },
     "assets/panel.html": {
-      "sha256": "7fc592e927072ac52912244743aa858a119185418beb5b2f1aa1aa71763b33ae",
-      "size": 317035
+      "sha256": "37ee02900442e0a75d9e4ec58fea32a77afc2d6327ec897288a0bb40d191ceea",
+      "size": 317147
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
@@ -118,15 +122,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "429eda30ea53a5f66f43cae9e12b9e3c2e5975c4b243972fccc5183cb824b773",
-      "size": 126853
+      "sha256": "dccca45fabedbf2e1f3558dec9d58849d8f7db38b534d1517f1a03a627a6ae78",
+      "size": 127858
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "8fdfe82767cc3ec2a40f22d4c40d1ac542264e810210772d0f296dab4efdb487",
+      "sha256": "cf5580a117022a87b26407f2ce448155fa70ffbf034632255e78ac1db7f61117",
       "size": 1340
     },
     "scripts/assembler.py": {
@@ -218,8 +222,8 @@
       "size": 3631
     },
     "scripts/make_icon.py": {
-      "sha256": "0bc823c4061e5d281db9d7e042c2e5a39dc5b7b4102dedea57514e4b38baf60a",
-      "size": 5191
+      "sha256": "68516eecaf77ee44d1e9ccf08c8ce6b7af11686e67e5434623c68a5fa5409235",
+      "size": 5493
     },
     "scripts/make_manifest.py": {
       "sha256": "637b2fbfaf6e540356f87329526f83a96ca1d51f019f54aac31e9c1113ffc65b",
@@ -270,8 +274,8 @@
       "size": 7200
     },
     "scripts/panel_server.py": {
-      "sha256": "a1e2bf96a5ffc7ae2ea2e23175d9cfef1990d3217e84b8b91012a8984654f15e",
-      "size": 126957
+      "sha256": "7a217c6c29fdd18fd1351ec4135b713245170830fdff38ec2ed7f6b21e2f08b2",
+      "size": 127522
     },
     "scripts/panel_settings.py": {
       "sha256": "e0e41e59365944a4df9d803648b4a0e7e52e8ea1b796979d59ba141f4d59e83a",

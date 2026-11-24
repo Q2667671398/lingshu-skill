@@ -37,10 +37,11 @@
     overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;
   }
   .brand{display:flex;align-items:center;gap:10px;font-size:15px;letter-spacing:.5px;font-weight:600;padding:0 8px}
+  /* 左上角图标：改用真图标（assets/lingshu-icon.png），不再用 CSS 画的渐变圆点 */
   .brand .orb{
-    width:26px;height:26px;border-radius:50%;
-    background:radial-gradient(circle at 35% 30%, #f0c479, #b57a24 55%, #5c3f18);
-    box-shadow:0 0 18px rgba(217,164,65,.35);
+    width:26px;height:26px;border-radius:7px;flex-shrink:0;
+    object-fit:contain;display:block;
+    box-shadow:0 0 14px rgba(217,164,65,.28);
   }
   .brand small{display:block;font-weight:400;font-size:10px;color:var(--faint);letter-spacing:1.4px}
   nav{display:flex;flex-direction:column;gap:4px}
