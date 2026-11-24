@@ -1,12 +1,12 @@
 {
-  "version": "5.2",
+  "version": "5.3",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "a5edcc670c4e723e925bc257ecece7355f940d1a13465f1dd0189f84394d7bcd",
-      "size": 309315
+      "sha256": "620e572eca199e48258cf93225c4f464b994457fc66cd7a854fbacd2c3777956",
+      "size": 310373
     },
     "README.md": {
-      "sha256": "2df8358d3df2e7005f5628449e696d77cd58e080563448b0dc8cf8b805b86a5c",
+      "sha256": "19810eb32c701b2493e1e44c296d4180053cbe3b3da166fdca26ff0f6c0d76c5",
       "size": 64471
     },
     "SKILL-lite.md": {
@@ -18,8 +18,8 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "711b359d0710eb413b0fe6e5b70e750b3c38767abf811822fb6ab618076e58bc",
-      "size": 36183
+      "sha256": "a24b9170637d7ea886edb9c61ebb12adc829fe68cb8fbbf01ecc4d1b2f627d99",
+      "size": 36929
     },
     "assets/lingshu-icon-preview.png": {
       "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
@@ -126,15 +126,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "e25a5eae2a95670381815f22c0c2b482a58228d794b8b46888b63ee4234f63b1",
-      "size": 139841
+      "sha256": "03635bdd7a8dec2cb6c0da8df10619a69f6449fbf3320809b5ce37a4013641e7",
+      "size": 139927
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "ccb7d28a5138e2ce15b6419b79b2b7fa5a6d36c937cae5f12655485c58cdf16b",
+      "sha256": "cdde4979162516a5ba056f49654f5629bd6d542c395edfea5e447881dbecd48d",
       "size": 1340
     },
     "scripts/assembler.py": {
