@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 5.8
+version: 5.9
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -376,7 +376,7 @@ python scripts/bench.py [--n 1000|--quick]           # 性能基准：隔离临�
 |---|---|
 | 启动面板 | 双击桌面「灵枢面板」，或 `python scripts/brain.py serve` |
 | **面板本体在哪** | 启动器 `scripts/panel_launcher.py` → 服务 `scripts/panel_server.py`；数据在 `~/.brain-memory` |
-| 关了网页还在跑？ | 不会：页面每 30 秒发心跳，关掉网页后超过 `panel_idle_minutes`（默认 30，0=永不退）没请求就**自动退出** |
+| 关了网页还在跑？ | 不会：页面挂着长轮询保活，关掉网页后超过 `panel_idle_minutes`（**默认 1 分钟**，0=永不退）没请求就**自动退出** |
 | 想立刻关 | 面板「设置」页 → **「退出服务」** |
 | 连点两次 | 安全：启动器先探测，**已在跑就只把浏览器叫回来**，不会起第二个 |
 | **桌面快捷方式丢了** | `python scripts/brain.py shortcut --ensure`（幂等：缺了就重建，已有就不动） |

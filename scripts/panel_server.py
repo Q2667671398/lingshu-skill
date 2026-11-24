@@ -75,6 +75,11 @@ _WRITE_ENDPOINTS = {
 _LAST_ACTIVITY = [time.time()]
 
 
+# 正在挂着的长轮询请求数：>0 说明还有标签页连着（哪怕它被节流、一条心跳都没发）。
+# 这是"默认 1 分钟自退"能安全的前提——只靠定时器心跳会被浏览器节流误杀。
+_OPEN_ALIVE = [0]
+
+
 def _touch_activity() -> None:
     _LAST_ACTIVITY[0] = time.time()
 
@@ -657,6 +662,25 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             self._send(404, b"icon missing", "text/plain; charset=utf-8")
+            return
+        if path == "/api/alive":
+            # 长轮询保活：按住最多 25 秒再返回，页面收到后立刻再发一条。
+            # 它不受浏览器"后台定时器节流"影响（不是 timer），所以标签页还在就一定连着。
+            if not self._origin_ok():
+                self._json({"error": "forbidden"}, 403)
+                return
+            _touch_activity()
+            _OPEN_ALIVE[0] += 1
+            try:
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    if getattr(self.server, "_shutting_down", False):
+                        break
+                    time.sleep(0.5)
+            finally:
+                _OPEN_ALIVE[0] = max(0, _OPEN_ALIVE[0] - 1)
+                _touch_activity()
+            self._json({"ok": True, "app": "lingshu-panel"})
             return
         if path == "/api/ping":
             # 闸门对 ping 放行，所以这里自己补一次 Host/Origin 校验（防 DNS rebinding）
@@ -2849,8 +2873,11 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
             return
         limit = idle * 60
         while True:
-            time.sleep(30)
+            time.sleep(10)
             idle_for = time.time() - _LAST_ACTIVITY[0]
+            # 还有标签页挂着长轮询 → 页面明明开着，绝不退（防定时器节流误杀）
+            if _OPEN_ALIVE[0] > 0:
+                continue
             if idle_for > limit:
                 try:
                     brain.log_event(

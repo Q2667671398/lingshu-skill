@@ -1229,9 +1229,27 @@ const PANEL_TOKEN = "/*__PANEL_TOKEN__*/";
 // 服务端超过 panel_idle_minutes（默认 30）没任何请求就优雅退出。
 // 页面每 30 秒 ping 一次：**网页开着 = 服务活着；关掉网页 = 到点自退**，
 // 于是不会再出现"关了网页后台还在跑、只能去任务管理器杀"。
-(function panelHeartbeat(){
+(function panelKeepAlive(){
+  // ① 长轮询（主）：挂一条"不结束"的请求，服务端按住 25 秒再返回，收到后立刻再发。
+  //    它**不是定时器**，所以不受浏览器对隐藏标签页的节流影响——
+  //    只要标签页还在，服务端就一直看得到这条连接，绝不会因为"默认 1 分钟自退"被误杀。
+  (async function loop(){
+    for (;;) {
+      let ok = false;
+      try {
+        const r = await fetch("/api/alive", {cache: "no-store"});
+        ok = r.ok;
+      } catch (_) {
+        ok = false;                       // 服务端已经退出/连不上 → 停
+      }
+      if (!ok) break;
+      await new Promise((res) => setTimeout(res, 200));
+    }
+  })();
+
+  // ② 兜底心跳（辅）：万一长轮询被中间层掐断，仍有 30 秒一次 ping。
+  //    keepalive 让页面正在关闭时也能把最后一次发出去。
   const beat = () => {
-    // fetch + keepalive：页面正在关闭时也能把最后一次心跳发出去
     try { fetch("/api/ping", {cache: "no-store", keepalive: true}).catch(() => {}); } catch (_) {}
   };
   beat();

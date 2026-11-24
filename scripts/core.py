@@ -337,9 +337,9 @@ DEFAULT_CONFIG = {
     "safety_snapshots": True,   # 关掉就没有快照/回滚保护（不建议）
     "safety_verify": True,      # 写后校验（JSON 可解析 + 层级自洽）
     "safety_keep": 20,          # 保留最近多少份快照；更旧的移入 .safety/.pruned/（不删）
-    # 面板空闲多少分钟自动退出（0 = 永不）。页面每 30 秒发心跳保活，
-    # 关掉网页后心跳停 → 到点自退，避免"关了网页服务还在后台跑"。
-    "panel_idle_minutes": 30,
+    # 面板空闲多少分钟自动退出（0 = 永不）。页面挂着长轮询保活（不受后台定时器节流影响），
+    # 关掉网页后连接断开 → 到点自退。默认 1 分钟：关掉尽快回收，不占后台。
+    "panel_idle_minutes": 1,
     "auto_update_interval_hours": 24,
     "session_state_cache": False,
     "session_state_ttl": 300,
