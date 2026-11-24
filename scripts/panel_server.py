@@ -70,6 +70,24 @@ _WRITE_ENDPOINTS = {
 # 本机随机 token：页面加载时注入，之后每个 API 请求都要带上。
 # 注意：token 会随首页响应下发，本机进程 GET / 即可提取，所以它防的不是本机进程，
 # 而是浏览器上下文里的误用（恶意网页跨站调用本机端口）；跨站防护主要靠 Host/Origin 校验。
+# 最后活动时间：任何 HTTP 请求都会刷新它；空闲监控线程据此决定是否自动退出。
+# 用 list 包一层是为了在闭包里改值（模块级 float 改不了）。
+_LAST_ACTIVITY = [time.time()]
+
+
+def _touch_activity() -> None:
+    _LAST_ACTIVITY[0] = time.time()
+
+
+def _idle_minutes() -> int:
+    """空闲多少分钟自动退出；0 = 永不自动退出。坏配置当 30。"""
+    try:
+        v = int(brain.load_config().get("panel_idle_minutes", 30))
+        return v if v >= 0 else 30
+    except Exception:
+        return 30
+
+
 TOKEN = os.environ.get("LINGSHU_PANEL_TOKEN") or secrets.token_urlsafe(24)
 # 环境变量给了空串/空白时不能退化成空 token（否则任何请求都能过鉴权）——直接拒启
 if not TOKEN.strip():
@@ -583,6 +601,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # -------------------------------------------------- routes
     def do_GET(self):
+        _touch_activity()
         # 与 do_POST 对齐的兜底：任意一条数据损坏都不能让整个接口断连无响应
         try:
             self._route_get()
@@ -638,6 +657,14 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             self._send(404, b"icon missing", "text/plain; charset=utf-8")
+            return
+        if path == "/api/ping":
+            # 启动器/页面心跳用。**故意不校验 token**：调用方在探测阶段还不知道 token，
+            # 而且它只回"活着 + 端口"，不含任何记忆内容。
+            _touch_activity()
+            self._json({"ok": True, "app": "lingshu-panel",
+                        "port": int(self.server.server_address[1]),
+                        "pid": os.getpid()})
             return
         if path in ("/favicon.ico", "/apple-touch-icon.png"):
             # 浏览器自动请求。优先返回真图标（assets/lingshu.ico，由 make_icon.py 生成），
@@ -892,6 +919,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        _touch_activity()
         if not self._origin_ok() or not self._token_ok():
             # 拒绝前没读请求体：keep-alive 连接里残留的 body 会被下一轮当成请求行解析，
             # 造成连接错乱——断开连接最干净
@@ -1034,6 +1062,21 @@ def _api_data_restore(self, path, data):
         self._json({"error": str(exc)}, 400)
         return
     self._json(r)
+
+
+def _api_shutdown(self, path, data):
+    """面板「退出服务」按钮调这里：优雅关掉监听，进程随即退出。
+
+    先返回响应再关（否则前端拿不到 ok）；关的是 serve_forever() 那个循环。
+    """
+    def _later():
+        time.sleep(0.2)          # 让响应先写出去
+        try:
+            self.server.shutdown()
+        except Exception:
+            pass
+    threading.Thread(target=_later, daemon=True).start()
+    self._json({"ok": True, "message": "面板服务正在退出"})
 
 
 def _api_config(self, path, data):
@@ -2668,6 +2711,8 @@ _POST_ROUTES = {
         # 数据页
         "/api/data/backup": _api_data_backup,
         "/api/data/restore": _api_data_restore,
+        # 生命周期：面板自退（页面「退出服务」按钮）
+        "/api/shutdown": _api_shutdown,
         # 设置页
         "/api/config": _api_config,
         # 人格 / 心智 / 情绪
@@ -2767,6 +2812,33 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
     print(f"灵枢 · 记忆面板：{url}")
     print(f"记忆库：{brain.HOME}")
     print("Ctrl+C 停止")
+
+    # 空闲自退（借 Jupyter shutdown_no_activity_timeout 的思路）：
+    # 页面每 30 秒发一次 /api/ping 保活；用户关掉网页后心跳停，
+    # 超过 panel_idle_minutes（默认 30，0=永不退）没任何请求就优雅退出——
+    # 这样"关了网页服务还在后台跑"的问题就不存在了。
+    def _idle_watch():
+        idle = _idle_minutes()
+        if idle <= 0:
+            return
+        limit = idle * 60
+        while True:
+            time.sleep(30)
+            idle_for = time.time() - _LAST_ACTIVITY[0]
+            if idle_for > limit:
+                try:
+                    brain.log_event(
+                        "panel", f"面板空闲 {int(idle_for // 60)} 分钟（>{idle}），自动退出")
+                except Exception:
+                    pass
+                print(f"\n空闲 {int(idle_for // 60)} 分钟，自动退出")
+                try:
+                    httpd.shutdown()
+                except Exception:
+                    pass
+                return
+
+    threading.Thread(target=_idle_watch, name="panel-idle", daemon=True).start()
     if open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

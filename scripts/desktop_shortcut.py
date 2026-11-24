@@ -51,8 +51,14 @@ def _desktop_dir() -> Path:
 
 
 def _panel_script() -> Path:
+    """启动器（不是 panel_server 本人）：它先探测单实例，已在跑就只开浏览器。
+
+    直接指 panel_server 的话，重复点击会因端口占用在隐藏窗口里 SystemExit(1)，
+    用户什么都看不到。
+    """
     root = Path(__file__).resolve().parent
-    return root / "panel_server.py"
+    launcher = root / "panel_launcher.py"
+    return launcher if launcher.is_file() else root / "panel_server.py"
 
 
 def _icon_path() -> Path | None:

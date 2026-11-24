@@ -34,6 +34,19 @@ function toast(msg, err){
 // 服务端注入的本机 token：挡住 DNS rebinding / 无 Origin 直连偷读
 const PANEL_TOKEN = "/*__PANEL_TOKEN__*/";
 
+// ── 保活心跳（配合服务端空闲自退）────────────────────────────────
+// 服务端超过 panel_idle_minutes（默认 30）没任何请求就优雅退出。
+// 页面每 30 秒 ping 一次：**网页开着 = 服务活着；关掉网页 = 到点自退**，
+// 于是不会再出现"关了网页后台还在跑、只能去任务管理器杀"。
+(function panelHeartbeat(){
+  const beat = () => {
+    // fetch + keepalive：页面正在关闭时也能把最后一次心跳发出去
+    try { fetch("/api/ping", {cache: "no-store", keepalive: true}).catch(() => {}); } catch (_) {}
+  };
+  beat();
+  setInterval(beat, 30000);
+})();
+
 async function api(path, opts){
   opts = opts || {};
   opts.headers = Object.assign({}, opts.headers || {}, {Authorization: "Bearer " + PANEL_TOKEN});
@@ -2047,6 +2060,22 @@ async function loadExtensionOllama(){
 }
 
 $("btn-ext-refresh").addEventListener("click", loadExtensionOllama);
+$("btn-panel-quit").addEventListener("click", async () => {
+  if (!confirm("关掉后台面板服务？\n\n网页会停止工作，下次双击桌面「灵枢面板」重新启动。")) return;
+  try {
+    await api("/api/shutdown", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: "{}",
+    });
+    document.body.innerHTML = '<div style="padding:40px;font:16px system-ui;color:#e9e6df;'
+      + 'background:#0a0c0f;height:100vh;box-sizing:border-box">'
+      + '<h2 style="margin:0 0 8px">面板服务已退出</h2>'
+      + '<p style="color:#8b919b">可以关闭这个标签页了。要再打开：双击桌面「灵枢面板」。</p></div>';
+  } catch (e) {
+    toast(e.message || "退出失败", true);
+  }
+});
 $("btn-cfg-reload").addEventListener("click", () => renderSettings(true));
 $("btn-data-refresh").addEventListener("click", () => renderData(true));
 $("btn-data-backup").addEventListener("click", async (ev) => {

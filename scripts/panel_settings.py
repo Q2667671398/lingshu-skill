@@ -76,6 +76,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
      "hint": "送进 rerank 的候选条数，越大越准也越慢"},
 
     # —— 面板与宿主 ——
+    {"key": "panel_idle_minutes", "group": "面板与宿主", "label": "空闲自动退出（分钟）",
+     "kind": "int", "min": 0, "max": 1440, "step": 5,
+     "hint": "关掉网页后，多少分钟没请求就自动退出服务；0=永不退出（需重启面板生效）"},
     {"key": "panel_port", "group": "面板与宿主", "label": "面板端口",
      "kind": "int", "min": 1024, "max": 65535, "step": 1, "restart": True,
      "hint": "改完需要重启面板才生效"},
