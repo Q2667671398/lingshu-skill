@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -31,7 +32,14 @@ import core  # noqa: E402
 
 
 def _msgbox(text: str, title: str = "灵枢面板", error: bool = True) -> None:
-    """隐藏进程里没有控制台，用系统弹窗把话说出去（ctypes 零依赖）。"""
+    """隐藏进程里没有控制台，用系统弹窗把话说出去（ctypes 零依赖）。
+
+    `LINGSHU_NO_MSGBOX=1` 时只写 stderr——自动化/测试里弹窗会**阻塞等点击**，
+    把进程永久挂住。
+    """
+    if os.environ.get("LINGSHU_NO_MSGBOX", "").strip() in ("1", "true", "yes"):
+        print(f"[{title}] {text}", file=sys.stderr)
+        return
     try:
         import ctypes
         icon = 0x10 if error else 0x40          # MB_ICONERROR / MB_ICONINFORMATION
@@ -39,6 +47,28 @@ def _msgbox(text: str, title: str = "灵枢面板", error: bool = True) -> None:
     except Exception:
         # 非 Windows / 弹窗失败：至少写 stderr（有控制台时能看到）
         print(f"[{title}] {text}", file=sys.stderr)
+
+
+def _open_browser(url: str, timeout: float = 3.0) -> None:
+    """打开浏览器，但**绝不拖住进程**。
+
+    实测：没有默认浏览器关联时，`webbrowser.open()` 会一直阻塞——
+    启动器就永久留在进程表里（用户看到的是"点了没反应、又多了个进程"）。
+    所以放 daemon 线程、最多等 `timeout` 秒，然后照常退出。
+    """
+    import threading
+    done = threading.Event()
+
+    def _go():
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        finally:
+            done.set()
+
+    threading.Thread(target=_go, name="open-browser", daemon=True).start()
+    done.wait(timeout)
 
 
 def _port() -> int:
@@ -63,6 +93,16 @@ def _ping(port: int, timeout: float = 1.5) -> dict | None:
         return None
 
 
+def _wait_for_app(port: int, tries: int = 8, gap: float = 0.35) -> dict | None:
+    """带重试地探测：连点时另一个实例可能正在 bind，稍等就能看到它。"""
+    for _ in range(max(1, tries)):
+        info = _ping(port)
+        if info and info.get("app") == "lingshu-panel":
+            return info
+        time.sleep(gap)
+    return None
+
+
 def _port_occupied(port: int) -> bool:
     """端口有没有人在听（不关心是谁）。"""
     import socket
@@ -84,15 +124,18 @@ def main() -> int:
     port = _port()
     url = f"http://127.0.0.1:{port}"
 
-    info = _ping(port)
+    info = _wait_for_app(port, tries=3, gap=0.2)
     if info and info.get("app") == "lingshu-panel":
         # 已经在跑：只把浏览器叫到前面来，不起第二个进程
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
+        _open_browser(url)
         return 0
     if _port_occupied(port):
+        # 竞态：连点时端口可能刚被**同伴**抢到，而我们第一轮探测太早没看到。
+        # 先多等一会儿再看——只有确认不是我们自己的面板，才报"被别的程序占用"。
+        again = _wait_for_app(port, tries=12, gap=0.3)
+        if again and again.get("app") == "lingshu-panel":
+            _open_browser(url)
+            return 0
         _msgbox(
             f"端口 {port} 已被别的程序占用，面板起不来。\n\n"
             f"两种办法：\n"
@@ -102,15 +145,30 @@ def main() -> int:
         return 1
 
     # 起服务（serve 内部带空闲自退 + 打开浏览器）
+    # 竞态下 bind 失败是预期行为（另一个同伴刚抢到），让 serve 别往 stderr 吐假警报。
+    os.environ["LINGSHU_QUIET_PORT"] = "1"
     try:
         import panel_server
         panel_server.serve(port, open_browser=True)
         return 0
-    except SystemExit as exc:                    # serve 里端口占用会 SystemExit
-        _msgbox(f"面板启动失败：端口 {port} 不可用。\n"
-                f"换个端口：brain.py config set panel_port 8766",
-                "灵枢面板 · 启动失败")
-        return int(getattr(exc, "code", 1) or 1)
+    except (SystemExit, OSError) as exc:
+        # **竞态**：连点两次时两边都会 bind 失败一次。先别急着报错——
+        # 带重试再探一下，如果这会儿是我们自己的面板在服务，就静默开浏览器退出。
+        # （直接弹窗会让用户看到假的"启动失败"，而且 MessageBox 会阻塞进程。）
+        again = _wait_for_app(port, tries=10, gap=0.35)
+        if again and again.get("app") == "lingshu-panel":
+            _open_browser(url)
+            return 0
+        if _port_occupied(port):
+            _msgbox(
+                f"端口 {port} 已被别的程序占用，面板起不来。\n\n"
+                f"两种办法：\n"
+                f"  1) 关掉占用该端口的程序；\n"
+                f"  2) 用 brain.py config set panel_port 8766 换个端口。",
+                "灵枢面板 · 端口被占用")
+            return 1
+        _msgbox(f"面板启动失败：\n{type(exc).__name__}: {exc}", "灵枢面板 · 启动失败")
+        return int(getattr(exc, "code", 1) or 2)
     except Exception as exc:                     # noqa: BLE001
         _msgbox(f"面板启动失败：\n{type(exc).__name__}: {exc}", "灵枢面板 · 启动失败")
         return 2

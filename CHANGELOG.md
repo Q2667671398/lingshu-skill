@@ -1,5 +1,29 @@
 # 更新日志
 
+## v5.7（2026-11-24）
+
+> 主题：**连点安全 + 图标丢了能找回**。
+
+### 修：Windows 上两个面板同时监听同一端口（#99）
+
+- **坑**：Python 的 `HTTPServer` 默认 `allow_reuse_address = True`。而 **Windows 的 `SO_REUSEADDR` 语义是"允许抢占已占用端口"**（Unix 恰恰相反，是"允许 TIME_WAIT 重绑"）。
+- **后果**（实测）：连点两次快捷方式 → **两个独立面板同时监听 8765**，请求随机落到其一，两个进程都常驻不退。抓 `faulthandler` 堆栈才确认（两个都停在 `serve_forever()`）。
+- **修**：面板服务器改用 `_ExclusiveServer(allow_reuse_address=False)` → 第二次 bind 直接 `WinError 10048`，启动器据此判定"已有实例"并静默退出。
+
+### 修：竞态的两处副作用
+
+- 输家原先会弹 `MessageBoxW` **阻塞等点击**（用户看到假的"端口被占用"）→ 改成**带重试再探**（`_wait_for_app`），确认是自己人就静默开浏览器退出；
+- `webbrowser.open()` 在**没有浏览器关联**的环境会永久阻塞，把启动器拖在进程表里 → 改成 daemon 线程 + 最多等 3 秒，然后照常退出；
+- 竞态下 `serve()` 的"端口被占"是预期行为，新增 `LINGSHU_QUIET_PORT` 把它从 stderr 静音，日志不再有假警报。
+
+### 新：快捷方式丢了能找回
+
+- `brain.py shortcut --ensure`：幂等重建（缺了就建、已有就不动）；
+- **doctor 新增第 15 项 `desktop-shortcut`**：快捷方式不见了会 WARN 并**直接给出恢复命令**——否则用户只觉得"面板打不开"，AI 也不知道从哪修；
+- **SKILL.md 新增「面板（可视化界面）」一节**：写明面板本体在 `scripts/panel_launcher.py`、数据在 `~/.brain-memory`、丢图标用 `shortcut --ensure`、连点安全、关网页 30 分钟后自退。**用户说"图标没了"，AI 就能直接修，不必再问"在哪"。**
+
+验证：`tests/test_p22_panel_entry.py` 5/5（端口独占 / 连点 3 次只 1 个常驻 / 已有服务时启动器 <12s 退出 / doctor 报快捷方式状态 / ensure 可重建）。
+
 ## v5.6（2026-11-24）
 
 > 主题：**面板关得掉了**——不再"关了网页后台还在跑"。

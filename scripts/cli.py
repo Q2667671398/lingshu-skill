@@ -4100,6 +4100,33 @@ def _main(argv=None) -> int:
                 return ("runtime-liveness", "WARN", "；".join(parts))
             return ("runtime-liveness", "PASS", "；".join(parts))
 
+        def _doctor_desktop_shortcut() -> tuple:
+            """桌面「灵枢面板」快捷方式还在不在。
+
+            用户可能不小心删了/改名了/换了桌面目录。丢了不是错误，但**必须能被发现**——
+            否则用户只会觉得"面板打不开了"，而 AI 也不知道从哪修。
+            """
+            try:
+                import desktop_shortcut as _ds
+            except Exception as exc:  # noqa: BLE001
+                return ("desktop-shortcut", "WARN", f"检查失败：{exc}")
+            try:
+                exists = _ds.shortcut_exists()
+            except Exception as exc:  # noqa: BLE001
+                return ("desktop-shortcut", "WARN", f"检查失败：{exc}")
+            if exists:
+                return ("desktop-shortcut", "PASS", "桌面「灵枢面板」快捷方式在位")
+            try:
+                enabled = bool(core.load_config().get("desktop_shortcut", True))
+            except Exception:
+                enabled = True
+            if not enabled:
+                return ("desktop-shortcut", "PASS",
+                        "快捷方式不在，但配置已关闭自动创建（desktop_shortcut=false）")
+            return ("desktop-shortcut", "WARN",
+                    "桌面「灵枢面板」快捷方式不见了（被删/改名/换了桌面目录）。"
+                    "恢复：python scripts/brain.py shortcut --ensure")
+
         def _doctor_failures() -> tuple:
             """v3.56：被吞异常的可数账（failures.jsonl → 按类聚合，近七天）。
 
@@ -4332,6 +4359,12 @@ def _main(argv=None) -> int:
             checks.append(_doctor_runtime_liveness())
         except Exception as e:
             checks.append(("runtime-liveness", "WARN", f"自检失败：{e}"))
+
+        # 14. 桌面快捷方式是否还在（用户可能不小心删了）
+        try:
+            checks.append(_doctor_desktop_shortcut())
+        except Exception as e:
+            checks.append(("desktop-shortcut", "WARN", f"自检失败：{e}"))
 
         fails = sum(1 for _, s, _ in checks if s == "FAIL")
         warns = sum(1 for _, s, _ in checks if s == "WARN")

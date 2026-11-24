@@ -2794,6 +2794,20 @@ def _startup_update_check() -> None:
     threading.Thread(target=_job, name="startup-update-check", daemon=True).start()
 
 
+class _ExclusiveServer(ThreadingHTTPServer):
+    """禁止端口复用。
+
+    Python 的 HTTPServer 默认 `allow_reuse_address = True` → 它会设 SO_REUSEADDR，
+    而 **Windows 上 SO_REUSEADDR 的语义是"允许抢占已占用端口"**（Unix 是"允许
+    TIME_WAIT 上重绑"，完全不同）。实测后果：连点两次快捷方式 → 两个独立面板
+    **同时监听同一端口**，请求随机落到其中一个，两个进程都常驻不退。
+
+    置 False 后第二次 bind 直接 EADDRINUSE，启动器据此判定"已有实例"并静默退出。
+    """
+
+    allow_reuse_address = False
+
+
 def serve(port: int = 8765, open_browser: bool = True) -> None:
     brain.ensure_home()
     brain._resolve_readonly(False)   # 面板也要探测只读：数据目录不可写时 POST 写接口返回 403
@@ -2802,10 +2816,15 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
     # → 无感接入 embed 配置；模型没拉 → 后台自动 pull（整个生命周期只一次）。
     _ollama_auto_probe_async()
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        httpd = _ExclusiveServer(("127.0.0.1", port), Handler)
     except OSError as exc:
-        print(f"[错误] 端口 {port} 被占用或不可用：{exc}", file=sys.stderr)
-        print("换一个端口试试：python scripts/panel_server.py --port 8766", file=sys.stderr)
+        # 启动器（panel_launcher）会先探测再启动，竞态下这里的"端口被占"是**预期**的
+        # ——它拿到 EADDRINUSE 后会重试探、发现是同伴就静默退出。所以由它设
+        # LINGSHU_QUIET_PORT=1 把这条压掉，避免往日志里写假警报。
+        if os.environ.get("LINGSHU_QUIET_PORT", "").strip() not in ("1", "true", "yes"):
+            print(f"[错误] 端口 {port} 被占用或不可用：{exc}", file=sys.stderr)
+            print("换一个端口试试：python scripts/panel_server.py --port 8766",
+                  file=sys.stderr)
         raise SystemExit(1) from exc
     httpd.daemon_threads = True   # 退出时不等挂住的请求线程，防止 Ctrl+C 后进程残留
     url = f"http://127.0.0.1:{port}"

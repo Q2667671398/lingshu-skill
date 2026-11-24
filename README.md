@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v5.6**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v5.7**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -694,10 +694,47 @@ python scripts/brain.py shortcut [--ensure] [--name 灵枢面板] [--port N] [--
 | **空闲自退** | 超过 `panel_idle_minutes`（默认 **30**，0=永不退）没有任何请求 → 优雅退出。**关掉网页，半小时后它自己就没了** |
 | **退出按钮** | 面板「设置」页有**「退出服务」**（`POST /api/shutdown`），点完页面显示"已退出" |
 | **单实例** | 快捷方式指向 `panel_launcher.py`：先探测 `/api/ping`，**已在跑就只把浏览器叫出来**，绝不起第二个进程 |
-| **端口冲突可见** | 端口被别的程序占 → 弹**系统对话框**说清楚（`ctypes` 调 `MessageBoxW`，零依赖），不再静默失败 |
+| **端口独占** | 面板服务器 `allow_reuse_address = False`——见下面那个 Windows 大坑 |
+| **连点安全** | 连点 3 次 → **只 1 个常驻**，其余静默 exit 0（不弹窗、不卡住） |
+| **端口冲突可见** | 端口被**别的程序**占 → 弹系统对话框说清楚（`ctypes` 调 `MessageBoxW`，零依赖），不再静默失败 |
+| **快捷方式可恢复** | 删了也不怕：`brain.py shortcut --ensure` 幂等重建；`doctor` 有 `desktop-shortcut` 一项会报出来 |
 
 `/api/ping` **故意不校验 token**：启动器探测时还不知道 token，而且它只回"活着 + 端口 + pid"，
 不含任何记忆内容。
+
+### 连点两次会怎样？——踩到一个 Windows 坑
+
+**结论：现在是安全的**（只 1 个常驻，其余静默退出）。但做这个的时候发现一个真坑：
+
+> **Windows 上 `SO_REUSEADDR` 的语义和 Unix 完全相反。**
+> Unix 上它是"允许在 TIME_WAIT 状态重绑"；Windows 上它是"**允许抢占已占用的端口**"。
+> 而 Python 的 `HTTPServer` 默认 `allow_reuse_address = True`。
+
+后果（实测）：连点两次快捷方式 → **两个独立面板同时监听 8765**，请求随机落到其中一个，
+两个进程都常驻不退。抓堆栈才看出来——两个进程都停在 `serve_forever()` 里。
+
+修法：面板服务器改成 `allow_reuse_address = False` → 第二次 bind 直接 `EADDRINUSE`
+（`WinError 10048`），启动器据此判定"已有实例"并静默退出。
+
+同一轮还修了竞态的两处副作用：
+- 输家原先会弹 `MessageBox` **阻塞等点击**（用户看到假的"端口被占用"）→ 改成先**带重试再探**，确认是同伴就静默退出；
+- `webbrowser.open()` 在没有浏览器关联的环境会**永久阻塞**，把启动器拖住 → 改成 daemon 线程 + 最多等 3 秒。
+
+### 快捷方式丢了怎么办
+
+用户可能不小心删了桌面图标、改了名、或换了桌面目录。**两条路都能找回**：
+
+```bash
+python scripts/brain.py shortcut --ensure    # 幂等：缺了就重建，已有就不动
+python scripts/brain.py doctor               # 看 desktop-shortcut 一项是否 PASS
+```
+
+`doctor` 的 `desktop-shortcut` 检查是专门加的：**丢了会 WARN 并直接给出恢复命令**——
+否则用户只会觉得"面板打不开了"，AI 也不知道从哪修。
+
+**AI 怎么知道这些**：`SKILL.md` 有一节「面板（可视化界面）」，写明面板本体在
+`scripts/panel_launcher.py`、数据在 `~/.brain-memory`、丢了快捷方式用 `shortcut --ensure` 重建。
+所以用户只要说一句"桌面那个图标没了"，AI 就能直接修，不用再问"在哪"。
 
 ### 为什么不做成 exe
 
