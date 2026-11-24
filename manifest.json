@@ -1,13 +1,13 @@
 {
-  "version": "5.7",
+  "version": "5.8",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "38fed9bc41285992d8ccd252841d42b2b504b2e6a9722dd7d166df07fd3612ec",
-      "size": 319855
+      "sha256": "9c0f14f89fca51f8c1fdca8481e55a4f9bc06ef1d98b828d7aed8cb6b320b289",
+      "size": 321161
     },
     "README.md": {
-      "sha256": "f02db60960aed595584e6913e08b00380aae4812a60f929b4376d1ac6399c3e9",
-      "size": 97771
+      "sha256": "2586bb211fc108bbab5372bb5f191382cfb5147cb296346cafb8aed0c9f379e0",
+      "size": 98281
     },
     "SKILL-lite.md": {
       "sha256": "423f97d64042233a5a1678384fba307a91a62ab0ed2e8d01f89e44a926d6e83d",
@@ -18,7 +18,7 @@
       "size": 1912
     },
     "SKILL.md": {
-      "sha256": "f451b67fd2a27f29698d30d9fb04e5f693f3c35f13564cd1f7e0aa10d0b3e0b5",
+      "sha256": "4ea08e253bd54c86a992c3c365fab16701f575b09046d9b6bd8eb41003068547",
       "size": 38017
     },
     "assets/lingshu-icon-preview.png": {
@@ -34,8 +34,8 @@
       "size": 53917
     },
     "assets/panel.html": {
-      "sha256": "d20548a66956072288e2a648d352557849da6736b2a69a7ef82ba81e284ef4bb",
-      "size": 318751
+      "sha256": "d537a7ea2a717a80d79cf0375dcacc6e70dffde4832b52630ee239ea4ae8a517",
+      "size": 318797
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
@@ -126,15 +126,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "d9b14ae7b420326a53637248050a63e0247f04125b70f4d9c106ed859d9c9d37",
-      "size": 145004
+      "sha256": "82d1d1f4242fbf42446c4fb1543f908ee87e89129864b4d5484b3d3861904670",
+      "size": 146227
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "69efd503a5caf4878a25fa7c8c445fb2ae9f2c31c3ede51971d8624ee71e5fe5",
+      "sha256": "220cd77d6edc1996ef7a3e7963da3f5f287e87fbbd747b86f6992325d170fe40",
       "size": 1340
     },
     "scripts/assembler.py": {
@@ -278,12 +278,12 @@
       "size": 7200
     },
     "scripts/panel_launcher.py": {
-      "sha256": "69306c24ba208505e81232ad87d5ced90d343786567ea2c79e1025395963d23a",
-      "size": 6877
+      "sha256": "d54dc3ab7b4a7301651cb797e4003f6b228c45f6842bc70deac91569289f6e83",
+      "size": 7708
     },
     "scripts/panel_server.py": {
-      "sha256": "2ecaf68309c3efa151c14422e441039b4550c503471ec267bc5824fd54bd9fe5",
-      "size": 131378
+      "sha256": "323431a7d8412b7860ed3d08f51324e77897d3d114846b48d079da4281989121",
+      "size": 131860
     },
     "scripts/panel_settings.py": {
       "sha256": "53074fc0c01268f0c112580f3933e863b9ab4df8acea8569104105ca93e17c69",

@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v5.7**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v5.8**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -716,9 +716,13 @@ python scripts/brain.py shortcut [--ensure] [--name 灵枢面板] [--port N] [--
 修法：面板服务器改成 `allow_reuse_address = False` → 第二次 bind 直接 `EADDRINUSE`
 （`WinError 10048`），启动器据此判定"已有实例"并静默退出。
 
-同一轮还修了竞态的两处副作用：
+同一轮还修了竞态的**三处**副作用：
 - 输家原先会弹 `MessageBox` **阻塞等点击**（用户看到假的"端口被占用"）→ 改成先**带重试再探**，确认是同伴就静默退出；
-- `webbrowser.open()` 在没有浏览器关联的环境会**永久阻塞**，把启动器拖住 → 改成 daemon 线程 + 最多等 3 秒。
+- `webbrowser.open()` 在没有浏览器关联的环境会**永久阻塞**，把启动器拖住 → 改成 daemon 线程 + 最多等 3 秒；
+- **`/api/ping` 被 `/api/` 统一 token 闸挡住返回 403** → 启动器探测时拿不到 token（它只注入页面），于是把"自己的面板"误判成"别的程序占端口"。修：ping 是唯一免鉴权 API（自己内联做 Host/Origin 校验防 DNS rebinding），其余 API 照旧要 token。
+
+**升级过渡期**还加了一层回退识别：老版本面板进程没有 `/api/ping`，靠 `GET /` 里
+`<meta name="lingshu-panel">`（或"灵枢 + html"）也能认出来，不会误报。
 
 ### 快捷方式丢了怎么办
 

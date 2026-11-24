@@ -93,6 +93,23 @@ def _ping(port: int, timeout: float = 1.5) -> dict | None:
         return None
 
 
+def _looks_like_panel(port: int, timeout: float = 2.0) -> bool:
+    """回退识别：`GET /` 取首页，判断是不是灵枢面板。
+
+    用于**升级过渡期**——升级前起的面板进程没有 `/api/ping`（或被 token 闸挡住），
+    只认 ping 就会把"自己的旧面板"误判成"别的程序占端口"并弹窗。
+    """
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=timeout) as r:
+            body = r.read(4000).decode("utf-8", "replace")
+    except Exception:
+        return False
+    if 'name="lingshu-panel"' in body:
+        return True
+    low = body.lower()
+    return "<html" in low and "灵枢" in body
+
+
 def _wait_for_app(port: int, tries: int = 8, gap: float = 0.35) -> dict | None:
     """带重试地探测：连点时另一个实例可能正在 bind，稍等就能看到它。"""
     for _ in range(max(1, tries)):
@@ -100,6 +117,9 @@ def _wait_for_app(port: int, tries: int = 8, gap: float = 0.35) -> dict | None:
         if info and info.get("app") == "lingshu-panel":
             return info
         time.sleep(gap)
+    # 兜底：老版本面板（没有 /api/ping）
+    if _looks_like_panel(port):
+        return {"ok": True, "app": "lingshu-panel", "legacy": True}
     return None
 
 

@@ -1,5 +1,16 @@
 # 更新日志
 
+## v5.8（2026-11-24）
+
+> 主题：**连点误报的最后一个坑**——ping 被 token 挡住了。
+
+- **真 bug**：`/api/ping` 返回 **403**。因为 `_route_get` 里 `/api/` 前缀统一过 `_origin_ok() and _token_ok()`，而**闸门在路由之前**；token 又是随进程随机生成、只注入页面，启动器探测阶段拿不到。
+- **后果**：连点两次时，启动器把"**自己的面板**"误判成"别的程序占了端口"，弹假错误并 exit 1（实测在真实库上复现：两个 launcher 都 exit 1）。
+- **修**：`/api/ping` 是**唯一免鉴权 API**（只回 app/port/pid，无记忆内容）；为不削弱防护，ping 分支内**单独补 `_origin_ok()`** 挡 DNS rebinding；其余 `/api/*` 照旧要 token（测试断言 `/api/config` 仍 403）。
+- **升级过渡**：新增 `_looks_like_panel()` 回退识别——老版本面板没有 `/api/ping`，靠 `GET /` 里的 `<meta name="lingshu-panel">`（新加标记）或"灵枢 + html"也能认出来，不会误报。反向测试保证**别的程序的 HTTP 服务不会被误判**。
+
+验证：`tests/test_p22_panel_entry.py` **8/8**（ping 免 token / 旧面板识别 / 误判防护 / 端口独占 / 连点只 1 个常驻 / 已有服务时 <12s 退出 / doctor 报快捷方式 / ensure 可重建）。
+
 ## v5.7（2026-11-24）
 
 > 主题：**连点安全 + 图标丢了能找回**。

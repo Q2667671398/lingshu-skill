@@ -659,6 +659,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"icon missing", "text/plain; charset=utf-8")
             return
         if path == "/api/ping":
+            # 闸门对 ping 放行，所以这里自己补一次 Host/Origin 校验（防 DNS rebinding）
+            if not self._origin_ok():
+                self._json({"error": "forbidden"}, 403)
+                return
             # 启动器/页面心跳用。**故意不校验 token**：调用方在探测阶段还不知道 token，
             # 而且它只回"活着 + 端口"，不含任何记忆内容。
             _touch_activity()
@@ -683,7 +687,10 @@ class Handler(BaseHTTPRequestHandler):
                 "image/png")
             return
         # 读取接口同样要校验来源 + token：记忆是隐私数据，不能被任意页面/进程读走
-        if path.startswith("/api/") and (not self._origin_ok() or not self._token_ok()):
+        # /api/ping 免鉴权：启动器用它判断"面板是否已在跑"，那时它还拿不到 token
+        # （token 随进程随机生成、只注入页面）。它只回 app/port/pid，无记忆内容。
+        if (path.startswith("/api/") and path != "/api/ping"
+                and (not self._origin_ok() or not self._token_ok())):
             self._json({"error": "forbidden"}, 403)
             return
         if path == "/api/overview":
