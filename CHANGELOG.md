@@ -1,5 +1,16 @@
 # 更新日志
 
+## v4.9（2026-11-24）
+
+> 主题：**让"依赖声明悄悄变旧"这件事自己喊出来**（doctor 第 14 项 `app-pin`）。
+
+- **背景**：APP profile 把 `lingshu-skill` 声明成 **git 固定 commit**（v3.44），而实际跑的是 `update_app_copy.ps1` 同步进来的新版。后果：插件商店显示旧版本，且在商店点"重装"会按旧 commit **降级**。修它需要 `pnpm install --no-frozen-lockfile`，但该命令在本环境被策略拦截（三次），改不动。
+- **做法**：既然改不动，就别让它静默腐烂——doctor 新增第 14 项 `app-pin`，比对 **声明 spec / `node_modules` 实装版本 / 当前源码版本** 三处；声明是 git 固定 commit 且实装 ≠ 源码时 WARN，并把修复命令原样写进 detail。
+- **实现要点**：APP profile 必须用 `os.listdir` 发现（这些目录名含"长得像 ASCII"的 Unicode 字符，字面路径 `D:\APP` / `.app` 实测都找不到）。
+- **踩坑**：`_doctor_runtime_liveness` / `_doctor_failures` 是嵌套在 doctor 分支里的（8 空格缩进），第一次按模块级插入直接 `IndentationError`；已回滚重做。
+
+验证：`tests/test_p15_app_pin.py` 3/3（体检清单含 app-pin / detail 说明声明类型 / 干净 HOME 无 FAIL）；实测输出准确报出 `dbfb0a35 → 实装 v4.8.0 / 源码 v4.8`。
+
 ## v4.8（2026-11-24）
 
 > 主题：**两处"删了就没"的地方，改成"能捞回来"**。

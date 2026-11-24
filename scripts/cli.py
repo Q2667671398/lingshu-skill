@@ -3929,6 +3929,69 @@ def _main(argv=None) -> int:
         # 六合一体检：已有实现直接复用，不重写逻辑；单项失败不影响其他项
         checks = []
 
+        def _doctor_app_pin() -> tuple:
+            """APP profile 里 lingshu 依赖声明 vs 实际安装 vs 当前源码（台账 #77）。"""
+            import json as _json
+            import os as _os
+            import re as _re
+
+            home = Path(_os.path.expanduser("~"))
+            prof = None
+            # 用 listdir 拿真实名字：这些目录名可能含"长得像 ASCII"的 Unicode 字符，
+            # 直接拼字面路径会找不到（实测踩过 D:\APP / .app 这类坑）。
+            try:
+                for name in _os.listdir(home):
+                    cand = home / name / "profiles" / "desktop"
+                    try:
+                        if (cand / "package.json").is_file():
+                            prof = cand
+                            break
+                    except OSError:
+                        continue
+            except OSError:
+                prof = None
+            if prof is None:
+                return ("app-pin", "PASS", "没发现 APP profile（跳过）")
+
+            try:
+                data = _json.loads((prof / "package.json").read_text(encoding="utf-8-sig"))
+            except Exception as exc:  # noqa: BLE001
+                return ("app-pin", "WARN", f"读不了 APP package.json：{exc}")
+            spec = str(((data.get("dependencies") or {}).get("lingshu-skill")) or "")
+
+            installed = ""
+            try:
+                inst = prof / "node_modules" / "lingshu-skill" / "package.json"
+                if inst.is_file():
+                    installed = str(_json.loads(
+                        inst.read_text(encoding="utf-8-sig")).get("version") or "")
+            except Exception:
+                installed = ""
+
+            src = ""
+            try:
+                root = Path(__file__).resolve().parent.parent
+                m = _re.search(r"^version:\s*([\d.]+)",
+                               (root / "SKILL.md").read_text(encoding="utf-8-sig"), _re.M)
+                src = m.group(1) if m else ""
+            except Exception:
+                src = ""
+
+            pinned = bool(_re.search(r"^github:.*#[0-9a-f]{7,}", spec))
+            behind = bool(installed and src and installed != src)
+            if pinned and behind:
+                sha = spec.rsplit("#", 1)[-1][:8]
+                return ("app-pin", "WARN",
+                        f"APP 声明钉在旧 commit {sha}，实际装 v{installed}、源码 v{src}；"
+                        f"商店会显示旧版、点重装还会降级。"
+                        f"修：把 profile 的 package.json 改成 \"^{src}.0\" 后，"
+                        f"在 profile 目录跑 pnpm install --no-frozen-lockfile（需你本人执行）")
+            if pinned:
+                sha = spec.rsplit("#", 1)[-1][:8]
+                return ("app-pin", "PASS",
+                        f"声明为 git pin（{sha}），实际 v{installed} = 源码 v{src}")
+            return ("app-pin", "PASS", f"声明 {spec[:44] or '（无）'}，实际 v{installed}")
+
         def _doctor_runtime_liveness() -> tuple:
             """v3.56：插件"装着但不动"自检（v3.53：自动通道全停 6 小时，doctor 还全绿）。
 
@@ -4218,6 +4281,12 @@ def _main(argv=None) -> int:
             checks.append(("release-drift", "WARN" if rd["drift"] else "PASS", detail))
         except Exception as e:
             checks.append(("release-drift", "WARN", f"发布漂移自检失败：{e}"))
+
+        # 11b. APP 里的依赖声明是否已陈旧（台账 #77）
+        try:
+            checks.append(_doctor_app_pin())
+        except Exception as e:
+            checks.append(("app-pin", "WARN", f"自检失败：{e}"))
 
         # 12. v3.56：被吞异常的可数账（failures.jsonl，近七天按类聚合）
         try:
