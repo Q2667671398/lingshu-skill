@@ -333,6 +333,10 @@ DEFAULT_CONFIG = {
     "auto_update": False,
     # 安装完成后是否自动在桌面生成「灵枢面板」快捷方式（默认开；已存在不覆盖）
     "desktop_shortcut": True,
+    # —— 底层保险（v5.0）：写前 O(1) 硬链接快照 + 写后校验 + 失败自动回滚 ——
+    "safety_snapshots": True,   # 关掉就没有快照/回滚保护（不建议）
+    "safety_verify": True,      # 写后校验（JSON 可解析 + 层级自洽）
+    "safety_keep": 20,          # 保留最近多少份快照；更旧的移入 .safety/.pruned/（不删）
     "auto_update_interval_hours": 24,
     "session_state_cache": False,
     "session_state_ttl": 300,

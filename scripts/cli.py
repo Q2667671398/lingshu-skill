@@ -1952,6 +1952,10 @@ def _main(argv=None) -> int:
     # #34 物理删除：双重确认（dust 冷静期 7 天 + --confirm <id 前 8 位>）
     p_mem_purge = mem_sub.add_parser("purge", help="物理删除记忆（#34）：需先转 dust 满 7 天 + --confirm <id前8位>（删前自动留台账）")
     # 软删除台账：purge 前的留底，可恢复
+    p_shape = mem_sub.add_parser(
+        "shape-audit", help="六爻位体检（只读）：64 格状态分布 + 当位/得中/有应违规")
+    p_shape.add_argument("--limit", type=int, default=2000)
+    p_shape.add_argument("--json", action="store_true")
     mem_sub.add_parser("trash-list", help="看软删除台账（purge 删掉的记忆留底，可恢复）")
     p_mem_tr = mem_sub.add_parser("trash-restore", help="从软删除台账恢复一条记忆")
     p_mem_tr.add_argument("id", help="记忆 id")
@@ -5102,6 +5106,16 @@ def _main(argv=None) -> int:
                 if r["frozen"]:
                     print("  冻结后不参与召回/启动注入/做梦合并，用 show 仍可查看；解冻立即恢复。")
             return 0
+        # 六爻位体检（只读）：把六元特征映射到 64 格，用当位/得中/有应判结构
+        if mem_cmd == "shape-audit":
+            import shape_audit as _sa
+            rep = _sa.audit(limit=args.limit)
+            if args.json:
+                print(json.dumps(rep, ensure_ascii=False, indent=2))
+                return 0 if not rep.get("error") else 1
+            print(_sa.render(rep))
+            return 0
+
         # 软删除台账：purge 删掉的东西还能捞回来
         if mem_cmd == "trash-list":
             rows = trash_list(50)

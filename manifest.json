@@ -1,12 +1,12 @@
 {
-  "version": "4.9",
+  "version": "5.0",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "312da3094b10d1f1287067b02d54fce98a1f7e91e2fc81b763f2fc6edcffff46",
-      "size": 304118
+      "sha256": "72d040ebbad0a2f3f355202721b9a90200b0a70fc6d7c27590089e93226dd967",
+      "size": 306062
     },
     "README.md": {
-      "sha256": "2f53c9f718b6aee1ff60ccece84884498a2c52a2adbe05d5657bfd550b136e32",
+      "sha256": "d06b18883cf8349951702c28555f74d1db62d9dcb74847543670ab08ba4ec25c",
       "size": 64471
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "c618beba0195edc6e463d38547fa50488a58151c0792bf7b34b38c2e4d10d4d7",
+      "sha256": "6ebbcc175208091f93813f08353f63e557e8990824c1bb95ece8bdeda3963a0f",
       "size": 36183
     },
     "assets/lingshu-icon-preview.png": {
@@ -118,23 +118,23 @@
       "size": 2074
     },
     "docs/借鉴-易经与古典算法.md": {
-      "sha256": "8b9ab4a6d589b16a4ccfc66b520a450fb12e614a314f08fcacc43cb206c6a195",
-      "size": 14372
+      "sha256": "c52f3ac199e4d6611d1343f1ff9db97935e0ee7bd9411d2110203a99e0eb9dff",
+      "size": 18448
     },
     "docs/发布自动化.md": {
       "sha256": "dd1b9631cb88596561bf40317a8a7a2322f57ac121d925d0c27daa39c88401aa",
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "d6fdb8c94fc884cbc96438b4b81a00ae1fcd05faa7fe112b2514de202eb3a711",
-      "size": 133056
+      "sha256": "2b10f18b4182cc540060211822acdde0683c06e067ffb58138ac2606e3c3734d",
+      "size": 135135
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "7c24799ce3193bae0d2198597c307736b64e7d5e08c21c49e2936174a5a935e5",
+      "sha256": "aa38c3de2320fad33c4e8596438f4e0eb3f55edf733922970cd4d6b2e43bb45d",
       "size": 1340
     },
     "scripts/assembler.py": {
@@ -170,16 +170,16 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "a2479dce25ddcb4efac8ee09c4ec1627b2119c3c93a5d9b33b3c6bfbde9488ae",
-      "size": 292111
+      "sha256": "f5b4095a9bac5b4ab9c47a5bbfb7fc32a821465604456a65bdd3b246c57caa5a",
+      "size": 292806
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
       "size": 9928
     },
     "scripts/core.py": {
-      "sha256": "778ec1935722c0a32ee0a4b416f6676fd7599541fd1d50b2d78dbe4aaaee60c8",
-      "size": 98990
+      "sha256": "7046d4fb14bded3d5e9c8c716d223b07a9f5855f4d4ba6bf54054df8f30887dd",
+      "size": 99374
     },
     "scripts/desktop_shortcut.py": {
       "sha256": "ac202335a9ce32e12729e04d82e62337b880a49c962945e9112482523ce9cc0b",
@@ -258,8 +258,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "599eb8fc19ca13e3ebfa9d8b021d8a68016ce22c2e9b65c98a68ea36dd541d86",
-      "size": 245696
+      "sha256": "b3e98536b7abd446ed2b5716e1735117d2db072845ff6fdbfde48577bae81acd",
+      "size": 247286
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",
@@ -313,6 +313,10 @@
       "sha256": "7586d8d4a627eec67a4891b758665289a33e07a45fd27d526d45c70d1178cd53",
       "size": 14530
     },
+    "scripts/safety_net.py": {
+      "sha256": "df4c0e25280a13cbea1b36103dcc622427c7919de567f2e301465837d00f9792",
+      "size": 13347
+    },
     "scripts/session_import.py": {
       "sha256": "31c68069800e6ca8c91aad7869e7e174adc0b1e027ac0a4f7361a2c3a5363b3f",
       "size": 29370
@@ -324,6 +328,10 @@
     "scripts/session_summary.py": {
       "sha256": "7f86a47cfb75b5340f748176f3cd2ca2242bd568351f241df6b9bbd6da3e66c0",
       "size": 5312
+    },
+    "scripts/shape_audit.py": {
+      "sha256": "bce96d9c467bf851648ad681caa75c071ce11593965b1ae2a1f269a12b7fb9d9",
+      "size": 7840
     },
     "scripts/summarizer.py": {
       "sha256": "b9a31094fd55199b111d269bcbb1630cb164e9465bf4f4ed7159dfd0b1d06726",

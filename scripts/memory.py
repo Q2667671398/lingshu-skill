@@ -869,6 +869,20 @@ def archive_run(dry_run: bool = False) -> dict:
 
 
 def save_all(records: list) -> None:
+    # 底层保险（safety_net）：写前做 O(1) 硬链接快照，写后校验，失败自动回滚。
+    # 为什么值得：这是全项目最高危的写入口（17 个公开函数最终都落到这里），
+    # 一旦传进来的 records 混层/丢记录，对应层就被整层覆盖。
+    # fail-open：快照失败不阻断主写入（宁可少一层保险，也不能让 remember 挂掉）。
+    _snap = None
+    _sn = None
+    try:
+        import safety_net as _sn_mod
+        _sn = _sn_mod
+        if not READONLY:
+            _snap = _sn.snapshot("save_all",
+                                 ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl"))
+    except Exception:
+        _snap = None
     groups = {"hippo": [], "cortex": [], "dust": []}
     for r in records:
         layer = r.get("layer", "hippo")
@@ -909,6 +923,25 @@ def save_all(records: list) -> None:
         raise
     for tmp, p in staged:
         _replace_retry(tmp, p)
+
+    # 写后校验：JSON 可解析 + 末行完整 + 层级自洽。不通过就回滚并抛错
+    # （回滚成功时数据是"旧的一致状态"，比留着一份写坏的新数据安全）。
+    if _snap and _sn is not None:
+        try:
+            _v = _sn.verify(("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl"))
+            if not _v.get("ok"):
+                _sn.restore(_snap)
+                raise RuntimeError(
+                    "save_all 写后校验失败，已从快照自动回滚："
+                    + "；".join((_v.get("issues") or [])[:3]))
+        except RuntimeError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            try:
+                log_event("safety", f"写后校验本身出错（已跳过，数据未动）：{exc}",
+                          level="warn")
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------- 记忆记录
