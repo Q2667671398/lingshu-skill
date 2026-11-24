@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -16,7 +17,14 @@ TRASH_DIRNAME = "垃圾桶"
 
 
 def trash_root() -> Path:
-    """垃圾桶位置：程序目录（本文件所在 scripts/ 的上一级）下的 垃圾桶/。"""
+    """垃圾桶位置：程序目录（本文件所在 scripts/ 的上一级）下的 垃圾桶/。
+
+    BRAIN_TRASH_DIR 可覆盖——**测试必须用它指到临时目录**，否则跑一次回归
+    就往用户真实垃圾桶里丢一堆测试文件（已踩过）。
+    """
+    env = os.environ.get("BRAIN_TRASH_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
     return Path(__file__).resolve().parent.parent / TRASH_DIRNAME
 
 
