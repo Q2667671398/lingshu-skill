@@ -1,5 +1,25 @@
 # 更新日志
 
+## v4.8（2026-11-24）
+
+> 主题：**两处"删了就没"的地方，改成"能捞回来"**。
+
+### 备份修剪：移入 `.pruned/`，不再删除
+
+- 原来修剪是 `p.unlink()`——策略一设错（`keep` 太小）好备份就真没了（此前确实因为修剪 bug 误删过真实备份）。
+- 改为移入 `<备份目录>/.pruned/`（zip 与 `.sha256` 一起搬，重名加序号），**不自动清理**，由用户自己决定何时清空——与 v4.3「只移不删」一脉相承。
+
+### `purge` 留软删除台账，可恢复
+
+- purge 是唯一物理删除记忆的操作。现在删前把整条记录追加进 `<记忆库>/trash.jsonl`（`deleted_at` / `deleted_layer` / `delete_reason`）。
+- 新增 `memory trash-list`（看留底）与 `memory trash-restore <id>`（恢复到热层，并清 `forgotten_at`/`archived_at`）。
+- 一条几十到几百字节，比整库备份便宜得多。
+- **同时修掉两个自己引入的 bug**：
+  - 恢复时用 `write_jsonl(hippocampus)` 会把跨层 `load_all()` 里的 cortex/dust 记录整批灌进 hippocampus → 改用 `save_all()`（按 layer 分写）；
+  - 层名写成 `"hippocampus"` 导致 recall 认不出、恢复后搜不到 → 规范值是 `"hippo"`。
+
+验证：`tests/test_p14_prune_ledger.py` 4/4（修剪只移不删/台账可恢复且可召回/恢复不破坏分层/空台账安全）；实测修剪 3→1 且 `.pruned/` 里 zip+sha 齐全，恢复后三个查询全部命中。
+
 ## v4.7（2026-11-24）
 
 > 主题：**面板左上角图标换成真图标**——原来那个是 CSS 画的渐变圆点，跟桌面/标签页不是同一个东西。

@@ -19,6 +19,8 @@
 | 写入·结构化（v3.58） | `remember "内容" --f "职责" --r "还得看谁" --a "对外接口" --s "不明显的坑"`（FRAS 四段，S 段注入时挂行尾优先展示；空字段自动丢弃，不传则与旧版完全一致） |
 | 写入·绑源文件（v3.58） | `remember "部署流程是 X" --source-file scripts/panel_server.py`（存 sha256；文件变了注入标「源已变，可能过期」，删了标「源文件已不在」） |
 | 写入·负空间（v3.58） | `remember "不做 DiskGenius 恢复，别再建议" --avoid`（注入进独立块「已经排除的方向（别再提）」，且不进普通记忆段） |
+| **软删除台账（v4.8）** | `memory trash-list` 看 purge 的留底（带原层/删除时间）；`memory trash-restore <id>` 恢复到热层。`purge` 删前会自动留底到 `<记忆库>/trash.jsonl`。 |
+| **备份修剪去向（v4.8）** | 被分层保留策略"修剪"的旧备份不再删除，而是移入 `<备份目录>/.pruned/`（含 `.sha256`），可捞回；该目录不自动清理。 |
 | **桌面快捷方式（v4.5）** | `shortcut [--ensure] [--name 名字] [--port N] [--remove]`——在桌面生成「灵枢面板」（静默启动面板，不弹黑窗）。`--ensure` 是幂等版（没有才建），**安装技能后会自动调用**；`config.desktop_shortcut=false` 可关闭。图标用 `assets/lingshu.ico`（`scripts/make_icon.py` 生成，仅开发时需要 Pillow）。 |
 | **移入垃圾桶（v4.3）** | `trash <路径...> [--why "原因"]`——把待删文件/目录移进程序目录 `垃圾桶/`，**不删除**；带时间戳 + `.来源.txt`（原路径/原因），想找回直接移回。`trash --list` 查看，清空由你自己做。 |
 | 召回 | `recall "关键词" --k 8` |

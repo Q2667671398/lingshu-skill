@@ -2358,6 +2358,99 @@ def forget(memory_id: str) -> bool:
 _PURGE_COOLDOWN_DAYS = 7
 
 
+# ---------------------------------------------------------------- 软删除台账
+# purge 是唯一会**物理删除**记忆的操作。删之前把整条记录留一份到 trash.jsonl，
+# 于是"真删了"仍然可恢复——比整库备份便宜得多（一条几十到几百字节）。
+_LEDGER_FILE = "trash.jsonl"
+
+
+def _ledger_path():
+    return HOME / _LEDGER_FILE
+
+
+def _ledger_add(record: dict, reason: str = "purge") -> None:
+    """把一条记录追加进软删除台账（调用方负责持锁）。失败不阻断删除主流程。"""
+    try:
+        row = dict(record)
+        row["deleted_at"] = now_ts()
+        row["deleted_layer"] = record.get("layer") or ""
+        row["delete_reason"] = reason
+        with _locked(_ledger_path()):
+            with _ledger_path().open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        log_event("purge", f"软删除台账写入失败（删除照常进行）：{exc}", level="warn")
+
+
+def trash_list(limit: int = 50) -> list:
+    """看软删除台账里有什么（最近优先）。"""
+    rows = []
+    p_ = _ledger_path()
+    if not p_.is_file():
+        return rows
+    try:
+        for line in p_.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+    except OSError:
+        return rows
+    rows.sort(key=lambda r: _num(r.get("deleted_at"), 0), reverse=True)
+    return rows[:limit]
+
+
+def trash_restore(memory_id: str) -> dict:
+    """从软删除台账把一条记忆恢复到热层。"""
+    if READONLY:
+        raise PermissionError("记忆库当前只读，无法恢复。")
+    p_ = _ledger_path()
+    if not p_.is_file():
+        raise ValueError("软删除台账是空的，没有可恢复的记录")
+    keep, target = [], None
+    for line in p_.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            keep.append(line)
+            continue
+        if row.get("id") == memory_id and target is None:
+            target = row          # 取最近一条（后写覆盖前写）
+        else:
+            keep.append(line)
+    if target is None:
+        raise ValueError(f"台账里没有这条记忆：{memory_id}")
+    rec = {k: v for k, v in target.items()
+           if k not in ("deleted_at", "deleted_layer", "delete_reason")}
+    # 层名必须用规范值 "hippo"（save_all 的 groups 就认 hippo/cortex/dust）：
+    # 写成 "hippocampus" 会被 save_all 当未知层兜底进 hippo 组，但记录自带的
+    # layer 字段仍是错值，recall 按层过滤时认不出它（实测"恢复后搜不到"）。
+    rec["layer"] = "hippo"
+    rec["restored_at"] = now_ts()
+    rec.pop("forgotten_at", None)
+    rec.pop("archived_at", None)
+    with _locked(HOME / "hippocampus.jsonl"):
+        # load_all() 是**跨层合并**的；必须用 save_all()（按 layer 分写回各层文件），
+        # 不能用 write_jsonl 只写 hippocampus —— 否则 cortex/dust 的记录会被
+        # 整批灌进 hippocampus.jsonl，分层被破坏。
+        records = load_all()
+        if any(m.get("id") == memory_id for m in records):
+            raise ValueError(f"{memory_id} 已经在库里，无需恢复")
+        records.append(rec)
+        save_all(records)
+    # 台账里删掉这一条（已经回到库中，不该再重复恢复）
+    with _locked(p_):
+        p_.write_text("\n".join(keep) + ("\n" if keep else ""), encoding="utf-8")
+    audit_log("user", "trash_restore", memory_id, "从软删除台账恢复")
+    return {"restored": True, "id": memory_id, "layer": rec["layer"]}
+
+
 def purge(memory_id: str, confirm_token: str) -> dict:
     """物理删除一条记忆（#34，双重确认）。
 
@@ -2390,6 +2483,7 @@ def purge(memory_id: str, confirm_token: str) -> dict:
                         f"（当前归档于 {fmt_date(archived_at)}）")
                 archive = [m for m in archive if m.get("id") != memory_id]
                 write_jsonl(HOME / "archive.jsonl", archive)
+            _ledger_add(target, reason="purge-archive")   # 先留底，再删
             _cut_assoc_links(memory_id)
             audit_log("user", "purge", memory_id, "物理删除（archive 副本）")
             return {"removed": True, "layer": "archive"}
@@ -2402,6 +2496,7 @@ def purge(memory_id: str, confirm_token: str) -> dict:
             raise ValueError(
                 f"淡忘记忆需冷静满 {_PURGE_COOLDOWN_DAYS} 天后才能物理删除"
                 f"（当前淡忘于 {fmt_date(forgotten_at)}）")
+        _ledger_add(target, reason="purge-dust")   # 先留底，再删（可从 trash.jsonl 恢复）
         records = [m for m in records if m.get("id") != memory_id]
         save_all(records)
         # archive 里可能也有同名副本（归档过的），一并清掉

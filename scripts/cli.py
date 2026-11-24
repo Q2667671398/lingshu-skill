@@ -376,14 +376,25 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
             drop.update(existing[keep:])
         # 最新那份永不删（否则备份完立刻把自己删了）
         drop.discard(existing[0])
+        # 修剪 = **移到 .pruned/**，不是删除（待办 L718 #2 + 用户"只移不删"规矩）。
+        # 理由：备份策略误配（keep 设太小）时，被"修剪"的好备份还能从这里捞回来；
+        # 直接 unlink 就真没了（此前已经因为修剪 bug 误删过真实备份）。
+        # .pruned/ 不自动清理——由用户自己决定何时清空。
+        pruned_dir = out_dir / ".pruned"
         for p in existing:
             if p not in drop:
                 continue
             try:
-                p.unlink()
+                pruned_dir.mkdir(parents=True, exist_ok=True)
+                dst = pruned_dir / p.name
+                k = 1
+                while dst.exists():
+                    dst = pruned_dir / f"{p.stem}_{k}{p.suffix}"
+                    k += 1
+                p.replace(dst)
                 side = p.with_name(p.name + ".sha256")
                 if side.is_file():
-                    side.unlink()
+                    side.replace(pruned_dir / (dst.name + ".sha256"))
                 removed += 1
             except Exception:
                 pass
@@ -401,7 +412,8 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
     if not password:
         print("[提示] 备份未加密，含全部记忆原文；加 --password 可生成加密备份。", file=sys.stderr)
     if removed:
-        print(f"修剪旧备份 {removed} 个（分层保留：小时/天/周；最新一份永不删）")
+        print(f"修剪旧备份 {removed} 个 → 已移入 {out_dir / '.pruned'}（未删除，可捞回；"
+              f"分层保留：小时/天/周，最新一份永不删）")
     return 0
 
 
@@ -1938,7 +1950,11 @@ def _main(argv=None) -> int:
     p_mem_unfreeze = mem_sub.add_parser("unfreeze", help="解冻记忆（#28）：恢复参与召回/注入")
     p_mem_unfreeze.add_argument("id", help="记忆 id（如 m_xxx）")
     # #34 物理删除：双重确认（dust 冷静期 7 天 + --confirm <id 前 8 位>）
-    p_mem_purge = mem_sub.add_parser("purge", help="物理删除记忆（#34）：需先转 dust 满 7 天 + --confirm <id前8位>")
+    p_mem_purge = mem_sub.add_parser("purge", help="物理删除记忆（#34）：需先转 dust 满 7 天 + --confirm <id前8位>（删前自动留台账）")
+    # 软删除台账：purge 前的留底，可恢复
+    mem_sub.add_parser("trash-list", help="看软删除台账（purge 删掉的记忆留底，可恢复）")
+    p_mem_tr = mem_sub.add_parser("trash-restore", help="从软删除台账恢复一条记忆")
+    p_mem_tr.add_argument("id", help="记忆 id")
     p_mem_purge.add_argument("id", help="记忆 id（如 m_xxx）")
     p_mem_purge.add_argument("--confirm", required=True, help="确认码：必须等于 id 前 8 位")
     # v3.02 #10：事实保质期复核
@@ -5016,6 +5032,27 @@ def _main(argv=None) -> int:
                 print(f"{'已冻结' if r['frozen'] else '已解冻'}：{r['id']}")
                 if r["frozen"]:
                     print("  冻结后不参与召回/启动注入/做梦合并，用 show 仍可查看；解冻立即恢复。")
+            return 0
+        # 软删除台账：purge 删掉的东西还能捞回来
+        if mem_cmd == "trash-list":
+            rows = trash_list(50)
+            if not rows:
+                print("软删除台账是空的（purge 时才会往里留底）。")
+                return 0
+            print(f"{len(rows)} 条留底（最近优先）：")
+            for r in rows:
+                layer = r.get("deleted_layer") or "?"
+                print(f"- {r.get('id')} · {fmt_date(r.get('deleted_at'))} · [{layer}] "
+                      f"{display_text(r)[:70]}")
+            print("\n恢复：memory trash-restore <id>（回热层，可立即 recall）")
+            return 0
+        if mem_cmd == "trash-restore":
+            try:
+                r = trash_restore(args.id)
+            except (ValueError, PermissionError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            print(f"已恢复：{r['id']} → {r['layer']} 层（台账里这条已移除）")
             return 0
         # #34 物理删除：双重确认（dust 冷静期 7 天 + --confirm <id前8位>）
         if mem_cmd == "purge":
