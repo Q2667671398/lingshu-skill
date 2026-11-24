@@ -1,24 +1,24 @@
 {
-  "version": "5.3",
+  "version": "5.4",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "620e572eca199e48258cf93225c4f464b994457fc66cd7a854fbacd2c3777956",
-      "size": 310373
+      "sha256": "b3e433bdcdeaacaaeb96022c67f5767d5207787478c337cdc7e2fbbec67d2517",
+      "size": 313613
     },
     "README.md": {
-      "sha256": "19810eb32c701b2493e1e44c296d4180053cbe3b3da166fdca26ff0f6c0d76c5",
-      "size": 64471
+      "sha256": "12db7107ddd56bfc1b5bcbbfd612030ba516719cec4added4d292e8626318407",
+      "size": 92909
     },
     "SKILL-lite.md": {
-      "sha256": "04b87789232a0f7537c861c857888b4a0e947bcf92a461cbad5328af05361c58",
-      "size": 3616
+      "sha256": "423f97d64042233a5a1678384fba307a91a62ab0ed2e8d01f89e44a926d6e83d",
+      "size": 4439
     },
     "SKILL-tiny.md": {
-      "sha256": "74e1955cc5bf4ec0ca28d52030f799f039283de27a52345a33ce783d6ee0c608",
-      "size": 1746
+      "sha256": "aff71d79e6384c14e8895405bbf178d2b57f679540b12a6afaeba6e39b15116b",
+      "size": 1912
     },
     "SKILL.md": {
-      "sha256": "a24b9170637d7ea886edb9c61ebb12adc829fe68cb8fbbf01ecc4d1b2f627d99",
+      "sha256": "4584df6feeb359d631c70d3cafa1a87077fe91df587c45c322abbc17ff776f1c",
       "size": 36929
     },
     "assets/lingshu-icon-preview.png": {
@@ -134,7 +134,7 @@
       "size": 5588
     },
     "package.json": {
-      "sha256": "cdde4979162516a5ba056f49654f5629bd6d542c395edfea5e447881dbecd48d",
+      "sha256": "c25dbaab908bf314dc558d1b5d830fbe2813f3fc5c54aca8da2ec063f44aaf2a",
       "size": 1340
     },
     "scripts/assembler.py": {

@@ -1,7 +1,7 @@
 ---
 name: lingshu-tiny
 title: 灵枢-tiny
-version: 2.18
+version: 5.4
 description: 灵枢记忆系统的最小试用版说明书。只剩三件事：startup 带回上次的记忆、remember 记下值得记的、recall 想不起来时捞回来。给第一次接触灵枢的人或最小模型：先跑通这三条拿到真实收益，再决定要不要升级完整版。当用户提到"记住这个""你还记得吗"且你不想背整套机制时使用。
 ---
 
@@ -22,6 +22,8 @@ python scripts/brain.py remember "<原话>" --importance 6
 python scripts/brain.py recall "<关键词或一句话>"
 ```
 
+- **动手做任何事之前**先查一句：`python scripts/brain.py prior "要做的事"`——
+  以前做过就复用，别重新调研。纯只读，最安全。
 - 跑 `startup` 后，**把它的输出原样放在回复最前面**。
 - 用户心情不好的高点、喜欢 / 讨厌什么、定了什么约定——都值得 `remember`。
 - 拿不准重要性就写 6。
