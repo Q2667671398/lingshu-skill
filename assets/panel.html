@@ -1528,6 +1528,25 @@ function fillEmoPick(){
   }
 }
 
+// 主动刷新一次 overview 并重绘（页签切换、手动刷新都用它）。
+// 与 30 秒轮询共用同一段逻辑；editing 时不动，避免把正在输入的表单拽走。
+async function refreshOverviewOnce(force){
+  if (!S.ov && !force) return;
+  const editing = ["st-mood", "st-note", "st-energy", "st-closeness",
+                   "pf-name", "pf-role", "pf-callme", "pf-traits", "pf-likes", "pf-dislikes"]
+    .some(id => document.activeElement === $(id));
+  if (editing && !force) return;
+  try {
+    const seq = ++_ovSeq;
+    S.ov = await api("/api/overview");
+    if (seq !== _ovSeq) return;
+    renderOverview();
+  } catch (e) {
+    // 主动刷新失败不该打断用户：提示一次即可（切页签这种场景不该弹错）
+    console.warn("刷新概览失败:", e);
+  }
+}
+
 function renderMood(){
   const ov = S.ov; if (!ov) return;
   fillEmoPick();
@@ -3171,6 +3190,9 @@ function switchTab(tab){
   // 数据目录卡靠一段 class 判断写错的 MutationObserver，永远停在「加载中…」）
   if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); }
   if (tab === "persona") { loadSnapshots(); loadPersonaSuggest(); }  // 切到人格页时顺手刷快照列表与画像归纳建议
+  // 概览/心情/梦 三页的数据都在 overview 里（心情与六欲是按时间衰减的活数值）。
+  // 以前只靠 30 秒轮询 + document.hidden 跳过，切过去可能看到最多 30 秒前的旧值。
+  if (["overview", "emotion", "dream"].includes(tab)) refreshOverviewOnce();
   if (["knowledge", "notes", "skills", "growth"].includes(tab)) {
     if (S.ws) { renderKnowledge(); renderNotes(); renderSkills(); renderDshPlugins(); renderGrowth(); renderOnboarding(); }
     else loadWS();
@@ -5400,8 +5422,15 @@ setTimeout(() => checkUpdate(true), 1200);
     escBtn.style.cssText = "position:fixed;right:14px;top:14px;z-index:850;cursor:pointer;" +
       "background:#1b2028;color:#e6e1d5;border:1px solid #2a3140;border-radius:9px;padding:7px 14px;font-size:12px";
     escBtn.onclick = async () => {
-      try{ await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({action:"deactivate"})}); }catch(e){}
+      try{
+        await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({action:"deactivate"})});
+      }catch(e){
+        // 停用失败还刷新的话，会回到同一个自定义面板——用户会以为按钮没反应。
+        console.warn("停用自定义面板失败:", e);
+        toast("停用失败：" + ((e && e.message) || "接口不可用") + "（未刷新）", true);
+        return;
+      }
       location.reload();
     };
     document.body.appendChild(escBtn);
@@ -5411,8 +5440,15 @@ setTimeout(() => checkUpdate(true), 1200);
     if (fr) fr.remove();
     const escEl = document.getElementById("panel-escape");
     if (escEl) escEl.remove();
-    try{ await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({action:"deactivate"})}); }catch(e){}
+    try{
+      await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({action:"deactivate"})});
+    }catch(e){
+      // 回退动作本身失败：说清"回退了但没保存"，否则下次打开还是旧面板
+      console.warn("回退时停用自定义面板失败:", e);
+      toast(`自定义面板「${pname}」${why}，已临时回退（停用未保存，下次可能仍加载它）`, true);
+      return;
+    }
     toast(`自定义面板「${pname}」${why}，已回退默认面板`, true);
   }
   if (ACT.panel && ACT.panel !== "default"){
@@ -5916,7 +5952,18 @@ setTimeout(() => checkUpdate(true), 1200);
       });
       items = navItems(q).slice(0, 6).concat(extra);
       renderList();
-    }).catch(function () {});
+    }).catch(function (err) {
+      // 以前这里是空的 catch：接口一挂，列表只剩导航项，用户以为"搜不到"。
+      // 现在把失败也当成一条结果摆出来，至少让人知道是搜索坏了而不是没内容。
+      console.warn("命令面板搜索失败:", err);
+      var tip = (err && err.message) ? err.message : "接口不可用";
+      items = navItems(q).slice(0, 6).concat([{
+        label: "搜索失败：" + tip, hint: "重试",
+        text: "搜索失败 " + tip,
+        run: function () { query(input.value); }
+      }]);
+      renderList();
+    });
   }
 
   function open() {

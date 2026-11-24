@@ -337,6 +337,25 @@ function fillEmoPick(){
   }
 }
 
+// 主动刷新一次 overview 并重绘（页签切换、手动刷新都用它）。
+// 与 30 秒轮询共用同一段逻辑；editing 时不动，避免把正在输入的表单拽走。
+async function refreshOverviewOnce(force){
+  if (!S.ov && !force) return;
+  const editing = ["st-mood", "st-note", "st-energy", "st-closeness",
+                   "pf-name", "pf-role", "pf-callme", "pf-traits", "pf-likes", "pf-dislikes"]
+    .some(id => document.activeElement === $(id));
+  if (editing && !force) return;
+  try {
+    const seq = ++_ovSeq;
+    S.ov = await api("/api/overview");
+    if (seq !== _ovSeq) return;
+    renderOverview();
+  } catch (e) {
+    // 主动刷新失败不该打断用户：提示一次即可（切页签这种场景不该弹错）
+    console.warn("刷新概览失败:", e);
+  }
+}
+
 function renderMood(){
   const ov = S.ov; if (!ov) return;
   fillEmoPick();
@@ -1980,6 +1999,9 @@ function switchTab(tab){
   // 数据目录卡靠一段 class 判断写错的 MutationObserver，永远停在「加载中…」）
   if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); }
   if (tab === "persona") { loadSnapshots(); loadPersonaSuggest(); }  // 切到人格页时顺手刷快照列表与画像归纳建议
+  // 概览/心情/梦 三页的数据都在 overview 里（心情与六欲是按时间衰减的活数值）。
+  // 以前只靠 30 秒轮询 + document.hidden 跳过，切过去可能看到最多 30 秒前的旧值。
+  if (["overview", "emotion", "dream"].includes(tab)) refreshOverviewOnce();
   if (["knowledge", "notes", "skills", "growth"].includes(tab)) {
     if (S.ws) { renderKnowledge(); renderNotes(); renderSkills(); renderDshPlugins(); renderGrowth(); renderOnboarding(); }
     else loadWS();

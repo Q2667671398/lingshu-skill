@@ -356,8 +356,15 @@
     escBtn.style.cssText = "position:fixed;right:14px;top:14px;z-index:850;cursor:pointer;" +
       "background:#1b2028;color:#e6e1d5;border:1px solid #2a3140;border-radius:9px;padding:7px 14px;font-size:12px";
     escBtn.onclick = async () => {
-      try{ await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({action:"deactivate"})}); }catch(e){}
+      try{
+        await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({action:"deactivate"})});
+      }catch(e){
+        // 停用失败还刷新的话，会回到同一个自定义面板——用户会以为按钮没反应。
+        console.warn("停用自定义面板失败:", e);
+        toast("停用失败：" + ((e && e.message) || "接口不可用") + "（未刷新）", true);
+        return;
+      }
       location.reload();
     };
     document.body.appendChild(escBtn);
@@ -367,8 +374,15 @@
     if (fr) fr.remove();
     const escEl = document.getElementById("panel-escape");
     if (escEl) escEl.remove();
-    try{ await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({action:"deactivate"})}); }catch(e){}
+    try{
+      await api("/api/panels", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({action:"deactivate"})});
+    }catch(e){
+      // 回退动作本身失败：说清"回退了但没保存"，否则下次打开还是旧面板
+      console.warn("回退时停用自定义面板失败:", e);
+      toast(`自定义面板「${pname}」${why}，已临时回退（停用未保存，下次可能仍加载它）`, true);
+      return;
+    }
     toast(`自定义面板「${pname}」${why}，已回退默认面板`, true);
   }
   if (ACT.panel && ACT.panel !== "default"){

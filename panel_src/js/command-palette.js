@@ -143,7 +143,18 @@
       });
       items = navItems(q).slice(0, 6).concat(extra);
       renderList();
-    }).catch(function () {});
+    }).catch(function (err) {
+      // 以前这里是空的 catch：接口一挂，列表只剩导航项，用户以为"搜不到"。
+      // 现在把失败也当成一条结果摆出来，至少让人知道是搜索坏了而不是没内容。
+      console.warn("命令面板搜索失败:", err);
+      var tip = (err && err.message) ? err.message : "接口不可用";
+      items = navItems(q).slice(0, 6).concat([{
+        label: "搜索失败：" + tip, hint: "重试",
+        text: "搜索失败 " + tip,
+        run: function () { query(input.value); }
+      }]);
+      renderList();
+    });
   }
 
   function open() {

@@ -2545,7 +2545,13 @@ def install_skill(name: str, force: bool = False, from_dir: str | None = None,
     if from_dir:
         _count = _size = 0
         for _f in src_dir.rglob("*"):
-            if not _f.is_file() or "__pycache__" in _f.parts or ".git" in _f.parts:
+            if not _f.is_file():
+                continue
+            # 只数"会进技能目录"的文件：点开头的目录（.git/.tmp_refs/.github…）、
+            # __pycache__、node_modules、垃圾桶，都不该被算进来，也不该被装进去。
+            _parts = _f.relative_to(src_dir).parts[:-1]
+            if any(_p.startswith(".") or _p in ("__pycache__", "node_modules", "垃圾桶")
+                   for _p in _parts):
                 continue
             _count += 1
             if _count > MAX_INSTALL_FILES:

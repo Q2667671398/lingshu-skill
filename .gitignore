@@ -60,3 +60,4 @@ scripts/recreate_push.ps1
 
 # AI 待删区（用户自己清空，不进版本库）
 垃圾桶/
+_ui_probe/
