@@ -1,12 +1,12 @@
 {
-  "version": "5.1",
+  "version": "5.2",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "6b172915a0624f32ab996d6baa0f5d8dd95fa6fc88ca7df117c1399d43b22c3a",
-      "size": 307391
+      "sha256": "a5edcc670c4e723e925bc257ecece7355f940d1a13465f1dd0189f84394d7bcd",
+      "size": 309315
     },
     "README.md": {
-      "sha256": "5e606f577d1688331ced22fc31cc7581f4c8e1d528505a0fe10a09d311c417a9",
+      "sha256": "2df8358d3df2e7005f5628449e696d77cd58e080563448b0dc8cf8b805b86a5c",
       "size": 64471
     },
     "SKILL-lite.md": {
@@ -18,7 +18,7 @@
       "size": 1746
     },
     "SKILL.md": {
-      "sha256": "b6d933791c02af9471bfde804746d8bd42a2c8cf07bb8bf67d0f00df4897307c",
+      "sha256": "711b359d0710eb413b0fe6e5b70e750b3c38767abf811822fb6ab618076e58bc",
       "size": 36183
     },
     "assets/lingshu-icon-preview.png": {
@@ -50,8 +50,8 @@
       "size": 2205
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "80b4454562ec3cf683da0993eb57cbe10d178bd94c856ee10c6a13e00913db97",
-      "size": 52562
+      "sha256": "68e38450a031614700d747b8d576e0519ba60c09b6b2c1f72e91c743db53eb95",
+      "size": 57195
     },
     "cordis-plugin/lingshu-guard/plugin.js": {
       "sha256": "8c5432332cbb79aafe37f099b1e87f49dcabc7f925486adf112bd8f83629ac5b",
@@ -118,23 +118,23 @@
       "size": 2074
     },
     "docs/借鉴-易经与古典算法.md": {
-      "sha256": "88f343b84c0f7586af8d33944066fce0da5f9c26207792a7e01a3e4ab0e56dcd",
-      "size": 19200
+      "sha256": "d0a3a76eadabee7c27d75f3f622425bbd6aa7cf643b5ae802122937896436861",
+      "size": 20056
     },
     "docs/发布自动化.md": {
       "sha256": "dd1b9631cb88596561bf40317a8a7a2322f57ac121d925d0c27daa39c88401aa",
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "83ffd837bca55e2dec02911dd91227ebf599e9af0798f6d1d4751255b3621751",
-      "size": 136442
+      "sha256": "2c3cd5f56e1f6c01d6c0155d1a18f2d0d3215517b093ed30046d082d202cea1f",
+      "size": 138253
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "f0c6131cb503c6900c2d0efb4962911f584cade1fb645e389a675ac194b071e0",
+      "sha256": "ccb7d28a5138e2ce15b6419b79b2b7fa5a6d36c937cae5f12655485c58cdf16b",
       "size": 1340
     },
     "scripts/assembler.py": {
@@ -170,8 +170,8 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "4aa8845390fda6ffa81373da8bd4604a3463cef710727bc38a70cc06e2c1497e",
-      "size": 293066
+      "sha256": "adc4fa2c367951519e9b9ed0659ad6b78f826aaa40c9a49ed675d17f5fe38cbd",
+      "size": 293850
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
@@ -330,8 +330,8 @@
       "size": 5312
     },
     "scripts/shape_audit.py": {
-      "sha256": "bce96d9c467bf851648ad681caa75c071ce11593965b1ae2a1f269a12b7fb9d9",
-      "size": 7840
+      "sha256": "3c361b8138d95c1e11476092e4d4da2eba71d9ed5300857bb3ce9113a8bf3be7",
+      "size": 9131
     },
     "scripts/summarizer.py": {
       "sha256": "b9a31094fd55199b111d269bcbb1630cb164e9465bf4f4ed7159dfd0b1d06726",
@@ -340,6 +340,10 @@
     "scripts/sync_engine.py": {
       "sha256": "a07c430992c9ed4d4801faad79a1f00d64e1f55f982dd8ac5bdf674bd4f1ff40",
       "size": 5947
+    },
+    "scripts/token_calib.py": {
+      "sha256": "17d3cbbe5cca2bac3ff1d183f56b48460e71cebc8b8f43a299dd1720c5f3821a",
+      "size": 5337
     },
     "scripts/trash.py": {
       "sha256": "48c8b8cb2bbbc7c4740fd2103f091fd26c0fb2e0148502150848ee9720ca71b6",

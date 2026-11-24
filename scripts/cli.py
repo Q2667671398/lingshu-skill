@@ -1581,6 +1581,13 @@ def _main(argv=None) -> int:
     p_tr.add_argument("--json", action="store_true")
 
     # P11 #76 桌面快捷方式「灵枢面板」
+    p_tc = sub.add_parser(
+        "token-calib",
+        help="水位估算标定（盈不足/双假设法）：看样本与拟合值，并与插件写入值对账")
+    p_tc.add_argument("--refit", action="store_true",
+                      help="用 Python 独立重算并写回 token-calib.json（以 Python 为准）")
+    p_tc.add_argument("--json", action="store_true")
+
     p_sc = sub.add_parser("shortcut", help="在桌面生成/删除「灵枢面板」快捷方式（静默启动面板）")
     p_sc.add_argument("--name", default="灵枢面板", help="快捷方式名字（默认 灵枢面板）")
     p_sc.add_argument("--port", type=int, default=0, help="固定端口（默认读 config.panel_port）")
@@ -2604,6 +2611,17 @@ def _main(argv=None) -> int:
         if res["moved"]:
             print("没有删除任何东西；要清空请你自己动手。")
         return 0 if res["ok"] else 1
+
+    if args.cmd == "token-calib":
+        import token_calib as _tcal
+        rep = _tcal.refit(write=args.refit)
+        if args.json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+            return 0 if rep.get("ok") else 1
+        print(_tcal.render(rep))
+        if args.refit and rep.get("fit"):
+            print("\n已用 Python 结果重写 token-calib.json")
+        return 0
 
     if args.cmd == "shortcut":
         import desktop_shortcut as _ds

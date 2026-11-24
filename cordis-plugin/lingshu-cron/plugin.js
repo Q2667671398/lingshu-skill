@@ -811,6 +811,100 @@ export function apply(ctx, config) {
     } catch {} // turn-stopping 是串行事件，任何异常都不能拖住回合关闭
   })
 
+  // ── 盈不足标定（v5.2）──────────────────────────────────────────────
+  // 估算模型是 tokens = chars / ratio + overhead，有两个未知数。宿主偶尔会给出
+  // **真实 token 数**，那就是"盈不足"里的两次假设：拿 ≥2 组 (chars, tokens) 做
+  // 最小二乘，同时反推 ratio 与 overhead，比把 overhead 写死 18000 准得多。
+  // 只写 token-calib.jsonl / token-calib.json 两个新文件，绝不碰记忆数据。
+  const CALIB_SAMPLES = 500        // 最多留多少组样本
+  const CALIB_MIN_SPAN = 2000      // 两组样本字符差至少要这么大才有解
+  const _calibState = { lastAt: 0, lastChars: 0, cache: null }
+
+  function _calibPaths() {
+    try {
+      const home = readBrainHome()
+      if (!home) return null
+      return { samples: join(home, 'token-calib.jsonl'), fit: join(home, 'token-calib.json') }
+    } catch { return null }
+  }
+
+  function _fitFrom(samples) {
+    // 最小二乘拟合 y = a + b·x（等价于以字符数为自变量预测 token）
+    const n = samples.length
+    if (n < 2) return null
+    const xs = samples.map((s) => s.chars), ys = samples.map((s) => s.tokens)
+    const minX = Math.min(...xs), maxX = Math.max(...xs)
+    if (maxX - minX < CALIB_MIN_SPAN) return null      // 跨度太小，解不稳定
+    const mx = xs.reduce((a, b) => a + b, 0) / n
+    const my = ys.reduce((a, b) => a + b, 0) / n
+    let sxx = 0, sxy = 0
+    for (let i = 0; i < n; i++) {
+      sxx += (xs[i] - mx) ** 2
+      sxy += (xs[i] - mx) * (ys[i] - my)
+    }
+    if (!(sxx > 0)) return null
+    const b = sxy / sxx                 // tokens per char
+    const a = my - b * mx               // overhead
+    if (!(b > 0)) return null
+    const ratio = 1 / b
+    // 合理性闸：中文语境 1 字符大致 0.4~1 token；overhead 上万但不该离谱
+    if (!(ratio >= 0.5 && ratio <= 5)) return null
+    if (!(a >= 0 && a <= 200000)) return null
+    return { charsPerToken: Number(ratio.toFixed(3)),
+             systemOverheadTokens: Math.round(a), samples: n,
+             at: Math.floor(Date.now() / 1000) }
+  }
+
+  function _readCalibFit() {
+    if (_calibState.cache) return _calibState.cache
+    try {
+      const paths = _calibPaths()
+      if (!paths) return null
+      const raw = readFileSync(paths.fit, 'utf8')
+      const j = JSON.parse(raw)
+      if (!(j && j.charsPerToken > 0 && j.systemOverheadTokens >= 0)) return null
+      _calibState.cache = j
+      return j
+    } catch { return null }
+  }
+
+  function _recordCalib(chars, tokens) {
+    try {
+      if (!(chars > 0) || !(tokens > 0)) return
+      const now = Date.now()
+      // 限流：60 秒内且字符差不足 2000 就不记（热路径，别每轮都写盘）
+      if (now - _calibState.lastAt < 60000
+          && Math.abs(chars - _calibState.lastChars) < CALIB_MIN_SPAN) return
+      _calibState.lastAt = now
+      _calibState.lastChars = chars
+      const paths = _calibPaths()
+      if (!paths) return
+      appendFileSync(paths.samples,
+        JSON.stringify({ chars, tokens, at: Math.floor(now / 1000) }) + '\n')
+      // 读回来拟合（顺带裁到最近 CALIB_SAMPLES 条，防无限膨胀）
+      let lines = []
+      try {
+        lines = readFileSync(paths.samples, 'utf8').split('\n').filter((x) => x.trim())
+      } catch { return }
+      const tail = lines.slice(-CALIB_SAMPLES)
+      if (lines.length > CALIB_SAMPLES * 2) {
+        try { writeFileSync(paths.samples, tail.join('\n') + '\n') } catch {}
+      }
+      const samples = []
+      for (const line of tail) {
+        try {
+          const o = JSON.parse(line)
+          if (o && o.chars > 0 && o.tokens > 0) samples.push(o)
+        } catch {}
+      }
+      const fit = _fitFrom(samples)
+      if (fit) {
+        try { writeFileSync(paths.fit, JSON.stringify(fit, null, 2)) } catch {}
+        _calibState.cache = fit
+      }
+    } catch {}
+  }
+
   // 水位估算：宿主给了 usage 就用真值（prompt 侧 = 未缓存 + 缓存读 + 缓存写）；
   // 否则按「消息正文字符数 + system/工具固定开销」折算。
   // v3.23 修：旧版只数 messages 的 text 字符，system prompt 与工具 schema 完全不计，
@@ -820,6 +914,16 @@ export function apply(ctx, config) {
     try {
       const msgs = Array.isArray(decision?.messages) ? decision.messages : []
       const num = (x) => (Number.isFinite(x) ? x : 0)
+      // 先把"真实对话字符数"算出来：既给下面的 chars 分支用，也给盈不足标定
+      // 提供自变量（宿主给真值 token 时才成对记录）。
+      let chars = 0
+      for (const m of msgs) {
+        // 估算只看"真实对话"：灵枢自己注入的消息不算（v3.59：三个子插件各有名字）
+        if (LINGSHU_SOURCES.has(m?.source?.name)) continue
+        for (const c of (Array.isArray(m?.content) ? m.content : [])) {
+          if (c?.type === 'text' && typeof c.text === 'string') chars += c.text.length
+        }
+      }
       for (let i = msgs.length - 1; i >= 0; i--) {
         const u = msgs[i]?.metadata?.usage || msgs[i]?.usage || msgs[i]?.modelUsage
           || msgs[i]?.metadata?.modelUsage
@@ -829,15 +933,9 @@ export function apply(ctx, config) {
         const total = num(u.totalTokens)
         const used = total > 0 ? total : prompt
         if (used > 0) {
+          // 盈不足：拿到真值时顺手记一组 (字符数, 真实 token)，交给 _recordCalib 拟合
+          _recordCalib(chars, used)
           return { pct: Math.min(100, Math.round(used / cfg.contextLimit * 100)), source: 'usage' }
-        }
-      }
-      let chars = 0
-      for (const m of msgs) {
-        // 估算只看"真实对话"：灵枢自己注入的消息不算（v3.59：三个子插件各有名字）
-        if (LINGSHU_SOURCES.has(m?.source?.name)) continue
-        for (const c of (Array.isArray(m?.content) ? m.content : [])) {
-          if (c?.type === 'text' && typeof c.text === 'string') chars += c.text.length
         }
       }
       if (!chars) {
@@ -848,8 +946,13 @@ export function apply(ctx, config) {
         if (!floor) return null
         return { pct: Math.min(100, Math.round(floor / cfg.contextLimit * 100)), source: 'floor' }
       }
-      const tokens = chars / cfg.charsPerToken + (cfg.systemOverheadTokens || 0)
-      return { pct: Math.min(100, Math.round(tokens / cfg.contextLimit * 100)), source: 'chars' }
+      // 拟合值优先（盈不足标定过就用实测参数），没有则退回配置默认值。
+      const _fit = _readCalibFit()
+      const _ratio = (_fit && _fit.charsPerToken > 0) ? _fit.charsPerToken : cfg.charsPerToken
+      const _over = _fit ? _fit.systemOverheadTokens : (cfg.systemOverheadTokens || 0)
+      const tokens = chars / _ratio + _over
+      return { pct: Math.min(100, Math.round(tokens / cfg.contextLimit * 100)),
+               source: _fit ? 'chars+calib' : 'chars' }
     } catch { return null }
   }
 
