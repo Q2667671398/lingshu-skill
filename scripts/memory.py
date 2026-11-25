@@ -1364,6 +1364,13 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
                 # 第四轮#3：合并路径补项目标记——旧条目还挂着 "default" 时趁机挂上真实项目
                 if project and str(project).strip() and str(m.get("project") or "default") == "default":
                     m["project"] = str(project).strip()[:64]
+                # P1-4：合并时若分支变了，说明这条已是**跨分支知识** → 清掉 branch，
+                # 否则它在另一个分支上会被平白降权 50%（误伤）。
+                if _branch_memory_on():
+                    _cur_br = _git_branch()
+                    _old_br = str(m.get("branch") or "")
+                    if _cur_br and _old_br and _cur_br != _old_br:
+                        m.pop("branch", None)
                 save_all(records)
                 # P1：异步补/更新 embedding（文本变了或还没有向量才调度；
                 # 未配置 embed 服务时 _embed_wanted 直接 False，零开销跳过）
@@ -1379,6 +1386,12 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
         rec = make_record(text, kind, importance, tags, entities, source, layer,
                           channel=channel, group_id=group_id, user=user,
                           project=project, session=session, agent_id=agent_id)
+        # P1-4 分支感知：记下当前 git 分支，召回时跨分支降权（不是硬过滤）。
+        # 非 git 目录不写这个字段，行为与以前完全一致。
+        if _branch_memory_on():
+            _br = _git_branch()
+            if _br:
+                rec["branch"] = _br
         # —— #41 correction 语义：用户说「不对/不是」语境下显式标记的改口记录 ——
         # correction 条目是失败闭环的第一手证据：做梦教训提炼（#36）优先读它，
         # 且合并/淡忘/归档路径都会跳过（永不自动合并消失），只有人工才能处理。
@@ -2095,6 +2108,8 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
             mp = str(m.get("project") or "").strip().lower()
             if mp and mp == _pj:
                 m["_project_boost"] = 0.25
+    # P1-4：当前分支只探一次（带缓存），非 git 目录为 ""，下面整段不生效
+    _cur_branch = _git_branch() if _branch_memory_on() else ""
     if not records:
         return []
     now = now_ts()
@@ -2237,6 +2252,12 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         # 原 age_boost 字段保留在 debug 里，但不再参与乘法压分。
         age_days = (now - _num(m.get("created"), now)) / DAY
         # （以上保留 age_days 只是给下方 age_boost debug 用，不乘进 score）
+        # P1-4 分支感知：跨分支记忆降权 50%（不硬过滤——别的分支的结论仍可能有用，
+        # 只是排在当前分支之后）。两边都有分支才比，任一侧为空就不动。
+        if _cur_branch:
+            _mb = str(m.get("branch") or "")
+            if _mb and _mb != _cur_branch:
+                score *= 0.5
         _parts = {"relevance": round(rel, 3), "recency": round(rec, 3),
                   "importance": imp, "hits": hits,
                   "age_boost": 1.0}
@@ -2764,6 +2785,92 @@ _INDEX_CLAUSE = "，,、"
 # 指针行里短 id 的占位前缀：默认空（段头有提示时用紧凑写法），
 # 段头没提示时会被替换成 "id:" 让行内自解释。
 _PTR_ID_TOKEN = "\x00"
+
+
+# git 分支探测缓存：{cwd: (branch, 时间戳)}。remember/recall 是高频路径，
+# 每次都 spawn 一个 git 进程太贵（Windows 上尤其明显）。
+_BRANCH_CACHE = {}
+_BRANCH_TTL = 60.0
+_BRANCH_CACHE_MAX = 16
+
+
+def _git_head_sig(cwd: str) -> float:
+    """找 cwd 所属仓库的 `.git/HEAD` mtime，用作缓存失效信号。
+
+    找不到 git 目录返回 0（那时缓存键退化成 (cwd, 0)，仍能省掉重复探测）。
+    """
+    try:
+        cur = Path(cwd)
+        for _ in range(24):          # 往上最多找 24 层
+            cand = cur / ".git"
+            if cand.is_dir():
+                head = cand / "HEAD"
+                try:
+                    return head.stat().st_mtime
+                except OSError:
+                    return 0.0
+            if cand.is_file():
+                # worktree / submodule：.git 是文件，指向别处。取它的 mtime 即可。
+                try:
+                    return cand.stat().st_mtime
+                except OSError:
+                    return 0.0
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+    except OSError:
+        pass
+    return 0.0
+
+
+def _git_branch(path: str | None = None, ttl: float = _BRANCH_TTL) -> str:
+    """当前目录所在 git 仓库的分支名；不是 git 仓库 / 拿不到时返回 ""。
+
+    detached HEAD 返回短 hash（也算一个"分支身份"，避免和主分支混）。
+    """
+    try:
+        cwd = str(path or os.getcwd())
+    except OSError:
+        return ""
+    # 缓存键带上 .git/HEAD 的 mtime：`git checkout` 会改写 HEAD，mtime 一变缓存
+    # 自然失效。只按 cwd + 固定 TTL 缓存会在"切分支后 60 秒内"读到旧分支（实测踩过）。
+    head_sig = _git_head_sig(cwd)
+    ckey = (cwd, head_sig)
+    hit = _BRANCH_CACHE.get(ckey)
+    if hit and (time.time() - hit[1]) < ttl:
+        return hit[0]
+    name = ""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                           cwd=cwd, capture_output=True, timeout=4,
+                           encoding="utf-8", errors="replace")
+        if r.returncode == 0:
+            raw = (r.stdout or "").strip()
+            if raw and raw != "HEAD":
+                name = raw[:80]
+            elif raw == "HEAD":
+                # detached：用短 hash 当身份
+                r2 = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                                    cwd=cwd, capture_output=True, timeout=4,
+                                    encoding="utf-8", errors="replace")
+                if r2.returncode == 0:
+                    h = (r2.stdout or "").strip()
+                    if h:
+                        name = "detached:" + h[:12]
+    except Exception:  # noqa: BLE001
+        name = ""
+    if len(_BRANCH_CACHE) > _BRANCH_CACHE_MAX:
+        _BRANCH_CACHE.clear()
+    _BRANCH_CACHE[ckey] = (name, time.time())
+    return name
+
+
+def _branch_memory_on() -> bool:
+    """config.git_branch_memory（默认开）；读不到配置当开。"""
+    try:
+        return bool(load_config().get("git_branch_memory", True))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _short_id(memory_id: str) -> str:

@@ -345,6 +345,8 @@ DEFAULT_CONFIG = {
     # 索引法记忆（P1-1）：注入只送"一句索引 + id"，正文用 recall 取。
     # auto=水位≥60% 才切（默认，水位低时仍给全文）/ always=一律切 / off=关
     "use_index_memory": "auto",
+    # P1-4 Git 分支感知：remember 记下当前分支，召回时跨分支分数 ×0.5（不硬过滤）
+    "git_branch_memory": True,
     "auto_update_interval_hours": 24,
     "session_state_cache": False,
     "session_state_ttl": 300,
