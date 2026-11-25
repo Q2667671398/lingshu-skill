@@ -80,28 +80,74 @@ function pfile(p){ return "/api/panels/file?panel=面板名&p=" + encodeURICompo
 // <link rel="stylesheet" href=...> 需动态注入或直接内联样式
 ```
 
-### 可用 GET 接口（均返回 JSON）
+### 可用 GET 接口（均返回 JSON，共 33 个）
+
+> 清单按 `panel_server.py` 的 `_route_get` 实际注册生成。**除 `/api/ping`、`/api/alive`
+> 外，全部需要 `Authorization: Bearer <token>`**（token 由首页注入）。
+
+**数据类**
 
 | 接口 | 说明 |
 |---|---|
-| `/api/overview` | 聚合大包：stats、layer_counts、memories、persona、mood、mind、desires、dreams 等 |
-| `/api/memories?layer=&q=&limit=&offset=…` | 记忆列表（支持层/重要性/时间/标签组合筛选） |
-| `/api/search?q=&k=12` | 语义检索 |
+| `/api/overview` | 聚合大包：stats、layer_counts、memories、persona、mood、mind、desires、dreams、inner_voice 等 |
+| `/api/memories?layer=&q=&limit=&offset=…` | 记忆列表（层/重要性/时间/标签组合筛选） |
+| `/api/search?q=&k=12&mode=auto` | 模糊召回（返回 `[{memory, score, parts}]`） |
 | `/api/graph?limit=300` | 联想关系图 |
 | `/api/assoc?id=` | 单条记忆的关联邻居 |
-| `/api/entity?name=&limit=20` | 实体档案卡 |
-| `/api/persona/diff` | 人格漂移对比 |
-| `/api/logs?limit=200&level=` | 运行日志 |
+| `/api/entity?name=&limit=20` | 实体档案卡（`name` 必填，1~64 字符） |
 | `/api/conflicts?limit=50` | 矛盾记忆对 |
-| `/api/inject-preview?q=` | 注入包预览 |
+| `/api/inject-preview?q=` | 注入包预览（会跑一次装配，略重） |
+| `/api/workspace` | 知识 / 笔记 / 技能 / 插件的工作区快照 |
+| `/api/workspace/search?q=&scope=knowledge` | 知识库 / 笔记搜索 |
 | `/api/growth/review?days=7` | 成长回顾 |
-| `/api/workspace/search?q=&scope=knowledge` | 知识库/笔记搜索 |
-| `/api/self-update` | 更新检查（只读缓存用 `?auto=1`） |
-| `/api/panels` | 面板列表（本规范的管理接口） |
-| `/api/panels/market` | 市场目录扫描 |
-| `/api/panels/file?panel=&path=&as_page=1` | 面板静态文件（扩展名白名单：html/htm/js/css/json/png/jpg/jpeg/gif/webp/svg/ico/woff/woff2/ttf/map） |
+| `/api/growth/timeline` | 成长时间线 |
+| `/api/insights` | 运行洞察（版本 / 原文库 / 群聊鉴权 / 嵌入状态） |
 
-写接口（remember/persona/knowledge 等，见 `panel_server.py` 的 `_WRITE_ENDPOINTS`）自定义面板也可以调，但请谨慎：它们直接改记忆数据。
+**人格与心情**
+
+| 接口 | 说明 |
+|---|---|
+| `/api/persona/diff` | 人格漂移对比 |
+| `/api/persona/changes` | AI 近期人格改动（待审入口） |
+| `/api/persona/snapshots` | 人格快照列表 |
+| `/api/persona/suggest` | 画像归纳候选（带证据链） |
+| `/api/mode/explain?q=` | 会话模式判定依据（work / human / auto） |
+
+**运维**
+
+| 接口 | 说明 |
+|---|---|
+| `/api/logs?limit=200&level=` | 运行日志 |
+| `/api/diagnostics` | 自诊断（死链 / 冲突 / 膨胀 / 来源归属） |
+| `/api/home` | 数据目录位置与迁移信息 |
+| `/api/config` | **设置页**：返回 29+ 项白名单配置（类型/范围/枚举/默认值/中文说明） |
+| `/api/data` | **数据页**：备份列表（记录数 / 距今 / 可疑标记）+ 数据规模 |
+| `/api/self-update?auto=1&refresh=1&source=npm` | 更新检查；`auto=1` 只读缓存（毫秒返回、绝不联网），`refresh=1` 真拉，`source` 可强制 `npm`/`git` |
+| `/api/extensions` | 已装扩展列表 |
+| `/api/extensions/ollama/status` | Ollama 扩展状态机（idle/downloading/…/done/error） |
+
+**面板管理**
+
+| 接口 | 说明 |
+|---|---|
+| `/api/panels` | 面板列表（`{active, panels[], installed_dir, market_dir}`） |
+| `/api/panels/market` | 市场目录扫描 |
+| `/api/panels/file?panel=&path=&as_page=1` | 面板静态文件（扩展名白名单；`as_page=1` 对 HTML 注入 token） |
+| `/api/panels/cloud` | 云端市场状态（配置 / 列表） |
+| `/api/panels/cloud/shot?...` | 云端面板截图 |
+
+**生命周期（免 token，面板自己的"活着"信号）**
+
+| 接口 | 说明 |
+|---|---|
+| `/api/ping` | 探测"面板是否已在跑"：`{ok, app:"lingshu-panel", port, pid}`。**故意免鉴权**——启动器探测时还拿不到 token；它不含任何记忆内容 |
+| `/api/alive` | **长轮询保活**：服务端按住最多 25 秒再返回，页面收到立刻再发。它不是定时器，**不受浏览器对隐藏标签页的节流影响**，所以"页面开着就一定连着" |
+
+写接口（remember / persona / knowledge 等）自定义面板也可以调，但请谨慎：它们直接改记忆数据。
+完整清单见 `panel_server.py` 的 `_POST_ROUTES`（当前 53 个）。
+
+> **务必自己带 token**：从 `/api/panels/file?as_page=1` 加载的 HTML 会被注入 token；
+> 若你把面板放在 iframe 里，用 `window.parent` 取 token 或让宿主注入，别硬编码。
 
 ## 4. 面板管理接口
 
@@ -117,6 +163,9 @@ function pfile(p){ return "/api/panels/file?panel=面板名&p=" + encodeURICompo
 | POST | `/api/panels` | `{action:"delete", name, source}` | 删除（source: installed/market；激活中 400 拒删） |
 | POST | `/api/panels` | `{action:"open-folder", which}` | 资源管理器打开目录（installed/market） |
 | POST | `/api/panels/scaffold` | `{name, title}` | 一键生成最小合法面板骨架（AI 起步入口） |
+| GET | `/api/ping` | — | 存活探测（免 token） |
+| GET | `/api/alive` | — | 长轮询保活（免 token，按住 ~25s） |
+| POST | `/api/shutdown` | `{}` | **关掉面板服务**（设置页「退出服务」用；需 token） |
 
 ### 云端市场（Gitee 主 + GitHub 镜像，v2.29+）
 
@@ -185,6 +234,50 @@ api("/api/overview").then(d => {
 ```
 
 把目录放进 `~/.brain-memory/panels/`，打开默认面板 → 「面板」按钮 → 点「启用」即可。
+
+## 6.5 生命周期与设置页（自定义面板也能用）
+
+### 面板会自己退，别假设它常驻
+
+- 页面**必须**维持一条 `GET /api/alive` 长轮询（服务端按住 25 秒再返回，收到立刻再发）。
+  这不是定时器，所以不受浏览器"隐藏标签页节流"影响——**它断了，服务端就知道页面没了**。
+- 服务端超过 `panel_idle_minutes`（默认 1 分钟）没有任何请求，且没有活跃长轮询 → 优雅退出。
+- 想立刻退：`POST /api/shutdown`（面板「设置」页有按钮）。
+- 双击桌面快捷方式不会起第二个进程：启动器先 `GET /api/ping`，已在跑就只把浏览器叫回来。
+
+**自定义面板如果自己接管了整个页面，请照做这两条**，否则服务端会认为"没人用"而退出：
+
+```js
+// 1) 长轮询保活
+(async function keepAlive(){
+  for (;;) {
+    let ok = false;
+    try { ok = (await fetch("/api/alive", {cache: "no-store"})).ok } catch (_) {}
+    if (!ok) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+})();
+
+// 2) 兜底心跳（长轮询被中间层掐断时仍能续命）
+setInterval(() => {
+  try { fetch("/api/ping", {cache: "no-store", keepalive: true}).catch(() => {}) } catch (_) {}
+}, 30000);
+```
+
+### 设置页接口：`/api/config`
+
+- `GET /api/config` → `{items: [{key, group, label, kind, min, max, options, hint, value, default}...]}`
+- `POST /api/config` → body `{key, value}`
+
+**只允许白名单键**（见 `scripts/panel_settings.py` 的 `CONFIG_SCHEMA`）。非白名单、越界、
+类型不符一律 `400` + 中文原因。写盘走锁 + 原子替换，只读模式下函数层直接拒绝。
+
+### 数据页接口：`/api/data`、`/api/data/backup`、`/api/data/restore`
+
+- `GET /api/data` → 备份列表（每份含 `records` 记录数、`age_hours`、`suspicious` 标记）+ 数据规模
+- `POST /api/data/backup` → 立即备份（**默认不修剪**历史）
+- `POST /api/data/restore` → `{name}`，只接受**备份目录内的文件名**（防路径穿越）；
+  恢复前会自动把现状再备份一份
 
 ## 7. AI 创建指南
 
