@@ -76,6 +76,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
      "hint": "送进 rerank 的候选条数，越大越准也越慢"},
 
     # —— 面板与宿主 ——
+    {"key": "use_index_memory", "group": "注入与预算", "label": "索引法记忆",
+     "kind": "enum", "options": ["auto", "always", "off"],
+     "hint": "注入只送一句索引+id，正文用 recall 取；auto=水位≥60% 才切（省 40%+ 注入量）"},
     {"key": "update_source", "group": "自动更新与备份", "label": "更新下载源",
      "kind": "enum", "options": ["auto", "npm", "git"],
      "hint": "auto=npm 优先（失败退回 Gitee/GitHub）；npm=只走 npm 官方包；git=只走 Gitee/GitHub"},

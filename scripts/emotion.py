@@ -1178,3 +1178,77 @@ def emotion_mirror(user_emotion: str, intensity: float = 0.5, what: str = "") ->
                   why=f"共情：用户在说「{ue[:40]}」", about="用户", genesis=True)
         note = f"顺着用户的感受起了「{ev['emotion']}」({ev['intensity']:.0%})"
     return {"level": level, "mirrored": ev, "mood": mood_now(), "note": note}
+
+
+def inner_voice() -> str:
+    """内心独白：灵枢此刻对自己的简短态度评价（≤30 字，纯模板 + 词表，不调 LLM）。
+
+    设计原则：
+    - 不能太长——侧栏里一行小字，30 字封顶；
+    - 不能太啰嗦——按 storm / suppress / valence / intensity 挑模板，别做复杂拼接；
+    - 不能太准确——模板是"大概的感觉"，不是精断，保持拟人感；
+    - 没有情绪记录时返回空字符串（面板据此隐藏，不瞎编）。
+    """
+    m = mood_now()
+    if not m.get("active"):
+        return ""
+    ra = rationality()
+    storm = bool(m.get("storm")) or bool(ra.get("storm"))
+    suppress = _num(ra.get("suppress"), 0)
+    valence = _num(m.get("valence"), 0)
+    intensity = _num(m.get("intensity"), 0)
+    label = m.get("label", "平静")
+
+    # 优先级 1：情绪上头 → 诚实说"脑子不清楚"
+    if storm:
+        if valence < -0.2:
+            return "情绪有点炸，先别急着下结论"
+        return "有点上头，理智被压住了"
+
+    # 优先级 2：理智被情绪压住 ≥ 20% → 诚实说"被压住了"
+    if suppress >= 20:
+        return f"情绪在捣乱，脑子不太清楚"
+
+    # 优先级 3：按 valence 和 intensity 挑模板
+    if valence >= 0.25 and intensity >= 0.3:
+        if label in ("开心", "愉快", "平和"):
+            return f"心情{label}，想多聊一会儿"
+        return "心情不错，可以多说几句"
+    if valence <= -0.25 and intensity >= 0.3:
+        if label in ("失落", "低落", "烦躁", "焦虑"):
+            return f"心情{label}，别逼我太快"
+        return "有点低落，想静静"
+    if intensity >= 0.5:
+        return f"此刻是{label}，有点强烈"
+
+    # 优先级 4：平静 / 低强度 → 一句话带过
+    if label == "平静" or intensity < 0.1:
+        return "情绪没波动，随时可以聊"
+
+    return f"此刻是{label}，还行"
+
+
+def emotion_timeline(limit: int = 50) -> list:
+    """心情流水：取最近 limit 条 genesis 事件（自动生成的 / 共情的 / 认知评价的），
+    每条带时间、标签、强度、分类、简短原因——面板 emotion 页签的心情时间线用。
+
+    为什么只取 genesis=True：
+    - 用户手动 emotion feel 调出来的不算"流水"，是主动触发；
+    - mood_now / mood_ema 内部 feel 出来的也不算 genesis。
+    所以 genesis=True 基本就是"自动生成、反映真实对话 / 共情 / 评价"的那些事件，
+    这才是用户想看的心情变化。
+    """
+    rows = [r for r in emotion_events(limit=limit * 3) if r.get("genesis")]
+    rows = rows[:limit]
+    return [
+        {
+            "ts": r.get("ts", 0),
+            "time": fmt_time(r.get("ts", 0)) if _num(r.get("ts"), 0) else "",
+            "label": r.get("emotion", ""),
+            "intensity": round(_num(r.get("intensity"), 0), 2),
+            "category": r.get("category", ""),
+            "why": (r.get("why") or "")[:80],
+            "about": r.get("about", ""),
+        }
+        for r in rows
+    ]

@@ -679,6 +679,11 @@
             <button class="btn" id="btn-emo-feel">记下</button>
           </div>
           <div class="sub" id="emo-arc" style="margin-top:12px"></div>
+          <!-- v5.12 心情时间线：每轮自动生成的情绪事件流水（genesis=True） -->
+          <div style="margin-top:10px">
+            <div class="sub" style="margin-bottom:4px">心情流水（最近 50 条自动记录，hover 看强度）</div>
+            <div id="emo-timeline" style="display:flex;flex-wrap:wrap;gap:6px;max-height:180px;overflow-y:auto;padding:6px 4px;border:1px dashed rgba(200,200,200,.25);border-radius:6px"></div>
+          </div>
         </div>
         <div class="card">
           <h2>六欲</h2>
@@ -949,6 +954,13 @@
         </div>
         <div id="diag-summary" style="margin-top:12px"></div>
         <div id="diag-body" style="margin-top:10px"><div class="empty">加载中…</div></div>
+      </div>
+
+      <!-- v5.12 体检历史：灵枢自己的成长账本（doctor 每跑一次追加一条，按天聚合） -->
+      <div class="card" style="margin-bottom:14px">
+        <h2 style="margin-bottom:4px">灵枢体检历史（近 30 天）</h2>
+        <div class="sub">doctor 每跑一次就存一条，按天汇总 PASS / WARN / FAIL。红柱越高越糟；绿柱越高越好。</div>
+        <div id="doctor-history" style="margin-top:10px"></div>
       </div>
 
       <!-- 数据目录（查看 / 迁移） -->
@@ -1412,6 +1424,10 @@ function renderOverview(){
     + (ov.source && ov.source.version ? `<br><br><b>代码版本</b><br>v${esc(ov.source.version)}<br><span style="font-size:10px">${esc(ov.source.script_dir || "")}</span>` : "")
     + `<br><br><b>模型档位</b><br>${esc(tierLabel(ov.model_tier))}`
     + `<br><br><b>会话模式</b><br>${esc(modeLabel(ov.mode))} <a href="javascript:void 0" data-mode-cycle style="color:var(--amber)">切换</a>`
+    // v5.12 内心独白：灵枢此刻对自己的简短态度评价（纯模板，LLM-free）
+    + (ov.inner_voice ? `<br><br><b style="font-style:italic;color:var(--sub)">灵枢自语</b><br><span style="font-style:italic;color:var(--sub);font-size:11px;opacity:.85">${esc(ov.inner_voice)}</span>` : "")
+    // v5.12 灵枢健康度：0-100，按最近 7 天 doctor FAIL/WARN + failures.jsonl 条数加权扣分
+    + (typeof ov.health_score === "number" ? `<br><br><b>灵枢健康度</b><br>${ov.health_score} / 100${ov.health_score < 60 ? ` <b style="color:var(--red)">偏低</b>` : ov.health_score < 80 ? ` <b style="color:var(--amber)">一般</b>` : ""}` : "")
     + (rcTotal ? `<br><br><b style="color:#e66450">待审核 ${rcTotal} 项</b><br>记忆 ${rc.memories || 0} · 知识 ${rc.knowledge || 0} · 人格 ${rc.persona || 0}` : "")
     + ((ov.persona_drift && ov.persona_drift.alert) ? `<br><br><b style="color:#e66450">人格漂移偏大</b><br><a href="#" data-goto="persona" style="color:var(--amber)">去人格页查看/回滚 →</a>` : "")
     + (ov.readonly ? `<br><b style="color:var(--red)">只读模式</b>` : "")
@@ -1611,6 +1627,52 @@ function renderMood(){
       : `<div class="empty">没有正在起作用的情绪</div>`;
   }
   renderDesires(ov);
+  // v5.12 心情时间线：每轮自动生成的情绪事件流水
+  const tlEl = $("emo-timeline");
+  if (tlEl) {
+    const tl = ov.emotion_timeline || [];
+    if (!tl.length) {
+      tlEl.innerHTML = `<span class="sub" style="opacity:.6">还没有自动情绪记录——通常 extract / 共情 / 认知评价会自动产生</span>`;
+    } else {
+      tlEl.innerHTML = tl.map(r => {
+        const color = moodColor({ category: r.category, intensity: r.intensity });
+        const title = `${r.label} · 强度 ${Math.round((r.intensity || 0) * 100)}%${r.about ? " · 关于 " + r.about : ""}${r.why ? " — " + r.why : ""} · ${r.time}`;
+        return `<span class="chip" style="background:${color};border-color:${color};color:#fff;cursor:help" title="${esc(title)}">${esc(r.label)}</span>`;
+      }).join("");
+    }
+  }
+}
+
+// v5.12 体检历史（doctor-history.jsonl）：按天聚合的 PASS/WARN/FAIL 分布，纯 CSS 堆叠条
+function renderDoctorHistory(){
+  const el = $("doctor-history"); if (!el) return;
+  const ov = S.ov; if (!ov) { el.innerHTML = `<div class="empty">切到「概览」再回来看（数据在 overview 接口里）</div>`; return; }
+  const hist = ov.doctor_history || [];
+  if (!hist.length) {
+    el.innerHTML = `<div class="empty">还没跑过 doctor（跑一次「python scripts/brain.py doctor」之后会自动追加一条）</div>`;
+    return;
+  }
+  const maxTotal = Math.max(...hist.map(d => d.total));
+  el.innerHTML = `<div style="display:flex;align-items:flex-end;gap:6px;height:80px;margin-top:6px;padding:0 4px">`
+    + hist.map(d => {
+        const h = Math.max(2, Math.round((d.total / maxTotal) * 70));
+        const fh = Math.round((d.fails / maxTotal) * 70);
+        const wh = Math.round((d.warns / maxTotal) * 70);
+        const ph = h - fh - wh;
+        const tooltip = `${d.date} · PASS ${d.passes} / WARN ${d.warns} / FAIL ${d.fails}`;
+        return `<div style="flex:1;min-width:18px;display:flex;flex-direction:column-reverse;height:${h}px;gap:1px" title="${esc(tooltip)}">`
+          + `<div style="flex:${ph};background:rgba(120,180,120,.85);min-height:0;border-radius:2px 2px 0 0"></div>`
+          + (d.warns ? `<div style="height:${wh}px;background:rgba(220,180,80,.85);min-height:1px;border-radius:1px"></div>` : "")
+          + (d.fails ? `<div style="height:${fh}px;background:rgba(210,100,90,.85);min-height:1px;border-radius:1px"></div>` : "")
+          + `</div>`;
+      }).join("")
+    + `</div>`
+    + `<div style="display:flex;gap:6px;font-size:10px;color:var(--sub);margin-top:4px">`
+    + `<span style="color:rgba(120,180,120,.85)">■</span>PASS `
+    + `<span style="color:rgba(220,180,80,.85)">■</span>WARN `
+    + `<span style="color:rgba(210,100,90,.85)">■</span>FAIL `
+    + `<span style="margin-left:auto">共 ${hist.length} 天 · ${hist.reduce((s,d)=>s+d.total,0)} 次</span>`
+    + `</div>`;
 }
 
 function renderDesires(ov){
@@ -3198,7 +3260,7 @@ function switchTab(tab){
   if (tab === "logs") loadLogs();
   // 诊断页有两张随时间变化的卡：体检结果 + 数据目录位置，进页面时一起刷（以前只刷体检，
   // 数据目录卡靠一段 class 判断写错的 MutationObserver，永远停在「加载中…」）
-  if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); }
+  if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); renderDoctorHistory(); }
   if (tab === "persona") { loadSnapshots(); loadPersonaSuggest(); }  // 切到人格页时顺手刷快照列表与画像归纳建议
   // 概览/心情/梦 三页的数据都在 overview 里（心情与六欲是按时间衰减的活数值）。
   // 以前只靠 30 秒轮询 + document.hidden 跳过，切过去可能看到最多 30 秒前的旧值。
@@ -4883,18 +4945,29 @@ function showUpdModal(title, detail, canApply){
       const last = localStorage.getItem("ls-upd-source");
       if (last) sel.value = last;
     } catch (_) {}
+    // 2026-11-25：切换下载源时重新查一次 update_check——换源就换说明，
+    // 之前的 changelog / 版本号都是上一个源的，看了会误导用户。
     sel.addEventListener("change", () => {
       try { localStorage.setItem("ls-upd-source", sel.value); } catch (_) {}
+      checkUpdate(false);
     });
   }
   const npmInfo = $("upd-npm-info");
   if (npmInfo) {
     const nm = updLastCheck && updLastCheck.npm;
+    const ne = updLastCheck && updLastCheck.npm_error;
     if (nm && nm.version) {
       const kb = nm.unpacked ? "，解包约 " + Math.round(Number(nm.unpacked) / 1024) + " KB" : "";
       npmInfo.textContent = "npm 最新 v" + nm.version + kb + (nm.cached ? "（缓存）" : "");
+      npmInfo.style.color = "";
+    } else if (ne) {
+      // 2026-11-25：dev 模式下 npm 版本查询失败（限流/网络/短暂挂掉），
+      // 直接透传原因给用户——让他知道"npm 不是没有新版，是我暂时查不到"。
+      npmInfo.textContent = "npm 版本查询失败：" + ne;
+      npmInfo.style.color = "var(--red-text)";
     } else {
       npmInfo.textContent = "";
+      npmInfo.style.color = "";
     }
   }
   $("upd-detail").innerHTML = String(detail).replace(/\n/g, "<br>");
@@ -5014,8 +5087,16 @@ $("upd-apply").addEventListener("click", async () => {
                   || updLastCheck.source_kind === "github" ? "从远程仓库（Gitee/GitHub）更新"
                   : "从已安装本地版本同步";
     const targetTxt = updLastCheck.target_path ? "\n\n目标路径：" + updLastCheck.target_path : "";
+    // 2026-11-25：选了 npm 源但 npm 版本查询失败——可能是限流、网络抖动、npm 短暂挂掉。
+    // 让用户明确知道"我查不到 npm 上是什么版本，但仍会强制从 npm 拉取"，
+    // 避免"查不到新版所以没点"或"点了更新发现版本号比预期旧"的困惑。
+    let npmWarn = "";
+    if ((pickedSrc === "npm" || pickedSrc === "auto") && updLastCheck.npm_error) {
+      npmWarn = "\n\n⚠ 注意：npm 版本查询暂时失败（" + esc(updLastCheck.npm_error)
+        + "），将直接拉取 npm 官方包最新版本。";
+    }
     if (!confirm("确认更新灵枢本体到 " + (updLastCheck.source_version || updLastCheck.version ? "v" + (updLastCheck.source_version || updLastCheck.version) + " " : "")
-                 + "？\n\n方式：" + kindTxt + targetTxt
+                 + "？\n\n方式：" + kindTxt + targetTxt + npmWarn
                  + "\n\n（更新采用原子化部署：先备份再替换，失败自动回滚，记忆数据不受影响）")) return;
     btn.disabled = true;
     btn.classList.add("loading");

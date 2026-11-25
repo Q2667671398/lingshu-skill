@@ -369,6 +369,11 @@
             <button class="btn" id="btn-emo-feel">记下</button>
           </div>
           <div class="sub" id="emo-arc" style="margin-top:12px"></div>
+          <!-- v5.12 心情时间线：每轮自动生成的情绪事件流水（genesis=True） -->
+          <div style="margin-top:10px">
+            <div class="sub" style="margin-bottom:4px">心情流水（最近 50 条自动记录，hover 看强度）</div>
+            <div id="emo-timeline" style="display:flex;flex-wrap:wrap;gap:6px;max-height:180px;overflow-y:auto;padding:6px 4px;border:1px dashed rgba(200,200,200,.25);border-radius:6px"></div>
+          </div>
         </div>
         <div class="card">
           <h2>六欲</h2>
@@ -639,6 +644,13 @@
         </div>
         <div id="diag-summary" style="margin-top:12px"></div>
         <div id="diag-body" style="margin-top:10px"><div class="empty">加载中…</div></div>
+      </div>
+
+      <!-- v5.12 体检历史：灵枢自己的成长账本（doctor 每跑一次追加一条，按天聚合） -->
+      <div class="card" style="margin-bottom:14px">
+        <h2 style="margin-bottom:4px">灵枢体检历史（近 30 天）</h2>
+        <div class="sub">doctor 每跑一次就存一条，按天汇总 PASS / WARN / FAIL。红柱越高越糟；绿柱越高越好。</div>
+        <div id="doctor-history" style="margin-top:10px"></div>
       </div>
 
       <!-- 数据目录（查看 / 迁移） -->

@@ -1040,6 +1040,9 @@ def make_record(text: str, kind: str = "fact", importance: float | None = None,
         "last_access": ts,
         "kind": kind if kind in KINDS else "fact",
         "text": text,
+        # P1-1 索引法：一句"能看懂"的索引（首句/首分句，≤26 字）。
+        # 注入时只送它 + id，正文留给 recall 取——水位紧张时省最多。
+        "index": _make_index(text),
         "gist": heuristic_gist(text),
         "detail": 1.0,
         "importance": round(max(0.0, min(1.0, imp)), 3),
@@ -1901,6 +1904,50 @@ def _inject_memory_visible(m: dict, cfg: dict | None = None) -> bool:
     return "*" in allowed or channel in allowed
 
 
+def _resolve_id(memory_id: str, pool=None) -> tuple:
+    """按 id 解析一条记忆，支持**唯一前缀**（完整 id / hash 段前缀 / m_ 短号）。
+
+    返回 (记录, 错误说明)。错误只在"前缀有歧义"时给，找不到返回 (None, None)。
+    """
+    _pool = pool if pool is not None else load_all()
+    key = str(memory_id or "").strip()
+    exact = [m for m in _pool if m.get("id") == key]
+    if exact:
+        return exact[0], None
+    if not key or len(key) < 6:
+        return None, None
+    cands = []
+    for m in _pool:
+        mid = str(m.get("id") or "")
+        tail = mid.split("_")[-1] if mid else ""
+        if mid.startswith(key) or tail.startswith(key.replace("m_", "")):
+            cands.append(m)
+    if len(cands) == 1:
+        return cands[0], None
+    if len(cands) > 1:
+        return None, f"id 前缀 {key} 有 {len(cands)} 条匹配，请给更长的前缀"
+    return None, None
+
+
+def fetch(memory_id: str, include_archive: bool = True) -> dict:
+    """按 id（支持唯一前缀）取**整条记忆**——索引法注入后取正文的正路。
+
+    返回 {"ok": bool, "memory": dict|None, "reason": str}。
+    热层找不到会翻归档；被 supersede 的旧说法也能取（那是"当时的原文"）。
+    """
+    rec, amb = _resolve_id(memory_id, load_all())
+    if rec is None and include_archive:
+        try:
+            rec, amb2 = _resolve_id(memory_id, load_archive())
+            amb = amb or amb2
+        except Exception:  # noqa: BLE001
+            pass
+    if rec is None:
+        return {"ok": False, "memory": None,
+                "reason": amb or f"没有这条记忆：{memory_id}"}
+    return {"ok": True, "memory": rec, "reason": ""}
+
+
 def dereference(memory_id: str) -> list:
     """#46 Memex 解引用：按 id 取一份摘要/蒸馏产物的证据原文。
 
@@ -1908,23 +1955,21 @@ def dereference(memory_id: str) -> list:
     正是解引用最想拿回的证据；recall 默认跳过被取代者，这里显式放行）。
     没有指针或证据已被物理清理时返回空列表，调用方按"无证据"降级。
     """
-    rec = None
-    for m in load_all():
-        if m.get("id") == memory_id:
-            rec = m
-            break
+    # 唯一前缀解析（与 memory.fetch 共用 _resolve_id，避免两套实现漂移）
+    rec, _amb = _resolve_id(memory_id, load_all())
     if rec is None:
-        # 主层没有，翻归档（老证据可能已归档）
-        for m in load_archive():
-            if m.get("id") == memory_id:
-                rec = m
-                break
+        rec, _amb2 = _resolve_id(memory_id, load_archive())
+        _amb = _amb or _amb2
     if rec is None:
         return []
     ev_ids = [str(x) for x in (rec.get("evidence_ids") or rec.get("source_ids") or [])
               if str(x).strip()]
     if not ev_ids:
-        return []
+        # 没有证据指针：**回退到这条记忆本身**。以前直接 return []，而注入提示
+        # 写着"正文用 dereference <id> 取"——普通记忆照做会拿到空，是实打实的坑。
+        rec = dict(rec)
+        rec["_self"] = True
+        return [rec]
     want = set(ev_ids)
     out = []
     for m in load_all() + load_archive():
@@ -2515,9 +2560,19 @@ def trash_restore(memory_id: str) -> dict:
         # load_all() 是**跨层合并**的；必须用 save_all()（按 layer 分写回各层文件），
         # 不能用 write_jsonl 只写 hippocampus —— 否则 cortex/dust 的记录会被
         # 整批灌进 hippocampus.jsonl，分层被破坏。
+        #
+        # 注意：Windows 文件系统上，save_all/core.write_jsonl 的 os.replace 后
+        # 紧接着 read_text 可能读到旧缓存内容（write-behind cache），存在 ~1-5ms
+        # 的竞态窗口。这里用 2 次重试兜底：第一次查到 → sleep 50ms → 再读一次。
+        import time as _time
         records = load_all()
         if any(m.get("id") == memory_id for m in records):
-            raise ValueError(f"{memory_id} 已经在库里，无需恢复")
+            # Windows 文件系统 os.replace 后可能有 write-behind 缓存延迟，
+            # 导致紧接着 read_text 读到旧内容。sleep 50ms + 再读一次兜底。
+            _time.sleep(0.05)
+            records = load_all()
+            if any(m.get("id") == memory_id for m in records):
+                raise ValueError(f"{memory_id} 已经在库里，无需恢复")
         records.append(rec)
         save_all(records)
     # 台账里删掉这一条（已经回到库中，不该再重复恢复）
@@ -2698,6 +2753,82 @@ def display_text(m: dict) -> str:
     if detail < 0.5 and m.get("gist"):
         return f"{m['gist']}（细节已模糊）"
     return m.get("text", "")
+
+# 句子/分句边界：索引优先在"一个完整意思"处收尾，而不是切在半句。
+_INDEX_SENT = "。！？!?；;\n"
+_INDEX_CLAUSE = "，,、"
+
+
+# id 形如 m_{ts}_{hash10}：短号取 hash 段前 8 位（与 purge 的确认码同口径，
+# 8 位十六进制在实际库量级下足够唯一）。
+# 指针行里短 id 的占位前缀：默认空（段头有提示时用紧凑写法），
+# 段头没提示时会被替换成 "id:" 让行内自解释。
+_PTR_ID_TOKEN = "\x00"
+
+
+def _short_id(memory_id: str) -> str:
+    s = str(memory_id or "").strip()
+    if not s:
+        return ""
+    parts = s.split("_")
+    tail = parts[-1] if parts else s
+    return tail[:8]
+
+
+# 角色前缀：注入/对话原文常带 "user：" 这类标记，索引里留着只是噪音。
+_ROLE_PREFIX = re.compile(r"^\s*(?:user|assistant|system|ai|human|用户|助手)\s*[：:]\s*",
+                          re.I)
+
+
+def _make_index(text: str, max_chars: int = 26) -> str:
+    """把一段正文压成一句索引（≤max_chars 字符），**尽量落在句子/分句边界上**。
+
+    纯规则：先取首句；首句过长就退到首分句；仍过长才硬切。
+    不做摘要、不调模型——索引的职责是"让人一眼想起这条讲什么"，不是替代正文。
+    """
+    s = " ".join(str(text or "").split())
+    if not s:
+        return ""
+    # 连续剥角色前缀（"user：那 assistant：这" 这种嵌在正文里的也要剥）
+    for _ in range(3):
+        s2 = _ROLE_PREFIX.sub("", s)
+        if s2 == s:
+            break
+        s = s2
+    if not s:
+        return ""
+    if len(s) <= max_chars:
+        return s
+    # ① 首句
+    cut = len(s)
+    for ch in _INDEX_SENT:
+        i = s.find(ch)
+        if 0 < i < cut:
+            cut = i
+    head = s[:cut].strip()
+    if head and len(head) <= max_chars:
+        return head
+    # ② 首分句（首句太长时退一档）
+    cut2 = len(s)
+    for ch in _INDEX_CLAUSE:
+        i = s.find(ch)
+        if 0 < i < cut2:
+            cut2 = i
+    head2 = s[:cut2].strip()
+    if head2 and len(head2) <= max_chars:
+        return head2
+    # ③ 硬切（保留原意开头，别加省略号以外的东西）
+    base = head2 or head or s
+    return base[:max(8, max_chars - 1)].rstrip() + "…"
+
+
+def _index_of(m: dict, max_chars: int = 26) -> str:
+    """取一条记忆的索引：优先落盘值，旧记录现算（免迁移）。"""
+    idx = str(m.get("index") or "").strip()
+    if idx:
+        return idx
+    return _make_index(display_text(m), max_chars)
+
 
 def _usage_terms(text: str) -> set:
     return {t for t in terms(text) if t not in _USAGE_STOP}
@@ -4389,6 +4520,27 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
 
     _lazy = str(cfg.get("inject_mode") or "full").strip().lower() == "lazy"
     _lazy_chars = max(20, int(_cfg_num(cfg, "inject_lazy_chars", 80, int)))
+    # P1-1 索引法记忆（use_index_memory）：
+    #   always → 一律指针；auto（默认）→ **只在水位紧张时**才切指针（≥60% 或已有压力信号），
+    #   水位低时仍给全文——降水位只作用在真正紧张处，不该在没有压力时也砍掉细节。
+    #   off → 保持旧行为（只按 inject_mode 走）。
+    _idx_mode = str(cfg.get("use_index_memory") or "auto").strip().lower()
+    if _idx_mode not in ("auto", "always", "off"):
+        _idx_mode = "auto"
+    if _idx_mode == "always":
+        _lazy = True
+    elif _idx_mode == "off":
+        pass
+    else:
+        _pct_now = None
+        try:
+            _pr0 = _pressure if _pressure is not None else read_pressure(cfg)
+            if isinstance(_pr0, dict) and not _pr0.get("stale"):
+                _pct_now = float(_pr0.get("pct")) if _pr0.get("pct") is not None else None
+        except (TypeError, ValueError):
+            _pct_now = None
+        if _pct_now is not None and _pct_now >= 60:
+            _lazy = True
     # v3.57 上下文压力：插件把真实水位写进 HOME/_pressure.json，这里据此**往下**降档
     # （只降不升：压力只会让注入更省，不会让它变大）。拿不到信号 = 完全保持旧行为。
     #
@@ -4408,13 +4560,33 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
         elif _pressure.get("tier") == "lazy":
             _lazy = True
     _used_pointer = False
+    _pointer_n = 0          # 实际留下的指针条数：提示行只有 3 条以上才划算
+
+    def _expand_pointer_ids(rows: list) -> list:
+        """段头没加提示时，把 `（\x00xxxx）` 改写成自解释的
+        `（id:xxxx，memory show 取）`——只有一两条指针时，清楚比省字符重要。"""
+        pat = "（" + re.escape(_PTR_ID_TOKEN) + "([0-9a-f]{6,12})）"
+        out = []
+        for r in rows:
+            out.append(re.sub(pat, r"（id:\1，memory show 取）", r))
+        return out
 
     def _pointer_line(m: dict, star: str = "") -> str:
-        """五-C 惰性注入：一句话要点 + id，正文留给 recall / dereference 取。"""
+        """惰性注入：一句话要点 + id，正文留给 recall / dereference 取。
+
+        P1-1：有语义索引时优先用它——比"截断到 N 字符"短且完整（不切半句）。
+        """
+        # 段头已统一解释过用法，行内只留短 id（省 ~20 字符/行）。
+        # 8 位足够唯一（与 purge 的确认码同口径），dereference 支持前缀解析。
+        mid = str(m.get("id") or "")
+        short = _short_id(mid)
+        idx = _index_of(m, max(12, min(_lazy_chars, 40)))
+        if idx:
+            # 紧凑形；若段头没加提示，_expand_pointer_ids() 会补上 "id:" 前缀
+            return f"- {star}{idx}（{_PTR_ID_TOKEN}{short}）"
         brief = display_text(m).strip().replace("\n", " ")
         if len(brief) > _lazy_chars:
             brief = brief[:_lazy_chars].rstrip() + "…"
-        mid = str(m.get("id") or "")
         return f"- {star}{brief}（id:{mid}，正文用 recall 取）"
 
     def _fras_inj_suffix(m: dict) -> str:
@@ -4492,10 +4664,18 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
             break
         if is_pointer:
             _used_pointer = True   # 只统计真正留下来的指针，避免"降级又被挤掉"还挂提示
+            _pointer_n += 1
         kept_mems.append(m)
     _bill["sec"] = "related" if query else "recent"
-    if _used_pointer:
-        header += "\n（指针条目：正文用 `recall <关键词>` 或 `dereference <id>` 取）"
+    if _pointer_n:
+        if _pointer_n >= 3:
+            # 提示行 ~45 字符；每条指针比全文省 ~25 字符。少于 3 条时净亏，干脆不加
+            # （老坑重演：只有一两条记忆时就提示反而是负优化）。
+            header += ("\n（指针条目：正文用 `memory show <短id>` 取；"
+                       "也可 `recall <关键词>`）")
+        else:
+            # 不加提示 → 每行自己说清"括号里是 id"，否则那串十六进制没人看得懂
+            lines = _expand_pointer_ids(lines)
     if lines:
         dyn.append(header)
         dyn.extend(lines)
@@ -4798,6 +4978,15 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
     out.append("===== 注入结束：请自然地使用这些记忆，不要逐条复述 =====")
     out.append("")
     _result = "\n".join(out)
+    # 指针短 id 的最终形态（统一在此决定，覆盖「相关/最近记忆」与「刚刚发生」两条渲染路径）：
+    #   · 段头已有"指针条目"提示 → 紧凑形（去掉哨兵，只留 8 位短号）
+    #   · 否则 → 自解释形 `（id:xxxx，memory show 取）`，别让模型面对一坨十六进制
+    if _PTR_ID_TOKEN in _result:
+        if "指针条目" in _result:
+            _result = _result.replace(_PTR_ID_TOKEN, "")
+        else:
+            _result = re.sub("（" + re.escape(_PTR_ID_TOKEN) + "([0-9a-f]{6,12})）",
+                             r"（id:\1，memory show 取）", _result)
     if report is not None:
         # P0 上下文账单汇总：段名顺序固定（缺内容的段记 0，仍列出便于对照）。
         # chars 含该行在 "\n".join 时补的连接换行（首行除外），所以各段之和 == len(_result)。

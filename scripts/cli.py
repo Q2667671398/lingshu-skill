@@ -1977,6 +1977,10 @@ def _main(argv=None) -> int:
         "shape-audit", help="六爻位体检（只读）：64 格状态分布 + 当位/得中/有应违规")
     p_shape.add_argument("--limit", type=int, default=2000)
     p_shape.add_argument("--json", action="store_true")
+    p_show = mem_sub.add_parser(
+        "show", help="按 id 看整条记忆（支持唯一前缀/短号；索引法注入后取正文用这个）")
+    p_show.add_argument("id", help="完整 id、hash 段前缀（8 位）或 m_ 短号")
+    p_show.add_argument("--json", action="store_true")
     mem_sub.add_parser("trash-list", help="看软删除台账（purge 删掉的记忆留底，可恢复）")
     p_mem_tr = mem_sub.add_parser("trash-restore", help="从软删除台账恢复一条记忆")
     p_mem_tr.add_argument("id", help="记忆 id")
@@ -4372,6 +4376,22 @@ def _main(argv=None) -> int:
         except Exception as e:
             checks.append(("desktop-shortcut", "WARN", f"自检失败：{e}"))
 
+        # v5.12：把本次体检结果追加到 doctor-history.jsonl——灵枢自己的成长账本，
+        # 面板"体检历史"页签和未来的健康度分数用它。append-only，单条 try/except 吞掉。
+        try:
+            _dr = {
+                "ts": int(time.time()),
+                "fails": sum(1 for _, s, _ in checks if s == "FAIL"),
+                "warns": sum(1 for _, s, _ in checks if s == "WARN"),
+                "passes": sum(1 for _, s, _ in checks if s == "PASS"),
+                "checks": {n: s for n, s, _ in checks},
+            }
+            _dh_path = (globals().get("brain") or sys.modules.get("brain")).HOME / "doctor-history.jsonl"
+            with open(_dh_path, "a", encoding="utf-8") as _fh:
+                _fh.write(json.dumps(_dr, ensure_ascii=False) + "\n")
+        except Exception as _e:
+            brain.log_event("doctor", f"doctor-history 追加失败：{_e}", level="warn")
+
         fails = sum(1 for _, s, _ in checks if s == "FAIL")
         warns = sum(1 for _, s, _ in checks if s == "WARN")
         if args.json:
@@ -5174,6 +5194,26 @@ def _main(argv=None) -> int:
                 if r["frozen"]:
                     print("  冻结后不参与召回/启动注入/做梦合并，用 show 仍可查看；解冻立即恢复。")
             return 0
+        # 按 id 取整条记忆（索引法注入后取正文的正路；支持唯一前缀）
+        if mem_cmd == "show":
+            import memory as _mem
+            r = _mem.fetch(args.id)
+            if not r.get("ok"):
+                print(f"[错误] {r.get('reason')}", file=sys.stderr)
+                return 1
+            m = r["memory"]
+            if args.json:
+                print(json.dumps(m, ensure_ascii=False, indent=2))
+                return 0
+            print(f"{m.get('id')}  [{m.get('layer')}] {m.get('kind')} "
+                  f"★{_num(m.get('importance'), 0.5) * 5:.0f}")
+            if m.get("index"):
+                print(f"  索引：{m['index']}")
+            print(f"  {display_text(m)}")
+            if m.get("tags"):
+                print(f"  标签：{'、'.join(m['tags'])}")
+            return 0
+
         # 六爻位体检（只读）：把六元特征映射到 64 格，用当位/得中/有应判结构
         if mem_cmd == "shape-audit":
             import shape_audit as _sa

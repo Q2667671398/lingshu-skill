@@ -8,6 +8,7 @@
   recall 路径 → 指针里的 id 能 dereference 回原文（信息没丢）
 """
 from __future__ import annotations
+import re
 
 import sys
 import tempfile
@@ -86,7 +87,9 @@ def test_budget_pressure_degrades_to_pointer_in_full_mode():
             memory.remember(("长记忆 %d 号：" % i) + ("细节内容" * 60),
                             kind="fact", importance=0.5)
         text = memory.build_injection(budget_tokens=500)
-        assert "id:" in text, "预算紧张时应自动降级成指针"
+        # 指针形态有两种写法（≥3 条时紧凑 `（7f3ca9ac）`；少于 3 条自解释 `（id:7f3ca9ac，…）`）
+        assert ("id:" in text) or re.search(r"（[0-9a-f]{8}）", text), \
+            "预算紧张时应自动降级成指针"
 
 
 def test_pointer_id_resolves_back_to_full_text():
@@ -95,13 +98,14 @@ def test_pointer_id_resolves_back_to_full_text():
         body = "指针可解引用验证：" + "细节" * 30
         memory.remember(body, kind="fact", importance=0.9)
         text = memory.build_injection()
-        mid = None
-        for seg in text.split("id:"):
-            if seg and seg[0] == "m" and "_" in seg:
-                mid = seg.split("，")[0].split("）")[0].strip()
-                break
-        assert mid, text
-        # 指针里的 id 只是引用；正文应该还能被 recall 找回（信息没丢）
+        # 新契约：指针行带 8 位短号（完整 id 的 hash 段前缀），用 memory.show 取正文。
+        m_short = re.search(r"id:([0-9a-f]{6,12})", text)
+        assert m_short, text
+        sid = m_short.group(1)
+        got = memory.fetch(sid)          # 唯一前缀解析
+        assert got.get("ok"), f"短 id {sid} 取不回正文"
+        assert "细节" in str((got.get("memory") or {}).get("text") or ""), got
+        # 再兜一道：正文应该还能被 recall 找回（信息没丢）
         res = memory.recall("指针可解引用验证", k=3)
         texts = " ".join(str((m or {}).get("text") or "") for m, _s, _p in res)
         assert "细节" in texts, texts[:200]

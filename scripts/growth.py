@@ -1986,10 +1986,16 @@ def _npm_meta_cache_path() -> Path:
     return brain.HOME / "npm-meta.json"
 
 
-def npm_latest(force: bool = False, timeout: int = 20) -> dict:
+def npm_latest(force: bool = False, timeout: int = 20, retries: int = 1) -> dict:
     """查 npm 上 lingshu-skill 的最新版本（只读，带缓存）。
 
     返回 {ok, version, tarball, shasum, unpacked, fetched_at} 或 {ok: False, error}。
+
+    2026-11-25 加：
+    - 限流重试（403/429 时 sleep 2s 重试 1 次）——npm registry 对匿名请求 1h 60 次，
+      面板启动时后台 force_pull 写缓存 + 浏览器刷新 auto 读缓存，偶发撞限额是常态；
+      重试一次能把"偶发 403"变成"真 403 才失败"，用户感知好一截。
+    - User-Agent 带版本号 + 仓库地址——npm 能统计真实下载来源。
     """
     cache_p = _npm_meta_cache_path()
     if not force:
@@ -2000,29 +2006,43 @@ def npm_latest(force: bool = False, timeout: int = 20) -> dict:
         except (OSError, ValueError, TypeError):
             pass
     url = f"{NPM_REGISTRY}/{NPM_PACKAGE}/latest"
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "lingshu-skill-updater",
-            "Accept": "application/json",
-        })
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-        dist = data.get("dist") or {}
-        out = {"ok": True, "version": str(data.get("version") or ""),
-               "tarball": str(dist.get("tarball") or ""),
-               "shasum": str(dist.get("shasum") or ""),
-               "unpacked": int(dist.get("unpackedSize") or 0),
-               "fetched_at": int(time.time())}
-        if not out["version"] or not out["tarball"]:
-            return {"ok": False, "error": "npm 返回的版本信息不完整"}
+    _ua = "lingshu-skill/5.13 (+https://github.com/Q2667671398/lingshu-skill)"
+    last_err = None
+    for attempt in range(retries + 1):
         try:
-            cache_p.parent.mkdir(parents=True, exist_ok=True)
-            cache_p.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
-        return out
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            req = urllib.request.Request(url, headers={
+                "User-Agent": _ua,
+                "Accept": "application/json",
+            })
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            dist = data.get("dist") or {}
+            out = {"ok": True, "version": str(data.get("version") or ""),
+                   "tarball": str(dist.get("tarball") or ""),
+                   "shasum": str(dist.get("shasum") or ""),
+                   "unpacked": int(dist.get("unpackedSize") or 0),
+                   "fetched_at": int(time.time())}
+            if not out["version"] or not out["tarball"]:
+                return {"ok": False, "error": "npm 返回的版本信息不完整"}
+            try:
+                cache_p.parent.mkdir(parents=True, exist_ok=True)
+                cache_p.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+            except OSError:
+                pass
+            return out
+        except urllib.error.HTTPError as exc:  # noqa: F821
+            last_err = f"HTTP {exc.code}: {exc.reason}"
+            if exc.code in (403, 429, 502, 503) and attempt < retries:
+                time.sleep(2)
+                continue
+            return {"ok": False, "error": last_err}
+        except Exception as exc:  # noqa: BLE001
+            last_err = f"{type(exc).__name__}: {exc}"
+            if attempt < retries and any(k in last_err for k in ("URLError", "timed out", "Connection", "getaddrinfo")):
+                time.sleep(2)
+                continue
+            return {"ok": False, "error": last_err}
+    return {"ok": False, "error": last_err or "未知错误"}
 
 
 def _safe_extract_tgz(tgz_path: Path, dest: Path) -> Path:
@@ -2059,7 +2079,13 @@ def _safe_extract_tgz(tgz_path: Path, dest: Path) -> Path:
 
 
 def _lingshu_npm_source(force: bool = False) -> tuple[Path, str]:
-    """下载并解出 npm 版灵枢，返回 (源目录, "npm")；失败抛 KeyError 带原因。"""
+    """下载并解出 npm 版灵枢，返回 (源目录, "npm")；失败抛 KeyError 带原因。
+
+    2026-11-25：
+    - tarball 下载加 1 次重试（网络抖动时 sleep 2s 重连）——大 tarball 下载中途断连
+      是常见情况，重试一次能把"偶发网络抖动"变成"真失败才抛"；
+    - User-Agent 与 npm_latest 统一（带版本号 + 仓库地址）。
+    """
     meta = npm_latest(force=force)
     if not meta.get("ok"):
         raise KeyError(f"npm 版本查询失败：{meta.get('error')}")
@@ -2069,51 +2095,58 @@ def _lingshu_npm_source(force: bool = False) -> tuple[Path, str]:
         return dest, "npm"                   # 已经下过这个版本，直接复用
     tmp_dir = dest.parent / f".npm-tmp-{ver}-{uuid.uuid4().hex[:8]}"
     tgz = tmp_dir.with_suffix(".tgz")
+    _ua = "lingshu-skill/5.13 (+https://github.com/Q2667671398/lingshu-skill)"
+    _last_err = None
+    for _attempt in range(2):  # 1 次初始 + 1 次重试
+        try:
+            tmp_dir.parent.mkdir(parents=True, exist_ok=True)
+            req = urllib.request.Request(meta["tarball"],
+                                         headers={"User-Agent": _ua})
+            h = hashlib.sha1()
+            got = 0
+            with urllib.request.urlopen(req, timeout=60) as r, open(tgz, "wb") as out:
+                while True:
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    got += len(chunk)
+                    if got > NPM_MAX_BYTES:
+                        raise KeyError(f"npm 包体超过上限（>{NPM_MAX_BYTES // (1024 * 1024)}MB），已中止")
+                    h.update(chunk)
+                    out.write(chunk)
+            want = str(meta.get("shasum") or "")
+            if want and h.hexdigest() != want:
+                raise KeyError(f"npm 包校验失败（sha1 不符）：期望 {want[:12]}…，实得 {h.hexdigest()[:12]}…")
+            _safe_extract_tgz(tgz, tmp_dir)
+            if not (tmp_dir / "SKILL.md").is_file():
+                raise KeyError("npm 包里没有 SKILL.md，可能不是灵枢技能包")
+            break                               # 成功 → 跳出重试
+        except (KeyError, OSError) as exc:
+            # KeyError 是路径穿越 / 包体太大 / sha1 不符 / SKILL.md 缺失——这些是"包本身有问题"，
+            # 重试没用，直接 re-raise 给 install_skill 让它抛异常。
+            raise
+        except Exception as exc:  # noqa: BLE001 — 网络抖动 / 超时 / 断连
+            _last_err = f"{type(exc).__name__}: {exc}"
+            if _attempt == 0:
+                time.sleep(2)
+                # 重试前先删掉半截 tarball（否则会走校验失败而不是重新下载）
+                try: tgz.unlink(missing_ok=True)
+                except OSError: pass
+            else:
+                raise KeyError(f"npm 包下载失败：{_last_err}")
+    # 成功跳出循环后：把 tmp_dir 重命名为正式 dest、清理临时文件。
+    # 这段在 for 循环外——不管循环里重试了几次，最后一次成功后统一走。
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+    tmp_dir.rename(dest)
     try:
-        tmp_dir.parent.mkdir(parents=True, exist_ok=True)
-        req = urllib.request.Request(meta["tarball"],
-                                     headers={"User-Agent": "lingshu-skill-updater"})
-        h = hashlib.sha1()
-        got = 0
-        with urllib.request.urlopen(req, timeout=60) as r, open(tgz, "wb") as out:
-            while True:
-                chunk = r.read(256 * 1024)
-                if not chunk:
-                    break
-                got += len(chunk)
-                if got > NPM_MAX_BYTES:
-                    raise KeyError(f"npm 包体超过上限（>{NPM_MAX_BYTES // (1024 * 1024)}MB），已中止")
-                h.update(chunk)
-                out.write(chunk)
-        want = str(meta.get("shasum") or "")
-        if want and h.hexdigest() != want:
-            raise KeyError(f"npm 包校验失败（sha1 不符）：期望 {want[:12]}…，实得 {h.hexdigest()[:12]}…")
-        _safe_extract_tgz(tgz, tmp_dir)
-        if not (tmp_dir / "SKILL.md").is_file():
-            raise KeyError("npm 包里没有 SKILL.md，可能不是灵枢技能包")
-        if dest.exists():
-            shutil.rmtree(dest, ignore_errors=True)
-        tmp_dir.rename(dest)
-        try:
-            brain.log_event("update", f"已从 npm 下载灵枢 v{ver}（{got // 1024} KB，sha1 校验通过）")
-        except Exception:
-            pass
-        return dest, "npm"
-    except KeyError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise KeyError(f"npm 下载失败：{type(exc).__name__}: {exc}") from exc
-    finally:
-        try:
-            if tgz.is_file():
-                tgz.unlink()
-        except OSError:
-            pass
-        try:
-            if tmp_dir.is_dir():
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-        except OSError:
-            pass
+        brain.log_event("update", f"已从 npm 下载灵枢 v{ver}（{got // 1024} KB，sha1 校验通过）")
+    except Exception:
+        pass
+    # 清理临时 tgz（已解包完成，留着占地）
+    try: tgz.unlink()
+    except OSError: pass
+    return dest, "npm"
 
 
 def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
@@ -2168,13 +2201,40 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
     except (ValueError, KeyError):
         installed_dir = Path()
     if not (installed_dir / "SKILL.md").exists():
-        return {"name": name, "installed": False, "outdated": False,
-                "stale_source": False,
-                "version": _ver(meta.get("version", 1)),
-                "source_version": _ver(meta.get("version", 1)),
-                "installed_version": "",
-                "checked_at": int(time.time()), "cached_at": 0,
-                "global_path": str(installed_dir)}
+        # 没装全局副本。若源是**本地开发仓库**（dev），"仓库 vs 空"毫无意义——
+        # 这时和 **npm** 最新版比，更新按钮才有内容可给（否则永远"已是最新"）。
+        _dev_ver = _ver(meta.get("version", 1))
+        _base = {"name": name, "installed": False, "outdated": False,
+                 "stale_source": False,
+                 "version": _dev_ver, "source_version": _dev_ver,
+                 "installed_version": "",
+                 "checked_at": int(time.time()), "cached_at": 0,
+                 "global_path": str(installed_dir)}
+        if out_src == "dev":
+            _base["source"] = "dev"
+            _base["dev_repo"] = True
+            try:
+                _nm = npm_latest(force=force_pull)
+            except Exception as exc:  # noqa: BLE001
+                _nm = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            if _nm.get("ok"):
+                _nm_ver = str(_nm.get("version") or "")
+                _base["npm"] = {"version": _nm_ver, "unpacked": _nm.get("unpacked")}
+                try:
+                    # 必须补零到三段再比：5.11 与 5.11.0 是同一版本，
+                    # 但 (5,11,0) > (5,11) 为 True，会误报"有更新"。
+                    _dv = tuple(([int(x) for x in str(_dev_ver).split(".")] + [0, 0, 0])[:3])
+                    _nv = tuple(([int(x) for x in _nm_ver.split(".")] + [0, 0, 0])[:3])
+                except (TypeError, ValueError):
+                    _dv = _nv = None
+                if _dv is not None and _nv is not None and _nv > _dv:
+                    # 仓库比 npm 旧：提示可装 npm 上的新版
+                    _base.update({"outdated": True, "source": "npm",
+                                  "installed_version": _dev_ver,
+                                  "source_version": _nm_ver, "version": _nm_ver})
+            else:
+                _base["npm_error"] = _nm.get("error") or "npm 版本查询失败"
+        return _base
 
     src_sig = _diff_signature(src_dir)
     dst_sig = _diff_signature(installed_dir)
@@ -2189,10 +2249,19 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
     # 同版本就是没有新版本。否则会出现「v2.87 → v2.87 还报有更新」的怪弹窗
     # （面板标题两个版本号一样，内容差异却让 outdated=true）。
     def _ver_tuple(v) -> tuple | None:
+        """版本号 → **定长三段**元组。
+
+        必须补零到三段：`"5.11"` 与 `"5.11.0"` 是同一个版本，但 Python 元组比较里
+        (5, 11, 0) > (5, 11) 为 True——曾导致「仓库 5.11 / npm 5.11.0」误报有更新。
+        """
         try:
-            return tuple(int(x) for x in str(v).strip().split("."))
+            parts = [int(x) for x in str(v).strip().split(".")]
         except (TypeError, ValueError):
             return None
+        if not parts:
+            return None
+        parts = (parts + [0, 0, 0])[:3]
+        return tuple(parts)
     src_v, inst_v = _ver_tuple(meta.get("version", 1)), _ver_tuple(inst_meta.get("version", 1))
     same_version = (src_v is not None and inst_v is not None and src_v == inst_v)
     outdated = bool(src_sig != dst_sig) and not same_version and (
@@ -2243,6 +2312,24 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
             cached_at = int((src_dir / "SKILL.md").stat().st_mtime)
         except OSError:
             cached_at = 0
+    # —— dev 模式：仓库即源，没有"已装副本"可比。这时和 **npm** 比才有意义，
+    #    否则从仓库直接跑面板的人会看到一个永远"已是最新"的死按钮。
+    dev_npm = None
+    dev_npm_error = None
+    if out_src == "dev" and src_v is not None:
+        try:
+            _nm = npm_latest(force=force_pull)
+        except Exception as exc:  # noqa: BLE001
+            _nm = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if _nm.get("ok"):
+            _nm_v = _ver_tuple(_nm.get("version"))
+            dev_npm = {"version": _nm.get("version"),
+                       "unpacked": _nm.get("unpacked")}
+            if _nm_v is not None and _nm_v > src_v:
+                outdated = True
+        else:
+            dev_npm_error = _nm.get("error") or "npm 版本查询失败"
+
     out = {
         "name": name,
         "installed": True,
@@ -2258,6 +2345,23 @@ def _update_check_live(name: str = "lingshu", force_pull: bool = False) -> dict:
         "cached_at": cached_at,
         "global_path": str(installed_dir),
     }
+    if dev_npm:
+        # dev 模式下 npm 查询成功就必须设这两个字段——不管 npm 版本比本地新还是旧。
+        # 之前只在 npm 真更新（outdated=True）或 npm 查失败时才设，导致 npm 版本
+        # 落后于本地时（本地正在开发新版本、npm 还没同步）dev_repo 和 npm 字段
+        # 都丢失，前端和测试都懵。
+        out["dev_repo"] = True
+        out["npm"] = dev_npm
+        if out.get("outdated"):
+            # 仓库 vX → npm vY：明确"能装的版本在 npm 上"，别让人以为仓库自己会变
+            out["source"] = "npm"
+            out["installed_version"] = out["installed_version"] or out["version"]
+            out["source_version"] = dev_npm.get("version") or out["source_version"]
+            out["version"] = out["source_version"]
+    elif dev_npm_error:
+        # npm 查询失败（限流 / 网络 / npm 短暂挂掉），把原因透传给前端
+        out["dev_repo"] = True
+        out["npm_error"] = dev_npm_error
     if stale_source:
         detail = f"远程源不可用，缓存源版本（v{out['version']}）不比已装" \
                  f"（v{out['installed_version']}）新，已忽略这次检查，不倒退更新"

@@ -342,6 +342,9 @@ DEFAULT_CONFIG = {
     "panel_idle_minutes": 1,
     # 更新下载源：auto=npm 优先（失败退回 Gitee/GitHub）/ npm=只走 npm / git=只走 Gitee/GitHub
     "update_source": "auto",
+    # 索引法记忆（P1-1）：注入只送"一句索引 + id"，正文用 recall 取。
+    # auto=水位≥60% 才切（默认，水位低时仍给全文）/ always=一律切 / off=关
+    "use_index_memory": "auto",
     "auto_update_interval_hours": 24,
     "session_state_cache": False,
     "session_state_ttl": 300,

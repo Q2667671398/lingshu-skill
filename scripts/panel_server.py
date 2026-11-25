@@ -212,6 +212,18 @@ def overview() -> dict:
             "script_dir": str(Path(__file__).resolve().parent),
             "version": _repo_version(),
         },
+        # 情绪内心独白（v5.12 新增）：灵枢此刻对自己的简短态度评价（≤30 字）。
+        # 纯模板 + 词表，不调 LLM；无情绪记录返回空字符串，前端据此隐藏。
+        "inner_voice": _safe("inner_voice", brain.inner_voice, ""),
+        # 情绪时间线（v5.12 新增）：最近 50 条自动生成的情绪事件（genesis=True），
+        # 面板 emotion 页签底部的心情流水用。
+        "emotion_timeline": _safe("emotion_timeline", brain.emotion_timeline, []),
+        # 体检历史（v5.12 新增）：最近 30 天的 doctor 跑次，按天聚合。
+        # 面板"体检历史"页签的折线图用（按天统计 PASS/WARN/FAIL 分布）。
+        "doctor_history": _safe("doctor_history", _doctor_history, []),
+        # 健康度分数（v5.12 新增）：0-100，按最近 7 天 doctor FAIL/WARN + failures.jsonl 条数加权扣分。
+        # 面板侧栏 footer 里显示的"灵枢健康度：N / 100"。
+        "health_score": _safe("health_score", _health_score, 100),
         "home": str(brain.HOME),
     }
 
@@ -223,6 +235,86 @@ def _persona_view() -> dict:
     if st:
         p["state"] = brain._state_regress(st)
     return p
+
+
+def _doctor_history(days: int = 30) -> list:
+    """读 doctor-history.jsonl，按天聚合最近 days 天的 doctor 跑次。
+
+    返回 [{date, passes, warns, fails, total}] 排序（日期升序）。
+    文件不存在返回空列表；JSON 坏行跳过不崩。
+    """
+    from datetime import datetime, timezone, timedelta
+    import time as _t
+    cutoff = _t.time() - days * 86400
+    path = brain.HOME / "doctor-history.jsonl"
+    if not path.exists():
+        return []
+    by_day: dict[str, dict] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts = row.get("ts", 0)
+        if ts < cutoff:
+            continue
+        date_str = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%m-%d")
+        if date_str not in by_day:
+            by_day[date_str] = {"date": date_str, "passes": 0, "warns": 0, "fails": 0}
+        by_day[date_str]["passes"] += row.get("passes", 0)
+        by_day[date_str]["warns"] += row.get("warns", 0)
+        by_day[date_str]["fails"] += row.get("fails", 0)
+    out = []
+    for d in sorted(by_day):
+        r = by_day[d]
+        r["total"] = r["passes"] + r["warns"] + r["fails"]
+        out.append(r)
+    return out
+
+
+def _health_score() -> int:
+    """灵枢健康度：0-100，按最近 7 天 doctor FAIL/WARN + failures.jsonl 条数加权扣分。
+
+    扣分规则：
+    - 最近 7 天 doctor FAIL 总数 × 10（一次 FAIL 扣 10）
+    - 最近 7 天 doctor WARN 总数 × 3（一次 WARN 扣 3）
+    - 最近 7 天 failures.jsonl 条数 × 1（一条被吞异常扣 1）
+    从 100 往下扣，下限 0。无历史 → 100。
+    """
+    import time as _t
+    from datetime import datetime, timezone, timedelta
+    cutoff = _t.time() - 7 * 86400
+    fails = warns = 0
+    dh = brain.HOME / "doctor-history.jsonl"
+    if dh.exists():
+        for line in dh.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("ts", 0) < cutoff:
+                continue
+            fails += row.get("fails", 0)
+            warns += row.get("warns", 0)
+    # failures.jsonl 条数
+    fb = brain.HOME / "failures.jsonl"
+    fbcnt = 0
+    if fb.exists():
+        for line in fb.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("ts", 0) >= cutoff:
+                fbcnt += 1
+    score = max(0, 100 - fails * 10 - warns * 3 - fbcnt)
+    return score
 
 
 def _created_key(m: dict):
