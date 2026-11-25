@@ -1,13 +1,13 @@
 {
-  "version": "5.17",
+  "version": "5.18",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "7c9dbf163cc08c98931a80c7c09df2c849992b4d416bbfe33aedeb644629be2d",
-      "size": 338997
+      "sha256": "7c74f3248a71ed34ef5f5ba3bf1013b2ae6df8a9e6947593d76d4461aae63d61",
+      "size": 341943
     },
     "README.md": {
-      "sha256": "7c0ca28a9376277998b579bef7941a264f34841f6ec333fd5f9269170437048c",
-      "size": 107959
+      "sha256": "1b09d7d41223ca22552aace5db6af2429d6d49dd71ee13e7b27fd45159128b4c",
+      "size": 109216
     },
     "SKILL-lite.md": {
       "sha256": "423f97d64042233a5a1678384fba307a91a62ab0ed2e8d01f89e44a926d6e83d",
@@ -18,8 +18,8 @@
       "size": 1912
     },
     "SKILL.md": {
-      "sha256": "c8dd396e1c16dccd8f8055f651bb8c3b7526a0dfc8b75392fd235f96137b08ed",
-      "size": 38515
+      "sha256": "bdb1980db343cc333ad8535b985d29bb077a3d16a2edcf9d566259e6ec298dcf",
+      "size": 38633
     },
     "assets/lingshu-icon-preview.png": {
       "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
@@ -34,8 +34,8 @@
       "size": 53917
     },
     "assets/panel.html": {
-      "sha256": "f4e1ed3e38174bce8ca8baf39d6cc851ff6616a5e5d7455b76f8cd18f730dd3d",
-      "size": 330706
+      "sha256": "9dae1aa8852eb18286e94a81e26a232a6c904ce9f7e3d8edd5b3ebd7983b896a",
+      "size": 330885
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
@@ -130,15 +130,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "574cd27291a57513fc6ff902792682721e15e54f8db014a0a7d34b91e527dc21",
-      "size": 158441
+      "sha256": "ee88e29ec8ce4008316dca94bc2e8dcd4a8f4f47a553879c932177bb5bd77960",
+      "size": 159860
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "95d522986c8bf384b0fc6f87504a7b9e0f0d7745f197d78bbb95ec7081c08923",
+      "sha256": "0601df803212862e5f2da2a9e3d36979ca436ae4674e841a217bf08804b318e4",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -182,8 +182,8 @@
       "size": 9928
     },
     "scripts/core.py": {
-      "sha256": "873b0aa5941bbd269507398c07e46ac2a645f10ef97464766b8896aa605437dc",
-      "size": 102793
+      "sha256": "8426e367c18454a88c6476c1cd3fa1bb82953dcdcee98c9bfd31871f507a490f",
+      "size": 103518
     },
     "scripts/desktop_shortcut.py": {
       "sha256": "77ea248bfaaf28e1e4299979d0c0d8c80a055642dde9a40f5e297b2008474091",
@@ -194,8 +194,8 @@
       "size": 55675
     },
     "scripts/emotion.py": {
-      "sha256": "a4c36abb99e3dccd906ffd5e3a0fd639931e0a831f281e38a405c1022689aec4",
-      "size": 58788
+      "sha256": "b56f2516a47ed5adecfe913e7e24957e5f4975fc8379f4097d5fa73dbd5c97d0",
+      "size": 67016
     },
     "scripts/failures.py": {
       "sha256": "3a16234a1871f62e3ba7b7b743110b4044fb7b715b4d0e924b8ebf1cf0be50d0",
@@ -206,8 +206,8 @@
       "size": 4363
     },
     "scripts/growth.py": {
-      "sha256": "feee9225d6ca7dd34ebc1d76bf9e2fe6a075d18745ea3e7f1a8178b60d6a13a8",
-      "size": 244489
+      "sha256": "a822df847fde755c5f78fee5862f16fda999a50674d8f7aed9ee32e499813811",
+      "size": 245640
     },
     "scripts/growth_parts.py": {
       "sha256": "d8f8d1808d4097630e7a0425d1ad9bc8f3826c11a64625304e25336f2a8aa592",
@@ -286,12 +286,12 @@
       "size": 7708
     },
     "scripts/panel_server.py": {
-      "sha256": "4df2147ca64b098ad114395ca9ac5a5fe61adf7129869b74bf494b4212fab395",
-      "size": 139301
+      "sha256": "fec93d9a60d263ac726f6393232cd681d135d98f0faaeb5f8743fe22b3d6d914",
+      "size": 139917
     },
     "scripts/panel_settings.py": {
-      "sha256": "22061634d38d3009bc49e199faaa866d333eba39d74bea6695a6c18ab422fd50",
-      "size": 10936
+      "sha256": "117b8e7d2acd062d68da3ea3c7aaf2e5357f331a1366e3d41a2935cf4b3cd825",
+      "size": 11756
     },
     "scripts/panel_update.py": {
       "sha256": "6ff1a0687c05e3ef4ae846058abea4dacf985a3fe6adcdbb4eef1b38e27139b5",

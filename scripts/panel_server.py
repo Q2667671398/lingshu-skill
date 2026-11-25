@@ -962,6 +962,18 @@ class Handler(BaseHTTPRequestHandler):
             limit = _int_param(url, "limit", 60, 1, 300)
             self._json(brain.growth_timeline(days, limit))
             return
+        if path == "/api/doctor-history":
+            # P2-4：体检历史（成长阶段/健康度都基于它）。limit 默认 90 条。
+            try:
+                lim = _int_param(url, "limit", 90, 1, 1000)
+                hist = growth.doctor_history(limit=lim)
+                st = growth.stage_state()
+            except Exception as exc:  # noqa: BLE001
+                self._json({"error": f"读取体检历史失败：{exc}"}, 500)
+                return
+            self._json({"items": hist, "count": len(hist),
+                        "stage": st, "health": st.get("health")})
+            return
         if path == "/api/logs":
             limit = _int_param(url, "limit", 200, 1, 2000)
             level = (parse_qs(url.query).get("level") or [""])[0] or None

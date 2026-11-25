@@ -447,6 +447,189 @@ def feel(name: str, intensity: float = 0.6, why: str = "",
     return ev
 
 
+GATE_FILE = "emotion-gate.json"
+# "中性"标签：没有情绪方向，不需要惯性保护（从平静变任何情绪都应立刻反映）
+_NEUTRAL_LABELS = ("平静", "平和", "")
+
+
+def _cfg(name: str, default):
+    try:
+        v = load_config().get(name, default)
+        return v if v is not None else default
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _inertia_on(flag: str, default: bool = True) -> bool:
+    """情绪惯性子开关（总开关关掉就全部失效）。"""
+    try:
+        if not _cfg("emotion_inertia_enabled", True):
+            return False
+        return bool(_cfg(flag, default))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _negative_half_mult() -> float:
+    """负面情绪的**半衰期倍数**：decay_factor=0.8 → 衰减速率 0.8 倍 → 半衰期 ×1.25。"""
+    if not _inertia_on("emotion_negative_slow", True):
+        return 1.0
+    try:
+        f = float(_cfg("emotion_negative_decay_factor", 0.8))
+    except (TypeError, ValueError):
+        f = 0.8
+    if not (0.3 <= f <= 1.0):
+        f = 0.8
+    return 1.0 / f
+
+
+def _cooldown_groups(rows: list) -> dict:
+    """算每组情绪的冷却窗口：强情绪(>0.7)之后 3 个事件内同组增益减半。
+
+    返回 {group: 该组冷却截止的事件下标}。只有真正发生了强情绪才建立窗口。
+    """
+    if not _inertia_on("emotion_cooldown_enabled", True):
+        return {}
+    try:
+        limit = int(_cfg("emotion_cooldown_events", 3))
+    except (TypeError, ValueError):
+        limit = 3
+    limit = max(1, min(10, limit))
+    # 按时间正序排（rows 不保证顺序，冷却窗口依赖先后）
+    ordered = sorted(range(len(rows)), key=lambda i: _num(rows[i].get("ts"), 0))
+    cool = {}
+    for pos, idx in enumerate(ordered):
+        ev = rows[idx]
+        try:
+            inten = float(ev.get("intensity") or 0)
+        except (TypeError, ValueError):
+            inten = 0.0
+        if inten > 0.7:
+            g = emotion_group(ev.get("emotion", ""))
+            cool[g] = pos + limit        # 从这条之后开始算 3 个事件
+    return cool
+
+
+def _gate_path():
+    return HOME / GATE_FILE
+
+
+def _load_gate() -> dict:
+    try:
+        d = json.loads(_gate_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_gate(st: dict) -> None:
+    try:
+        atomic_json(_gate_path(), st)
+    except (OSError, ValueError):
+        pass
+
+
+def _apply_label_gate(v: float, a: float, active, base_label: str) -> str:
+    """跃迁阈值 + 2 轮确认：标签不能单轮跳变。
+
+    规则：候选标签与当前对外标签不同时，若 |Δv| ≥ 阈值 → 记为待定并计数；
+    连续两次同一候选才真正切换（否则沿用旧标签）。变化<阈值直接沿用旧标签。
+    盘上记录 {label, pending, count}，所以"两轮"跨进程有效。
+    """
+    if not _inertia_on("emotion_label_gate_enabled", True):
+        return base_label
+    try:
+        thr = float(_cfg("emotion_transition_threshold", 0.25))
+    except (TypeError, ValueError):
+        thr = 0.25
+    thr = max(0.05, min(0.9, thr))
+    st = _load_gate()
+    cur = str(st.get("label") or "")
+    cur_v = st.get("valence")
+    try:
+        cur_v = float(cur_v) if cur_v is not None else None
+    except (TypeError, ValueError):
+        cur_v = None
+    if not cur:
+        # 第一次跑：直接确立基线，不做门控
+        try:
+            _n0 = len(active or [])
+        except TypeError:
+            _n0 = 0
+        st.update({"label": base_label, "valence": round(v, 3),
+                   "pending": "", "count": 0, "pending_events": _n0})
+        _save_gate(st)
+        return base_label
+    # 中性标签没有"惯性"可言：从平静变成任何一种真实情绪，应当立刻反映出来。
+    # 否则会出现"我明明很生气，面板还写着平静"的失真（实测被既有契约测试抓到）。
+    if cur in _NEUTRAL_LABELS and base_label not in _NEUTRAL_LABELS:
+        st.update({"label": base_label, "valence": round(v, 3),
+                   "pending": "", "count": 0,
+                   "pending_events": len(active or [])})
+        _save_gate(st)
+        return base_label
+    delta = abs(v - cur_v) if cur_v is not None else 1.0
+    if base_label == cur:
+        # 方向没变：清掉待定，同步当前值（继续慢慢累积）
+        st.update({"valence": round(v, 3), "pending": "", "count": 0})
+        _save_gate(st)
+        return cur
+    if delta < thr:
+        # 变化幅度不够：沿用旧标签，但把基线慢慢挪过去（避免永远卡住）
+        if cur_v is not None:
+            st["valence"] = round(cur_v + (v - cur_v) * 0.5, 3)
+        st.update({"pending": "", "count": 0})
+        _save_gate(st)
+        return cur
+    # 幅度够：看是否有**新的情绪事件**支撑同一候选（单条事件不许独自翻转标签）
+    try:
+        n_ev = len(active or [])
+    except TypeError:
+        n_ev = 0
+    prev_pending = str(st.get("pending") or "")
+    prev_n = int(st.get("pending_events") or 0)
+    if prev_pending == base_label and n_ev > prev_n:
+        # 同一候选 + 事件数变多 → 提交（这才是"持续两轮"）
+        st.update({"label": base_label, "valence": round(v, 3),
+                   "pending": "", "count": 0, "pending_events": 0})
+        _save_gate(st)
+        return base_label
+    if prev_pending == base_label:
+        # 同一候选但事件数没增加：继续等，别提交
+        st.update({"count": int(st.get("count") or 0) + 1})
+        _save_gate(st)
+        return cur
+    # 新的候选：记下它和当时的事件数
+    st.update({"pending": base_label, "pending_events": n_ev, "count": 1})
+    _save_gate(st)
+    return cur
+
+
+def _finalize_mood(m: dict) -> dict:
+    """统一收尾：加 raw_label + 过标签门控。**所有 return 路径都必须走它**。"""
+    try:
+        out = dict(m)
+        _lbl = str(out.get("label") or "")
+        out.setdefault("raw_label", _lbl)
+        # 没有任何活跃情绪 → 直接回中性，并把门控状态重置。
+        # 否则会出现"情绪早就散了、标签还粘着上一个"的怪现象（实测被既有测试抓到）。
+        if not out.get("active"):
+            out["label"] = _lbl
+            try:
+                _save_gate({"label": _lbl,
+                            "valence": round(_num(out.get("valence"), 0.0), 3),
+                            "pending": "", "count": 0, "pending_events": 0})
+            except Exception:  # noqa: BLE001
+                pass
+            return out
+        out["label"] = _apply_label_gate(
+            _num(out.get("valence"), 0.0), _num(out.get("arousal"), 0.0),
+            out.get("active"), _lbl)
+        return out
+    except Exception:  # noqa: BLE001
+        return m
+
+
 def mood_now(at: float | None = None) -> dict:
     """把最近的情绪事件按半衰期叠加成"此刻的心情"。
 
@@ -457,19 +640,31 @@ def mood_now(at: float | None = None) -> dict:
     # 只用最近一批事件（半衰期后基本归零），避免情绪越攒越多时每次全量读取
     rows = emotion_events(200)
     if not rows:
-        return {"valence": 0.0, "arousal": 0.1, "label": "平静", "category": "静",
-                "intensity": 0.0, "active": [], "groups": [], "complex": False,
-                "storm": False, "note": "还没有情绪记录"}
+        return _finalize_mood({"valence": 0.0, "arousal": 0.1, "label": "平静",
+                               "category": "静", "intensity": 0.0, "active": [],
+                               "groups": [], "complex": False, "storm": False,
+                               "note": "还没有情绪记录"})
     sv = sa = sw = 0.0
     active = []
     gweights = {}
-    for ev in rows[:60]:
+    # 情绪惯性：负面情绪衰减慢 20%（半衰期 ×1.25）；强情绪后的冷却窗口内同组增益减半
+    _neg_mult = _negative_half_mult()
+    _cool = _cooldown_groups(rows[:60])
+    _order = sorted(range(min(60, len(rows))), key=lambda i: _num(rows[i].get("ts"), 0))
+    _pos_of = {idx: pos for pos, idx in enumerate(_order)}
+    for _idx, ev in enumerate(rows[:60]):
         ets = _num(ev.get("ts"), now)
         age_h = max(0.0, (now - ets) / HOUR)
         half = max(0.5, _num(ev.get("decay_hours"), EMOTION_HALF_LIFE / HOUR))
+        if _neg_mult > 1.0 and _num(ev.get("valence"), 0) < 0:
+            half *= _neg_mult          # 负面更耐放：半衰期变长 → 衰减更慢
         w = _num(ev.get("intensity"), 0.5) * (0.5 ** (age_h / half))
         if w < 0.02:
             continue
+        _g = emotion_group(ev.get("emotion", ""))
+        _until = _cool.get(_g)
+        if _until is not None and _pos_of.get(_idx, 0) <= _until:
+            w *= 0.5                   # 冷却期：同组情绪增益减半，防"越说越气"
         sv += _num(ev.get("valence"), 0) * w
         sa += _num(ev.get("arousal"), 0.3) * w
         sw += w
@@ -480,9 +675,10 @@ def mood_now(at: float | None = None) -> dict:
                        "arousal": _num(ev.get("arousal"), 0.3),
                        "why": ev.get("why", ""), "about": ev.get("about", "")})
     if sw <= 0:
-        return {"valence": 0.0, "arousal": 0.1, "label": "平静", "category": "静",
-                "intensity": 0.0, "active": [], "groups": [], "complex": False,
-                "storm": False, "note": "情绪都已散去"}
+        return _finalize_mood({"valence": 0.0, "arousal": 0.1, "label": "平静",
+                               "category": "静", "intensity": 0.0, "active": [],
+                               "groups": [], "complex": False, "storm": False,
+                               "note": "情绪都已散去"})
     v = max(-1.0, min(1.0, sv / sw))
     # arousal 只对高权重事件加权平均：情绪风暴（高唤醒）常被大量低唤醒的疲惫/
     # 平静稀释掉，storm 触发不到——只统计 weight≥0.1 的活跃情绪，低谷时无强事件
@@ -504,14 +700,19 @@ def mood_now(at: float | None = None) -> dict:
     # 「静」是中性基底不是真情绪，混进 strong 会让"疲惫+开心"被误判成悲喜交加。
     strong = [g for g in groups if g["pct"] >= 15 and g["group"] != "静"]
     complex_flag = len(strong) >= 2
+    _base_label = _label_with_gate(v, a, active)
     base = {"valence": round(v, 3), "arousal": round(a, 3),
-            "label": _label_with_gate(v, a, active),
+            "label": _base_label,
+            # 透明度：门控前的即时标签也带上，别让"标签没变"被误读成"情绪没动"
+            "raw_label": _base_label,
             "category": groups[0]["group"] if groups else "静",
             "intensity": round(min(1.0, sw), 3),
             "active": active[:6], "groups": groups,
             "complex": complex_flag, "storm": a >= STORM_AROUSAL,
             "note": "悲喜交加" if complex_flag else ""}
-    return _mood_ema(base)
+    # 跃迁阈值 + 2 轮确认：**必须在 EMA 之后**——`_mood_ema` 自己会重算 label，
+    # 先门控会被它覆盖（实测踩过：feel(生气) 后标签立刻跳变，门控等于没做）。
+    return _finalize_mood(_mood_ema(base))
 
 
 def _mood_label(v: float, a: float) -> str:

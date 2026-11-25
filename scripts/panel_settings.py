@@ -76,6 +76,15 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
      "hint": "送进 rerank 的候选条数，越大越准也越慢"},
 
     # —— 面板与宿主 ——
+    {"key": "emotion_inertia_enabled", "group": "情绪与人格", "label": "情绪惯性",
+     "kind": "bool",
+     "hint": "情绪上来快、下去慢：负面衰减更慢 + 强情绪冷却 + 标签需 2 条事件才切换"},
+    {"key": "emotion_negative_slow", "group": "情绪与人格", "label": "负面情绪更耐放",
+     "kind": "bool", "hint": "负面情绪衰减速率更慢（半衰期 ×1.25）"},
+    {"key": "emotion_cooldown_enabled", "group": "情绪与人格", "label": "强情绪冷却",
+     "kind": "bool", "hint": "强度>0.7 之后 3 个事件内同组增益减半，防越说越气"},
+    {"key": "emotion_label_gate_enabled", "group": "情绪与人格", "label": "心情标签防跳变",
+     "kind": "bool", "hint": "标签需 ≥2 条情绪事件支撑才切换，避免单句话横跳"},
     {"key": "speak_up_prob", "group": "水位与节奏", "label": "主动搭话概率",
      "kind": "float", "min": 0, "max": 1, "step": 0.05,
      "hint": "每轮结束按此概率让灵枢自己说一句（纯模板、不进模型）；0=关闭"},

@@ -347,6 +347,14 @@ DEFAULT_CONFIG = {
     "use_index_memory": "auto",
     # P1-4 Git 分支感知：remember 记下当前分支，召回时跨分支分数 ×0.5（不硬过滤）
     "git_branch_memory": True,
+    # —— 情绪惯性（拟人化）：让情绪"上来快、下去慢"，不因单句话横跳 ——
+    "emotion_inertia_enabled": True,     # 总开关；关掉则下面三项全部失效
+    "emotion_negative_slow": True,       # 负面情绪衰减更慢（"坏事记得久"）
+    "emotion_negative_decay_factor": 0.8,  # 负面衰减速率 = 0.8 倍 → 半衰期 ×1.25
+    "emotion_cooldown_enabled": True,    # 强情绪后同组增益减半，防"越说越气"
+    "emotion_cooldown_events": 3,        # 冷却窗口 = 之后 N 个情绪事件
+    "emotion_label_gate_enabled": True,  # 标签要 ≥2 条情绪事件支撑才切换
+    "emotion_transition_threshold": 0.25,  # 且 |Δvalence| 至少这么大
     # P1-3 主动搭话：每轮结束按概率决定灵枢要不要自己说一句（纯模板、不进模型）。
     # 0 = 关闭；还会受"不是提问 / 理智 >30 / 冷却 15 分钟"三道闸约束。
     "speak_up_prob": 0.10,

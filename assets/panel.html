@@ -1496,8 +1496,10 @@ function renderOverview(){
     if (!el) return;
     const st = (ov && ov.stage) || null;
     if (!st || !st.stage) { el.textContent = ""; return; }
+    const hs = (st.health && typeof st.health.score === "number") ? st.health.score : null;
+    const scoreTxt = hs === null ? "" : "　·　健康度 " + hs + "/100";
     const tail = (st.next && st.next.length) ? "　·　下一步：" + st.next.join("；") : "";
-    el.textContent = "灵枢健康度：" + (st.label || st.stage) + tail;
+    el.textContent = "灵枢健康度：" + (st.label || st.stage) + scoreTxt + tail;
   })();
 
   renderPersonaEditor(p);

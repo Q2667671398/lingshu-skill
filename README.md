@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v5.17**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v5.18**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -27,6 +27,7 @@
 - [开工前先查（prior）](#开工前先查prior)
 - [错卦：召回区分否定](#错卦召回区分否定)
 - [索引法记忆：正文不进上下文](#索引法记忆正文不进上下文)
+- [情绪惯性：不会一句话就换心情](#情绪惯性不会一句话就换心情)
 - [成长阶段：它长到哪一步了](#成长阶段它长到哪一步了)
 - [主动搭话：它会自己开口，但很少](#主动搭话它会自己开口但很少)
 - [Git 分支感知：切了分支别拿旧分支的记忆](#git-分支感知切了分支别拿旧分支的记忆)
@@ -385,6 +386,35 @@ python scripts/brain.py memory show 7f3ca9ac    # 短 id 直接取整条记忆�
 > 顺带补了个**既有缺口**：注入提示以前让模型用 `dereference <id>` 取正文，但
 > `dereference` 只返回 **evidence_ids 指向的证据原文**，普通记忆一律返回空——照做拿不到东西。
 > 现在 `dereference` 在无证据指针时**回退返回自身**，并且新增了正路 `memory show <短id>`。
+
+## 情绪惯性：不会一句话就换心情
+
+情绪不是"按当前这句话算出来的一个数"，它有惯性：
+
+| 机制 | 做什么 | 为什么 |
+|---|---|---|
+| **负面更耐放** | 负面情绪半衰期 ×1.25（衰减慢 20%） | "好事忘得快、坏事记得久" |
+| **强情绪冷却** | 强度 >0.7 之后 3 个情绪事件内，同组增益减半 | 防"一句接一句越说越气"无限叠加 |
+| **标签防跳变** | 标签变化要 **≥2 条情绪事件**支撑 | 防"一句话换一个心情标签" |
+
+**但中性标签例外**：从"平静"变成任何真实情绪**立刻反映**——否则会出现
+"我明明很生气、面板写着平静"的失真。
+
+`mood_now()` 额外返回 `raw_label`：标签被惯性压住时，**真实感受仍然看得见**。
+
+```json
+{
+  "emotion_inertia_enabled": true,
+  "emotion_negative_slow": true,
+  "emotion_negative_decay_factor": 0.8,
+  "emotion_cooldown_enabled": true,
+  "emotion_cooldown_events": 3,
+  "emotion_label_gate_enabled": true,
+  "emotion_transition_threshold": 0.25
+}
+```
+
+设置页「情绪与人格」组可逐项开关；`emotion_inertia_enabled=false` 一键回到原生行为。
 
 ## 成长阶段：它长到哪一步了
 

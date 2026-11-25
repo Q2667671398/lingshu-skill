@@ -3524,6 +3524,26 @@ def _tag_coverage() -> float:
     return good / len(rows)
 
 
+def health_score(passed: int = 0, warned: int = 0, failed: int = 0,
+                 failures_7d: int | None = None) -> dict:
+    """健康度分数（0~100）+ 扣分明细。参数没给就取最近一次体检历史。"""
+    if failures_7d is None:
+        failures_7d = _recent_failures(7)
+    if not (passed or warned or failed):
+        hist = [r for r in doctor_history() if str(r.get("kind") or "doctor") == "doctor"]
+        if hist:
+            last = hist[-1]
+            passed = int(last.get("pass") or 0)
+            warned = int(last.get("warn") or 0)
+            failed = int(last.get("fail") or 0)
+    score = 100 - int(failed) * 10 - int(warned) * 3 - int(failures_7d) // 5
+    score = max(0, min(100, score))
+    return {"score": score, "pass": int(passed), "warn": int(warned),
+            "fail": int(failed), "failures_7d": int(failures_7d),
+            "deduct": {"fail": int(failed) * 10, "warn": int(warned) * 3,
+                       "failures": int(failures_7d) // 5}}
+
+
 def stage_state() -> dict:
     """算出当前成长阶段 + 依据（面板/CLI 都读它）。"""
     hist = doctor_history()
@@ -3587,9 +3607,14 @@ def stage_state() -> dict:
     # 跑了不少次却还在"蛋"：明说是被 failures 卡住，不是没在记录
     if stage == "蛋" and doc_runs >= 5:
         label += "·卡在 failures"
+    try:
+        _health = health_score(failures_7d=fails)
+    except Exception:  # noqa: BLE001
+        _health = None
     return {"stage": stage, "doctor_runs": doc_runs, "self_reviews": self_reviews,
             "failures_7d": fails, "coverage": round(cov, 3),
-            "drift_fixed": drift_fixed, "next": need, "label": label}
+            "drift_fixed": drift_fixed, "next": need, "label": label,
+            "health": _health}
 
 
 def release_drift() -> dict:
