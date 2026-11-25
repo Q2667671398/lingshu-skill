@@ -347,6 +347,10 @@ DEFAULT_CONFIG = {
     "use_index_memory": "auto",
     # P1-4 Git 分支感知：remember 记下当前分支，召回时跨分支分数 ×0.5（不硬过滤）
     "git_branch_memory": True,
+    # P1-3 主动搭话：每轮结束按概率决定灵枢要不要自己说一句（纯模板、不进模型）。
+    # 0 = 关闭；还会受"不是提问 / 理智 >30 / 冷却 15 分钟"三道闸约束。
+    "speak_up_prob": 0.10,
+    "speak_up_cooldown_min": 15,
     "auto_update_interval_hours": 24,
     "session_state_cache": False,
     "session_state_ttl": 300,
@@ -1633,7 +1637,29 @@ def _locked(path: Path, timeout: float = 10.0):
                 acquired = True
                 break
             except FileExistsError:
-                # 陈旧锁（持锁进程已死）：久到不可能是正常写盘（正常持锁 <2s）才接管。
+                # ① 孤儿锁快通道：锁里写的是**本进程 pid**，但本进程没有持有它
+                #    （_held() 已为 False 才会走到这里）→ 这是我们自己遗留的锁，立刻接管。
+                #    否则会等满 timeout 才失败，实测能把同进程的 remember 循环卡死。
+                try:
+                    _owner = _lock_owner(lock)
+                    _age = time.time() - lock.stat().st_mtime
+                    # 通道 A：本进程遗留的孤儿锁（含"空锁文件"——O_CREAT 与写 pid
+                    # 之间有窗口，活着的进程不会把锁空着超过宽限期）。
+                    _owner_self = (_owner == os.getpid()) or (_owner is None)
+                    # 通道 B：**持锁进程已死**。与时间无关（只要过了宽限），
+                    # 否则会撞上"STALE_LOCK_SECONDS(30) > timeout(10)"的死角：
+                    # 一次崩溃留下的锁会让后续写入连续超时，永远等不到 30 秒。
+                    _owner_dead = (_owner is not None and _owner != os.getpid()
+                                   and not _pid_alive(_owner))
+                    if _age > ORPHAN_LOCK_GRACE and (_owner_self or _owner_dead):
+                        try:
+                            lock.unlink()
+                        except OSError:
+                            pass
+                        continue
+                except OSError:
+                    pass
+                # ② 陈旧锁（持锁进程已死）：久到不可能是正常写盘（正常持锁 <2s）才接管。
                 # 阈值别设太小：dream 整理记忆时持锁会久一点，抢早了就是两个进程同时写。
                 try:
                     if time.time() - lock.stat().st_mtime > STALE_LOCK_SECONDS:
@@ -1671,17 +1697,24 @@ def _locked(path: Path, timeout: float = 10.0):
             if _lock_owner(lock) == os.getpid():
                 _owns = True  # 锁文件里确实记着自己是持有者
             if _owns:
-                try:
-                    lock.unlink()
-                except FileNotFoundError:
-                    pass  # 锁文件刚被别的流程删掉：无需处理
-                except OSError:
-                    pass
+                # 重试几次：Windows 上偶发共享冲突会让 unlink 抛 OSError。
+                # 删不掉就等于留下孤儿锁，而 _HELD_LOCKS 已清 → 下次自己写会 10 秒超时。
+                for _attempt in range(5):
+                    try:
+                        lock.unlink()
+                        break
+                    except FileNotFoundError:
+                        break          # 刚被别的流程删掉：无需处理
+                    except OSError:
+                        time.sleep(0.02 * (_attempt + 1))
             else:
                 log_event("lock", f"释放跳过：锁 {path.name} 不归本进程（pid 不符或读不到持有者）", path=path.name)
 
 
 STALE_LOCK_SECONDS = 30.0
+# 孤儿锁宽限：锁文件写着本进程 pid 却不持有它时，等这么久才接管——
+# 给"刚创建、还没登记"的瞬间留窗口，又不至于让自锁死拖满 timeout。
+ORPHAN_LOCK_GRACE = 1.0
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1696,7 +1729,12 @@ def _pid_alive(pid: int) -> bool:
             kernel32 = ctypes.windll.kernel32
             h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if not h:
-                # 打不开句柄（权限拒绝/跨会话）：保守视为存活，避免误判陈旧锁抢走别人的锁
+                # 关键区分：**进程不存在**（ERROR_INVALID_PARAMETER=87）必须判死，
+                # 否则崩溃留下的锁永远不算陈旧，后续写入会连续超时。
+                # 只有"权限不足/跨会话"（ERROR_ACCESS_DENIED=5 等）才保守判活。
+                err = kernel32.GetLastError()
+                if err == 87:          # ERROR_INVALID_PARAMETER：没有这个进程
+                    return False
                 return True
             code = ctypes.c_ulong()
             ok = kernel32.GetExitCodeProcess(h, ctypes.byref(code))

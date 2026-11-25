@@ -510,6 +510,10 @@ export function apply(ctx, config) {
   const running = new Set() // 防并发：同名任务进行中就不重入
   const convo = new Map()   // agent -> { text, seen }（即记即存缓冲 + 已处理消息游标，extract 成功后清空）
   const lastReply = new Map() // agent -> 最后一条 assistant 文本（给 usage --reply 用）
+  const lastUser = new Map()  // agent -> 最后一条用户文本（给 speak-up 判"是不是在提问"）
+  // 主动搭话待注入队列：turn-stopping 里决定要说的话，留到下一轮 pre-step 注入
+  // （turn-stopping 阶段已经改不了本轮上下文了）。
+  const pendingNotice = new Map()
   const waterState = new Map() // agent -> { max } 水位守卫已提醒的最高档（60/75/90 各提醒一次）
   // v3.57：review 提醒已发过的 agent（每会话一次，不再每轮催）
   const reviewNoticeAt = new Map()
@@ -759,6 +763,40 @@ export function apply(ctx, config) {
     })()
   }
 
+  // 主动搭话（P1-3）：调 brain.py speak-up --json，命中就把那句话注入下一轮上下文。
+  // 四道闸全在 Python 侧（概率/冷却/理智/是否提问），插件不做判断、不重复实现，
+  // 避免两边规则漂移。失败一律静默——它是锦上添花，绝不能拖住回合。
+  function fireSpeakUp(agent) {
+    if (running.has('speakup')) return
+    const stmt = (lastUser.get(agent) || '').trim()
+    running.add('speakup')
+    ;(async () => {
+      try {
+        const brainPy = await ensureBrainPy()
+        if (!brainPy) return
+        const pythonExe = findPythonExe(cfg.python)
+        // 任务文本走**临时文件**而不是命令行（防命令注入），与 prior 同一套做法
+        const base = process.env.APP_APP || join(homedir(), '.app')
+        mkdirSync(base, { recursive: true })
+        const tmp = join(base, `lingshu-speak-${randomUUID()}.txt`)
+        try {
+          writeFileSync(tmp, stmt, 'utf8')
+          const out = await runBrain(pythonExe, cfg.python, brainPy,
+            ['speak-up', '--statement-file', tmp, '--json'], cfg.timeoutMs)
+          if (!out) return
+          let r = null
+          try { r = JSON.parse(String(out).trim().split('\n').pop()) } catch { return }
+          if (!r || !r.triggered || !r.text) return
+          // 注入给下一轮：明确标成"灵枢自己想说的"，别让宿主误以为是用户说的
+          const text = `[灵枢主动开口] ${r.text}`
+          pendingNotice.set(agent, text)
+        } finally {
+          try { rmSync(tmp, { force: true }) } catch {}
+        }
+      } catch {} finally { running.delete('speakup') }
+    })()
+  }
+
   // 每轮结束：轮次驱动的静默任务（dream / usage）+ 天驱动任务（daily/backup/conflicts/selfreview）
   ctx.on('agent/turn-stopping', (payload) => {
     try {
@@ -813,6 +851,9 @@ export function apply(ctx, config) {
       }
       // 即记即存：每 N 轮把攒的对话文本静默封存进海马体
       if (cfg.extractTurns > 0 && n % cfg.extractTurns === 0) fireExtract(agent)
+      // 主动搭话（P1-3）：掷骰子在 brain.py 里做（概率/冷却/理智/是否提问四道闸），
+      // 这里只负责"问一句要不要说"并在命中时把话注入。**不 await**，失败静默。
+      fireSpeakUp(agent)
     } catch {} // turn-stopping 是串行事件，任何异常都不能拖住回合关闭
   })
 
@@ -1006,6 +1047,9 @@ export function apply(ctx, config) {
               if (c?.type === 'text' && typeof c.text === 'string' && c.text.trim()) {
                 const t = c.text.trim()
                 if (m.role === 'assistant') lastAsst = t.slice(0, 4000)
+                else if (m.role === 'user' && !LINGSHU_SOURCES.has(m?.source?.name)) {
+                  lastUser.set(agent, t.slice(0, 400))
+                }
                 text += (text ? '\n' : '') + m.role + '：' + t.slice(0, 4000) + '\n'
               }
             }
@@ -1021,6 +1065,21 @@ export function apply(ctx, config) {
           if (lastAsst) lastReply.set(agent, lastAsst)
         }
       } catch {}
+
+      // 主动搭话（P1-3）：上一轮 turn-stopping 决定要说的那句，这里注入。
+      // 只注入一次（取走即删）；明确标成"灵枢主动开口"，别让模型以为是用户在说话。
+      if (pendingNotice.has(agent)) {
+        const _say = pendingNotice.get(agent)
+        pendingNotice.delete(agent)
+        if (_say) {
+          decision = {
+            ...decision,
+            messages: [...(decision.messages || []), notice(
+              `${_say}\n（这句是你自己想说的，不是用户说的。自然地接着说即可；` +
+              `若与本轮用户输入无关，可以简短带过，不必硬拗。）`)],
+          }
+        }
+      }
 
       const n = (turns.get(agent) ?? 1)
       const brainPy = await ensureBrainPy()

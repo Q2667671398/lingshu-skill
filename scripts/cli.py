@@ -1589,6 +1589,16 @@ def _main(argv=None) -> int:
     p_tr.add_argument("--json", action="store_true")
 
     # P11 #76 桌面快捷方式「灵枢面板」
+    p_su = sub.add_parser(
+        "speak-up",
+        help="主动搭话（P1-3）：按概率决定灵枢要不要自己说一句（纯模板、不进模型）")
+    p_su.add_argument("--statement", default="",
+                      help="这一轮用户的输入（用于判定是不是在提问；提问就不搭话）")
+    p_su.add_argument("--statement-file", default="",
+                      help="从文件读这一轮用户输入（插件用：避免把文本拼进命令行）")
+    p_su.add_argument("--force", action="store_true", help="跳过概率与冷却（验收/调试用）")
+    p_su.add_argument("--json", action="store_true")
+
     p_tc = sub.add_parser(
         "token-calib",
         help="水位估算标定（盈不足/双假设法）：看样本与拟合值，并与插件写入值对账")
@@ -2626,6 +2636,33 @@ def _main(argv=None) -> int:
         if res["moved"]:
             print("没有删除任何东西；要清空请你自己动手。")
         return 0 if res["ok"] else 1
+
+    if args.cmd == "speak-up":
+        import speak_up as _su
+        _stmt = getattr(args, "statement", "") or ""
+        _sf = getattr(args, "statement_file", "") or ""
+        if _sf:
+            try:
+                _stmt = Path(_sf).read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                print(f"[错误] 读不了 --statement-file：{exc}", file=sys.stderr)
+                return 1
+            finally:
+                # 临时文件用完即删（插件创建的，不该留在磁盘上）
+                try:
+                    Path(_sf).unlink()
+                except OSError:
+                    pass
+        r = _su.maybe(_stmt,
+                      force=bool(getattr(args, "force", False)))
+        if args.json:
+            print(json.dumps(r, ensure_ascii=False))
+            return 0
+        if r.get("triggered"):
+            print(r["text"])
+            return 0
+        print(f"（不搭话：{r.get('reason')}）")
+        return 0
 
     if args.cmd == "token-calib":
         import token_calib as _tcal

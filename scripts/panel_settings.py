@@ -76,6 +76,12 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
      "hint": "送进 rerank 的候选条数，越大越准也越慢"},
 
     # —— 面板与宿主 ——
+    {"key": "speak_up_prob", "group": "水位与节奏", "label": "主动搭话概率",
+     "kind": "float", "min": 0, "max": 1, "step": 0.05,
+     "hint": "每轮结束按此概率让灵枢自己说一句（纯模板、不进模型）；0=关闭"},
+    {"key": "speak_up_cooldown_min", "group": "水位与节奏", "label": "主动搭话冷却（分钟）",
+     "kind": "int", "min": 0, "max": 1440, "step": 5,
+     "hint": "两次主动搭话之间至少间隔多久，防刷屏"},
     {"key": "use_index_memory", "group": "注入与预算", "label": "索引法记忆",
      "kind": "enum", "options": ["auto", "always", "off"],
      "hint": "注入只送一句索引+id，正文用 recall 取；auto=水位≥60% 才切（省 40%+ 注入量）"},
