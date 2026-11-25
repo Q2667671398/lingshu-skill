@@ -276,6 +276,16 @@ function renderOverview(){
   $("last-dream").textContent = rep ? rep.content.split("\n").slice(0, 5).join("\n") : "还没有做过梦";
   $("last-dream").style.whiteSpace = "pre-wrap";
 
+  // P2-4 成长阶段：一行说清"它长到哪一步了"，并给出下一步差什么
+  (function renderStage(){
+    const el = $("ov-stage");
+    if (!el) return;
+    const st = (ov && ov.stage) || null;
+    if (!st || !st.stage) { el.textContent = ""; return; }
+    const tail = (st.next && st.next.length) ? "　·　下一步：" + st.next.join("；") : "";
+    el.textContent = "灵枢健康度：" + (st.label || st.stage) + tail;
+  })();
+
   renderPersonaEditor(p);
 
   renderState(p);

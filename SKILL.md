@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 5.16
+version: 5.17
 description: 类脑持久记忆、人格与成长系统——跨会话记住事情、长出自己的人格、上下文将满时做梦式整理记忆。用户提到记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话开始需要恢复关系与上下文时使用。纯本地零依赖。
 ---
 
@@ -380,6 +380,7 @@ python scripts/bench.py [--n 1000|--quick]           # 性能基准：隔离临�
 | 想立刻关 | 面板「设置」页 → **「退出服务」** |
 | 连点两次 | 安全：启动器先探测，**已在跑就只把浏览器叫回来**，不会起第二个 |
 | **桌面快捷方式丢了** | `python scripts/brain.py shortcut --ensure`（幂等：缺了就重建，已有就不动） |
+| 看它长到哪一步 | `python scripts/brain.py stage`（蛋/幼体/少年/成年/传奇 + 下一步差什么） |
 | 取一条记忆的正文 | `python scripts/brain.py memory show <短id>`（注入里的 8 位短号直接用，也认完整 id 前缀） |
 | 更新灵枢本体 | 面板「检查更新」弹窗（可选下载源：**npm 官方包** / Gitee·GitHub / 跟随设置），或 `python scripts/brain.py auto-update --source npm`；`update_source` 默认 auto=npm 优先 |
 

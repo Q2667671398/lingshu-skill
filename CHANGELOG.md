@@ -1,5 +1,53 @@
 # 更新日志
 
+## v5.17（2026-11-25）
+
+> 主题：**成长阶段（P2-4）**——把 doctor / failures / 自审的数据包成一句"它长到哪了"。
+
+### 新：五阶段成长度
+
+```bash
+python scripts/brain.py stage          # 灵枢健康度：少年（doctor 32 次 / failures 7 条）
+python scripts/brain.py stage --json
+```
+
+| 阶段 | 条件 |
+|---|---|
+| **蛋** | doctor 一次没跑过 |
+| **幼体** | doctor ≥5 次，且近 7 天 failures <3 |
+| **少年** | doctor ≥30，failures <10，self-review ≥5 |
+| **成年** | doctor ≥100，failures <20，self-review ≥20，且出现过"漂移被修复" |
+| **传奇** | 成年 + 记忆"有标签或实体"的覆盖率 ≥45% |
+
+**口径全部可核对**（写进代码注释与 README，不留神秘数字）：
+
+- doctor 次数 = `<记忆库>/doctor-history.jsonl` 的行数（每次跑 doctor 追加一行，**只增不改**）
+- failures 条数 = `failures.jsonl` 近 7 天条数
+- self-review 次数 = 历史里 `kind="self-review"` 的行数
+- "漂移被修复" = 历史里出现过 `fail>0`，之后又出现 `fail==0`
+- 覆盖率 = 有 `tags` 或 `entities` 的记忆 / 总记忆
+
+面板概览页顶部多一行「灵枢健康度：…　·　下一步：…」，直接告诉你**还差什么**。
+
+### 一个 UX 坑（已修）
+
+只按规格实现会让"doctor 跑了 30 次但 failures 有 12 条"的用户看到 **"蛋"**——
+看起来像系统没记录他的操作。现在文案会明确写 **「蛋（doctor 30 次 / failures 12 条）·卡在 failures」**，
+`next` 也会说"近 7 天 failures 12 条（需 <3 才能进幼体）"。**卡住的原因必须看得见。**
+
+### 文档：`docs/panel-api.md` 更新到真实路由
+
+这份文档自 2026-11-01 起就没跟上，自定义面板作者照旧文档写会 404。现在：
+
+- GET 清单换成**服务端实际注册的 33 个**（原来只列了 17 个，漏了 `/api/config`、`/api/data`、
+  `/api/insights`、`/api/home`、`/api/diagnostics`、`/api/growth/timeline`、`/api/persona/snapshots`、
+  `/api/ping`、`/api/alive` 等）；
+- 新增 **「生命周期与设置页」** 一节：讲清面板会**自己退出**（默认空闲 1 分钟），
+  自定义面板**必须**维持 `/api/alive` 长轮询，否则服务端会认为没人用而退出；
+- 补 `/api/config`（设置页白名单）、`/api/data*`（备份/恢复）、`/api/self-update?source=npm`。
+
+验证：`tests/test_p29_growth_stage.py` 9/9。
+
 ## v5.16（2026-11-25）
 
 > 主题：**主动搭话（P1-3）** + 顺手挖出并修掉一个"崩溃后写入永久失败"的锁 bug。

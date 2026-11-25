@@ -170,7 +170,14 @@ def overview() -> dict:
             except (OSError, ValueError):
                 continue
     st = _safe("stats", brain.stats, {}) or {}
+    # P2-4 成长阶段：面板概览一行"灵枢健康度：少年（doctor 32 次 / failures 7 条）"
+    try:
+        _stage = growth.stage_state()
+    except Exception:  # noqa: BLE001
+        _stage = None
+
     return {
+        "stage": _stage,
         "stats": st,
         # 层分布统计条用：各层记忆数（含归档），纯计数不做降级分支
         "layer_counts": {"hippo": st.get("hippo", 0), "cortex": st.get("cortex", 0),
@@ -1480,6 +1487,11 @@ def _api_daily(self, path, data):
 
 
 def _api_skill_self_review(self, path, data):
+    # P2-4：自审也记一笔（成长阶段要用"self-review 次数"）
+    try:
+        growth.record_doctor_run(0, 0, 0, kind="self-review")
+    except Exception:  # noqa: BLE001
+        pass
     r = growth.self_review(force=bool(data.get("force")),
                            days=_to_int(data.get("days", 3) or 3, 3) or 3)
     self._json({"ok": True, "result": r})

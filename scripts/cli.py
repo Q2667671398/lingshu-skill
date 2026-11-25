@@ -1589,6 +1589,9 @@ def _main(argv=None) -> int:
     p_tr.add_argument("--json", action="store_true")
 
     # P11 #76 桌面快捷方式「灵枢面板」
+    p_stage = sub.add_parser("stage", help="灵枢成长阶段（P2-4）：蛋/幼体/少年/成年/传奇")
+    p_stage.add_argument("--json", action="store_true")
+
     p_su = sub.add_parser(
         "speak-up",
         help="主动搭话（P1-3）：按概率决定灵枢要不要自己说一句（纯模板、不进模型）")
@@ -2636,6 +2639,19 @@ def _main(argv=None) -> int:
         if res["moved"]:
             print("没有删除任何东西；要清空请你自己动手。")
         return 0 if res["ok"] else 1
+
+    if args.cmd == "stage":
+        import growth as _g
+        s = _g.stage_state()
+        if args.json:
+            print(json.dumps(s, ensure_ascii=False, indent=2))
+            return 0
+        print(f"灵枢健康度：{s['label']}")
+        print(f"  自审 {s['self_reviews']} 次 · 标签/实体覆盖 {s['coverage'] * 100:.0f}%"
+              f" · 漂移修复过《{'是' if s['drift_fixed'] else '否'}》".replace("《", "").replace("》", ""))
+        if s["next"]:
+            print("  下一步：" + "；".join(s["next"]))
+        return 0
 
     if args.cmd == "speak-up":
         import speak_up as _su
@@ -4431,6 +4447,13 @@ def _main(argv=None) -> int:
 
         fails = sum(1 for _, s, _ in checks if s == "FAIL")
         warns = sum(1 for _, s, _ in checks if s == "WARN")
+        # P2-4：每次体检追加一条历史（成长阶段的"doctor 次数"就来自这里）
+        try:
+            import growth as _g_stage
+            _g_stage.record_doctor_run(len(checks) - fails - warns, warns, fails,
+                                       kind="doctor")
+        except Exception:  # noqa: BLE001
+            pass
         if args.json:
             print(json.dumps({"checks": [{"name": n, "status": s, "detail": dt} for n, s, dt in checks],
                               "summary": {"pass": len(checks) - fails - warns,

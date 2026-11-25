@@ -2,7 +2,7 @@
 
 > 名字取自《黄帝内经》：**算力给思考，人格给灵魂，记忆给生命。**
 
-> 当前版本 **v5.16**（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本 **v5.17**（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 > 🔁 **双仓库镜像**：GitHub（主）与 Gitee（镜像）保持同步——[gitee.com/htmcwy_0/lingshu-skill](https://gitee.com/htmcwy_0/lingshu-skill)。灵枢的更新检查会探测两边最新提交，**谁更新就自动从谁拉取**；任一边不可达（Gitee 匿名风控 / GitHub 限额）时走另一边兜底。
 
@@ -27,6 +27,7 @@
 - [开工前先查（prior）](#开工前先查prior)
 - [错卦：召回区分否定](#错卦召回区分否定)
 - [索引法记忆：正文不进上下文](#索引法记忆正文不进上下文)
+- [成长阶段：它长到哪一步了](#成长阶段它长到哪一步了)
 - [主动搭话：它会自己开口，但很少](#主动搭话它会自己开口但很少)
 - [Git 分支感知：切了分支别拿旧分支的记忆](#git-分支感知切了分支别拿旧分支的记忆)
 - [六爻位体检（shape-audit）](#六爻位体检shape-audit)
@@ -384,6 +385,37 @@ python scripts/brain.py memory show 7f3ca9ac    # 短 id 直接取整条记忆�
 > 顺带补了个**既有缺口**：注入提示以前让模型用 `dereference <id>` 取正文，但
 > `dereference` 只返回 **evidence_ids 指向的证据原文**，普通记忆一律返回空——照做拿不到东西。
 > 现在 `dereference` 在无证据指针时**回退返回自身**，并且新增了正路 `memory show <短id>`。
+
+## 成长阶段：它长到哪一步了
+
+把 doctor / failures / 自审的数据包成一句人话：
+
+```bash
+python scripts/brain.py stage
+# 灵枢健康度：少年（doctor 32 次 / failures 7 条）
+#   下一步：doctor 还差 68 次；self-review 还差 15 次
+```
+
+| 阶段 | 条件 |
+|---|---|
+| **蛋** | doctor 一次没跑过 |
+| **幼体** | doctor ≥5，近 7 天 failures <3 |
+| **少年** | doctor ≥30，failures <10，self-review ≥5 |
+| **成年** | doctor ≥100，failures <20，self-review ≥20，且出现过"漂移被修复" |
+| **传奇** | 成年 + 记忆"有标签或实体"覆盖率 ≥45% |
+
+**每个数字都能核对**（不留神秘阈值）：
+
+| 指标 | 从哪来 |
+|---|---|
+| doctor 次数 | `<记忆库>/doctor-history.jsonl` 行数（每次体检追加一行，只增不改） |
+| failures 条数 | `failures.jsonl` 近 7 天 |
+| self-review 次数 | 历史里 `kind="self-review"` 的行数 |
+| 漂移被修复 | 历史里出现过 `fail>0`、之后又出现 `fail==0` |
+| 覆盖率 | 有 `tags` 或 `entities` 的记忆 / 总记忆 |
+
+面板概览页顶部有一行「灵枢健康度：…」+「下一步：…」——**卡住的原因会写出来**
+（比如"蛋（doctor 30 次 / failures 12 条）·卡在 failures"），不会让你以为系统没记录。
 
 ## 主动搭话：它会自己开口，但很少
 

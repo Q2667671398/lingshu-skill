@@ -3440,6 +3440,158 @@ def _upgrade_hint(c: dict) -> str:
     return 'python scripts/brain.py skill install lingshu --from "<当前目录>" --force --yes'
 
 
+# ---------------------------------------------------------------- 成长阶段（P2-4）
+
+DOCTOR_HISTORY = "doctor-history.jsonl"
+STAGES = ("蛋", "幼体", "少年", "成年", "传奇")
+
+
+def _dh_path() -> Path:
+    return brain.HOME / DOCTOR_HISTORY
+
+
+def record_doctor_run(passed: int, warned: int, failed: int,
+                      kind: str = "doctor") -> None:
+    """追加一条体检/自审历史。只增不改，失败静默（观测代码绝不能拖累体检本身）。"""
+    try:
+        path = _dh_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = {"ts": int(time.time()), "kind": str(kind or "doctor"),
+               "pass": int(passed), "warn": int(warned), "fail": int(failed)}
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def doctor_history(limit: int = 0) -> list:
+    """读体检历史（旧的在前）。limit>0 只取最近 N 条。"""
+    path = _dh_path()
+    if not path.is_file():
+        return []
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    except OSError:
+        return []
+    return rows[-limit:] if limit and limit > 0 else rows
+
+
+def _recent_failures(days: int = 7) -> int:
+    """近 N 天的被吞异常条数（failures.jsonl）。拿不到返回 0。"""
+    try:
+        import failures as _f
+        return len(_f.recent(days=days, limit=10000) or [])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        path = brain.HOME / "failures.jsonl"
+        if not path.is_file():
+            return 0
+        cutoff = time.time() - days * 86400
+        n = 0
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                if float(json.loads(line).get("ts") or 0) >= cutoff:
+                    n += 1
+            except (ValueError, TypeError):
+                continue
+        return n
+    except OSError:
+        return 0
+
+
+def _tag_coverage() -> float:
+    """记忆里"有标签或实体"的占比（0~1）。这是"被结构化过"的粗略度量。"""
+    try:
+        import memory as _m
+        rows = [r for r in _m.load_all() if isinstance(r, dict) and r.get("id")]
+    except Exception:  # noqa: BLE001
+        return 0.0
+    if not rows:
+        return 0.0
+    good = sum(1 for r in rows if (r.get("tags") or r.get("entities")))
+    return good / len(rows)
+
+
+def stage_state() -> dict:
+    """算出当前成长阶段 + 依据（面板/CLI 都读它）。"""
+    hist = doctor_history()
+    doc_runs = sum(1 for r in hist if str(r.get("kind") or "doctor") == "doctor")
+    self_reviews = sum(1 for r in hist if str(r.get("kind")) == "self-review")
+    fails = _recent_failures(7)
+    # 发布漂移"修过"：历史里出现过 fail>0，之后又出现 fail==0
+    drift_fixed = False
+    seen_bad = False
+    for r in hist:
+        try:
+            f = int(r.get("fail") or 0)
+        except (TypeError, ValueError):
+            f = 0
+        if f > 0:
+            seen_bad = True
+        elif seen_bad:
+            drift_fixed = True
+            break
+    cov = _tag_coverage()
+
+    stage = "蛋"
+    if doc_runs >= 5 and fails < 3:
+        stage = "幼体"
+    if doc_runs >= 30 and fails < 10 and self_reviews >= 5:
+        stage = "少年"
+    if doc_runs >= 100 and fails < 20 and self_reviews >= 20 and drift_fixed:
+        stage = "成年"
+    if stage == "成年" and cov >= 0.45:
+        stage = "传奇"
+
+    # 下一阶段还差什么（面板上给人看，避免"为什么我不是成年"的困惑）
+    need = []
+    if stage == "蛋":
+        # 别只说"去跑 doctor"——如果已经跑了很多次而是 failures 卡住，必须说清楚，
+        # 否则用户看到"蛋"会以为系统没记录他的操作。
+        if doc_runs < 5:
+            need.append(f"doctor 还差 {5 - doc_runs} 次（≥5 次进幼体）")
+        if fails >= 3:
+            need.append(f"近 7 天 failures {fails} 条（需 <3 才能进幼体）")
+    elif stage == "幼体":
+        if doc_runs < 30:
+            need.append(f"doctor 还差 {30 - doc_runs} 次")
+        if fails >= 10:
+            need.append(f"近 7 天 failures {fails} 条（需 <10）")
+        if self_reviews < 5:
+            need.append(f"self-review 还差 {5 - self_reviews} 次")
+    elif stage == "少年":
+        if doc_runs < 100:
+            need.append(f"doctor 还差 {100 - doc_runs} 次")
+        if fails >= 20:
+            need.append(f"近 7 天 failures {fails} 条（需 <20）")
+        if self_reviews < 20:
+            need.append(f"self-review 还差 {20 - self_reviews} 次")
+        if not drift_fixed:
+            need.append("还没出现过「漂移被修复」的记录")
+    elif stage == "成年":
+        need.append(f"标签/实体覆盖率 {cov * 100:.0f}%（需 ≥45% 进传奇）")
+
+    label = f"{stage}（doctor {doc_runs} 次 / failures {fails} 条）"
+    # 跑了不少次却还在"蛋"：明说是被 failures 卡住，不是没在记录
+    if stage == "蛋" and doc_runs >= 5:
+        label += "·卡在 failures"
+    return {"stage": stage, "doctor_runs": doc_runs, "self_reviews": self_reviews,
+            "failures_7d": fails, "coverage": round(cov, 3),
+            "drift_fixed": drift_fixed, "next": need, "label": label}
+
+
 def release_drift() -> dict:
     """发布漂移自检：**源码版本 vs 本机已安装副本**（doctor 用）。
 
