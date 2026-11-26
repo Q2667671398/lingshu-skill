@@ -1126,6 +1126,19 @@ def make_record(text: str, kind: str = "fact", importance: float | None = None,
                 agent_id: str | None = None) -> dict:
     ts = now_ts()
     text = text.strip()
+    # 捕获时脱敏：凭据不该进记忆库（备份默认不加密，一旦落盘就一起被拷走）。
+    # 复用 `core.redact()`——它 v3.02 起就有、docstring 也写明"用于记忆写入"，
+    # 只是**这里一直没调用**。不另写一份，避免两套规则漂移
+    # （实测过：我另写的 `_REDACT_PATTERNS` 被 brain 的命名空间合并覆盖成了死代码）。
+    _raw_len = len(text)
+    _clean = redact(text)
+    if _clean != text:
+        text = _clean
+        try:
+            log_event("memory", f"记忆文本已脱敏（原长 {_raw_len} → {len(text)}）",
+                      level="warn")
+        except Exception:  # noqa: BLE001
+            pass
     tags = _dedupe([t.strip().lstrip("#") for t in (tags or []) if t.strip()])
     entities = _dedupe([e.strip() for e in (entities or []) if e.strip()])
     for tag in re.findall(r"#([\w\u4e00-\u9fff]{1,16})", text):

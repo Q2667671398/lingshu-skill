@@ -523,13 +523,27 @@ _REDACT_PATTERNS: list[tuple[str, re.Pattern]] = [
     # npm 2026 granular token：npm_ + 36 位（本会话实测裸 token 贴进对话被
     # capture 原文落盘——泛化 kv-secret 只认 "token=" 形态，裸发漏网，补具名规则）
     ("npm-token", re.compile(r"npm_[A-Za-z0-9]{30,}")),
-    ("api-key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
+    ("api-key", re.compile(r"sk-[A-Za-z0-9_-]{16,}")),  # 新版是 sk-proj-xxx，值里带连字符
     ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("github-token", re.compile(r"ghp_[A-Za-z0-9]{20,}")),
     ("slack-token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
     ("aws-key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("bearer", re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}")),
-    ("kv-secret", re.compile(r"(?i)(password|passwd|token|secret|api_key|apikey|access_key)\s*[=:]\s*\S+")),
+    # URL 内嵌凭据：scheme://user:pass@host 与 ?token=xxx / &access_token=xxx
+    # （`(?i)` 只能出现在表达式最前面，中间用它会报 PatternError，故用 re.I）
+    ("url-cred", re.compile(
+        r"(?:[a-z][a-z0-9+.-]*://)[^\s/:@]+:[^\s/@]{6,}@"
+        r"|[?&](?:access_token|token|key|secret)=[A-Za-z0-9._~-]{12,}", re.I)),
+    # PEM 私钥整块（多行）：这类东西一旦进记忆库/备份，等于把私钥复制了一份
+    ("private-key", re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{20,}?-----END [A-Z ]*PRIVATE KEY-----")),
+    # 泛化兜底：key=value 形态。**值必须是"像凭据的串"**——原式 `\s*\S+` 过宽，
+    # 会把中文正文一起脱掉（"token: 加到请求头" → 连"加到请求头"都变占位符），
+    # 记忆文本被误伤比漏掉更难查，所以收紧成"引号包裹或 ≥8 位 ASCII 凭据字符"。
+    ("kv-secret", re.compile(
+        r"(?i)(password|passwd|token|secret|api_key|apikey|access_key|access_key_id"
+        r"|private_key|client_secret)\s*[=:]\s*"
+        r"(?:[\"'][^\"']{8,}[\"']|[A-Za-z0-9._~+/=-]{8,})")),
 ]
 
 _REDACT_KEEP = 3  # 保留首尾 3 字符（不足 8 字符全遮）
