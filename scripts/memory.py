@@ -989,6 +989,90 @@ def boost(memory_id: str) -> dict:
             "stability": found["stability"], "old_stability": old_s}
 
 
+# ---------------------------------------------------------------- 情绪驱动的记忆权重（P2-3）
+# 「记仇」效应：让用户委屈/生气的事更重、更容易被想起。这不是玄学——
+# 情绪记忆的巩固强度本来就高于中性记忆（amygdala 调制，McGaugh 2004）。
+EMO_TOUCH_FIELD = "_touched_by_emotion"     # 历次情绪**强度**（供 recall 加成）
+EMO_TOTAL_FIELD = "_emo_touch_total"        # 累计**已加到 importance 的增量**（配额）
+EMO_TOUCH_STEP = 0.06                       # 每次负面情绪给 importance 的增量
+EMO_TOUCH_MAX = 0.30                        # 累计增量上限（防一条被反复顶到 1.0）
+EMO_TOUCH_NEG_MAX_VALENCE = -0.3            # 只对 valence < 这个值（够负面）生效
+EMO_TOUCH_MIN_INTENSITY = 0.1               # 且强度不低于这个（太弱的不管）
+EMO_RECALL_BOOST = 0.3                      # recall 时的加成系数
+
+
+def touch_by_emotion(memory_id: str, valence: float, intensity: float) -> dict:
+    """一条记忆被"有分量的负面情绪"牵动时，提升它的 importance（P2-3）。
+
+    返回 {"ok", "changed", "importance", "delta"}。非负面 / 太弱 / 找不到一律不动，
+    返回 changed=False 且给 reason——**不静默瞎改**。
+    持锁 + 锁内重读：这是整库覆写路径，锁外做会吞掉并发写入。
+    """
+    try:
+        v = float(valence)
+        i = float(intensity)
+    except (TypeError, ValueError):
+        return {"ok": False, "changed": False, "reason": "valence/intensity 不是数字"}
+    if v > EMO_TOUCH_NEG_MAX_VALENCE:
+        return {"ok": True, "changed": False, "reason": "不够负面（valence 高于阈值）"}
+    if i < EMO_TOUCH_MIN_INTENSITY:
+        return {"ok": True, "changed": False, "reason": "情绪太弱（intensity 低于阈值）"}
+    if READONLY:
+        return {"ok": False, "changed": False, "reason": "记忆库只读"}
+    # 调用方可能传完整记录字典（capture() 的 saved 就是记录列表）——宽松取 id，
+    # 别把一个 dict 的 repr 当 id 去查（实测踩过）。
+    if isinstance(memory_id, dict):
+        memory_id = memory_id.get("id")
+    mid = str(memory_id or "").strip()
+    if not mid:
+        return {"ok": False, "changed": False, "reason": "没有 memory_id"}
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        found = next((m for m in records if str(m.get("id") or "") == mid), None)
+        if found is None:
+            return {"ok": False, "changed": False, "reason": f"找不到记忆 {mid}"}
+        marks = list(found.get(EMO_TOUCH_FIELD) or [])
+        # 配额看"已加了多少 importance"，**不是**看情绪强度——
+        # 两者量纲不同（0.06 vs 0.9），混用会让第一次就判超限（实测踩过）。
+        used = _num(found.get(EMO_TOTAL_FIELD), 0.0)
+        room = max(0.0, EMO_TOUCH_MAX - used)
+        delta = min(EMO_TOUCH_STEP, room)
+        if delta <= 0:
+            return {"ok": True, "changed": False,
+                    "reason": "情绪权重已到上限", "importance": _num(found.get("importance"), 0.5)}
+        old = _num(found.get("importance"), 0.5)
+        found["importance"] = round(max(0.0, min(1.0, old + delta)), 3)
+        # 记下本次影响（限长，避免字段无界增长）
+        marks.append(round(abs(v) * max(0.0, min(1.0, i)), 3))
+        found[EMO_TOUCH_FIELD] = marks[-20:]
+        found[EMO_TOTAL_FIELD] = round(used + delta, 3)
+        save_all(records)
+    try:
+        log_event("emotion", f"情绪加权 {mid}：importance {old:.2f} → "
+                             f"{found['importance']:.2f}（valence {v:.2f}）")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "changed": True, "importance": found["importance"],
+            "delta": round(delta, 3),
+            "total": found.get(EMO_TOTAL_FIELD, round(delta, 3))}
+
+
+def _emo_boost_of(m: dict) -> float:
+    """recall 用的情绪加成系数：按 `_touched_by_emotion` 均值算。
+
+    没有该字段返回 0（老记忆完全不受影响）。
+    """
+    marks = m.get(EMO_TOUCH_FIELD)
+    if not isinstance(marks, list) or not marks:
+        return 0.0
+    vals = [_num(x, 0) for x in marks]
+    vals = [v for v in vals if v > 0]
+    if not vals:
+        return 0.0
+    avg = sum(vals) / len(vals)
+    return max(0.0, min(1.0, avg)) * EMO_RECALL_BOOST
+
+
 def set_frozen(memory_id: str, frozen: bool = True) -> dict:
     """#28 冻结 / 解冻单条记忆。
 
@@ -2269,6 +2353,11 @@ def recall(query: str, k: int = 8, layers: tuple = ("cortex", "hippo"),
         # 原 age_boost 字段保留在 debug 里，但不再参与乘法压分。
         age_days = (now - _num(m.get("created"), now)) / DAY
         # （以上保留 age_days 只是给下方 age_boost debug 用，不乘进 score）
+        # P2-3 情绪权重：被"有分量的负面情绪"牵动过的记忆，按影响均值给 importance 加成
+        # （老记忆没有该字段 → 加成 0，行为完全不变）。
+        _emo = _emo_boost_of(m)
+        if _emo > 0:
+            score *= (1.0 + _emo)
         # P1-4 分支感知：跨分支记忆降权 50%（不硬过滤——别的分支的结论仍可能有用，
         # 只是排在当前分支之后）。两边都有分支才比，任一侧为空就不动。
         if _cur_branch:

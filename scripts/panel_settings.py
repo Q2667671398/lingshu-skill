@@ -76,6 +76,9 @@ CONFIG_SCHEMA: list[dict[str, Any]] = [
      "hint": "送进 rerank 的候选条数，越大越准也越慢"},
 
     # —— 面板与宿主 ——
+    {"key": "emotion_memory_weight", "group": "情绪与人格", "label": "情绪驱动记忆权重",
+     "kind": "bool",
+     "hint": "负面且强烈的情绪会让相关记忆更重要、更容易被想起（累计增量封顶 0.30）"},
     {"key": "emotion_inertia_enabled", "group": "情绪与人格", "label": "情绪惯性",
      "kind": "bool",
      "hint": "情绪上来快、下去慢：负面衰减更慢 + 强情绪冷却 + 标签需 2 条事件才切换"},

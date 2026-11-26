@@ -2352,7 +2352,26 @@ def _main(argv=None) -> int:
             # 整段兜住：心情没记住是小事，对话没封存才是大事。
             try:
                 from emotion import auto_appraise
-                auto_appraise(text)
+                # 契约：返回 {emotion, intensity, polarity, hits}；不写时返回 None
+                # （门槛：≥80 字、≥2 个命中词、正负混说不猜）。**不含 valence**。
+                ev = auto_appraise(text)
+                # P2-3 情绪驱动的记忆权重：判出**负面**时给刚封存那批记忆加权
+                # （"记仇"效应）。valence 用常量 -0.6 明确越过负面阈值；
+                # 正面/中性一律不碰。
+                try:
+                    if (isinstance(ev, dict)
+                            and ev.get("polarity") == "negative"
+                            and core.load_config().get("emotion_memory_weight", True)):
+                        _i = float(ev.get("intensity") or 0)
+                        import memory as _mem_mod
+                        # capture() 的 saved 是**记录列表**（不是 id 列表），显式取 id
+                        for _it in (res.get("saved") or [])[:20]:
+                            _mid = _it.get("id") if isinstance(_it, dict) else _it
+                            if _mid:
+                                _mem_mod.touch_by_emotion(_mid, -0.6, _i)
+                except Exception as exc:  # noqa: BLE001
+                    log_event("emotion-auto", f"情绪加权失败（封存已成功，可忽略）：{exc}",
+                              level="warn")
             except Exception as exc:
                 log_event("emotion-auto", f"extract 情绪评价失败（封存已成功，可忽略）：{exc}",
                           level="warn")

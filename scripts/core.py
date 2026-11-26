@@ -355,6 +355,9 @@ DEFAULT_CONFIG = {
     "emotion_cooldown_events": 3,        # 冷却窗口 = 之后 N 个情绪事件
     "emotion_label_gate_enabled": True,  # 标签要 ≥2 条情绪事件支撑才切换
     "emotion_transition_threshold": 0.25,  # 且 |Δvalence| 至少这么大
+    # P2-3 情绪驱动的记忆权重（"记仇"）：负面且有分量的情绪 → 相关记忆 importance +0.06，
+    # recall 时按影响均值给 importance 加成；累计增量封顶 0.30。
+    "emotion_memory_weight": True,
     # P1-3 主动搭话：每轮结束按概率决定灵枢要不要自己说一句（纯模板、不进模型）。
     # 0 = 关闭；还会受"不是提问 / 理智 >30 / 冷却 15 分钟"三道闸约束。
     "speak_up_prob": 0.10,
