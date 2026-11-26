@@ -342,23 +342,28 @@ def cloud_download(name: str) -> dict:
     return panels.install(name)
 
 
-def _verify_sha256(name: str, raw: bytes) -> None:
+def _verify_sha256(name: str, raw: bytes, kind_key: str = "panels") -> None:
     """下载的 zip 必须与云端 index.json 清单里的 sha256 比对，否则拒绝安装。
 
-    fail-closed：清单拉取失败、清单无此面板、条目缺 sha256，一律拒绝。
+    fail-closed：清单拉取失败、清单无此条目、条目缺 sha256，一律拒绝。
     自建源也要提供带 sha256 的 index.json（见 docs/panel-api.md）。
+
+    kind_key：`panels`（面板包）/ `extensions`（拓展包）。两种包都必须校验——
+    拓展解压即可用、权限等同插件，不校验等于给远程任意代码开后门。
     """
+    label = "面板" if kind_key == "panels" else "拓展"
     try:
-        items = cloud_list(force=False).get("panels", [])
+        items = cloud_list(force=False).get(kind_key, [])
     except Exception as exc:  # noqa: BLE001 —— 统一转成拒绝安装的 ValueError
-        raise ValueError(f"面板 {name} 的云端校验清单获取失败（{exc}），已拒绝安装") from exc
-    entry = next((p for p in items if p.get("name") == name), None)
+        raise ValueError(f"{label} {name} 的云端校验清单获取失败（{exc}），已拒绝安装") from exc
+    id_key = "id" if kind_key == "extensions" else "name"
+    entry = next((p for p in items if p.get(id_key) == name), None)
     if not entry:
-        raise ValueError(f"面板 {name} 不在云端清单中，已拒绝安装")
+        raise ValueError(f"{label} {name} 不在云端清单中，已拒绝安装")
     if not entry.get("sha256"):
-        raise ValueError(f"面板 {name} 的清单条目缺少 sha256，已拒绝安装")
+        raise ValueError(f"{label} {name} 的清单条目缺少 sha256，已拒绝安装")
     if hashlib.sha256(raw).hexdigest().lower() != str(entry["sha256"]).lower():
-        raise ValueError(f"面板 {name} 下载校验失败（sha256 不匹配），已拒绝安装")
+        raise ValueError(f"{label} {name} 下载校验失败（sha256 不匹配），已拒绝安装")
 
 
 def cloud_extension_download(ext_id: str) -> dict:
@@ -371,6 +376,8 @@ def cloud_extension_download(ext_id: str) -> dict:
     if not _safe_name(ext_id):
         raise ValueError(f"非法拓展名：{ext_id!r}")
     raw = _fetch(f"extensions/{ext_id}.zip", ext_id)
+    # 拓展也是"解压即用"的可执行代码，必须像面板包一样校验 sha256（fail-closed）
+    _verify_sha256(ext_id, raw, kind_key="extensions")
     import io
     import zipfile
 
@@ -591,12 +598,22 @@ def _push_one(kind: str, repo: str, token: str, branch: str, name: str,
     if shot is not None:
         put(repo, f"shots/{name}{shot_ext}", token, branch, shot, msg, author)
     # index.json 合并回写：读旧清单 → 覆盖同名条目 → 写回（并发竞争可接受，个人市场）
+    #
+    # ⚠ fail-closed：**只有"清单确实不存在"才可以新建空清单**。
+    # 若清单拉到了但解析失败（被改坏、传输截断、编码问题），旧代码会重建空清单再回写，
+    # 等于**把整个市场目录清空**，只留刚发布这一条——这是不可接受的静默数据丢失。
+    # 现在：解析失败一律抛错中止（zip 已经传上去了，只是清单不动，仍是安全状态）。
     raw = get(repo, "index.json", token, branch)
-    try:
-        data = json.loads(raw.decode("utf-8")) if raw else {"panels": [], "extensions": []}
-    except Exception:  # noqa: BLE001 —— 云端清单坏了就重建
-        data = {"panels": [], "extensions": []}
-    if not isinstance(data, dict):
+    if raw:
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(
+                f"云端 index.json 解析失败，已中止清单回写（避免清空市场目录）：{exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("云端 index.json 结构异常（不是对象），已中止清单回写")
+    else:
+        # 清单不存在 = 首次发布，允许新建
         data = {"panels": [], "extensions": []}
     # key 名：面板条目按 name 匹配，拓展条目按 id 匹配
     id_key = "id" if kind_key == "extensions" else "name"

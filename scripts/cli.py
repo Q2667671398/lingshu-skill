@@ -1503,7 +1503,7 @@ def _main(argv=None) -> int:
                        help="agent 维度：多 agent 共库时隔离，recall --agent-id 只召回本 agent + 全局")
     p_rem.add_argument("--project", default="",
                        help="项目名标记（第四轮#3）：recall --project 同名时此记忆排前")
-    # v3.58 三层元数据（借自 AOCI-CODE，见 docs/进展与待办.md P4）
+    # v3.58 三层元数据（借自 AOCI-CODE，来历见 CHANGELOG v3.58）
     p_rem.add_argument("--f", dest="fras_f", default="",
                        help="FRAS·F 职责：这个对象/这件事负责什么（项目类知识用）")
     p_rem.add_argument("--r", dest="fras_r", default="",

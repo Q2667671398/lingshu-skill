@@ -156,7 +156,7 @@
 | 10 | `engine-sync` | `scripts/` 与 AstrBot 插件里的 `engine/` 副本是否一致（33 脚本 + 11 文档，含 `assets/panel.html`） | `python scripts/sync_engine.py` 同步；漏跑会发出旧核心 |
 | 11 | `release-drift` | **本机已安装副本的版本 vs 源码版本**（DSH 各 profile 的 `node_modules/lingshu-skill` + 各宿主全局技能目录里的 `lingshu/`） | 落后 → 面板「检查更新 → 修复 DSH 副本」或 `powershell -ExecutionPolicy Bypass -File scripts\update_dsh_copy.ps1`；全局技能副本落后 → `skill install lingshu --from <当前目录> --force --yes`。**改完记得重启宿主/把插件关一次再开一次**，改文件不会自动重载 |
 | 12 | `failures` | `failures.jsonl` 近七天被吞异常的聚合（按 `kind` 计数，restore/backup/meta/lock/write/save 等关键路径单独盯） | 用 `failures` 看归一化消息与样本；关键路径出现说明真缺陷被 fail-open 掩盖 |
-| 13 | `runtime-liveness` | 运行时活跃度：cron 状态文件里 `days` 是否落后 >2 天、`retries` 是否"今日补跑仍失败"、海马体是否 >24 小时无新增、是否新增 `lingshu-diag.json` | 先看 `~/.dsh/lingshu-diag.json`，再看 `~/.dsh/lingshu-cron-state.json` 的 `days`，最后重跑 `update_dsh_copy.ps1` 并**把插件关一次再开一次**（完整三步见[进展与待办](进展与待办.md)第三节第 11 条） |
+| 13 | `runtime-liveness` | 运行时活跃度：cron 状态文件里 `days` 是否落后 >2 天、`retries` 是否"今日补跑仍失败"、海马体是否 >24 小时无新增、是否新增 `lingshu-diag.json` | 先看 `~/.dsh/lingshu-diag.json`，再看 `~/.dsh/lingshu-cron-state.json` 的 `days`，最后重跑 `update_dsh_copy.ps1` 并**把插件关一次再开一次**（完整三步见[审核改进待办](审核改进待办.md)第三节第 11 条） |
 
 > 第 11 项是 v3.47 新增的：它要防的就是「代码里已经修好、机器上跑的还是旧版」——v3.45 的护栏写好了，运行时却还是 v3.44，一路没人发现，因为旧版 doctor 只查包内自洽。
 > 第 12、13 项是 v3.56 新增的，防的正是 v3.53 那类事故：「自动通道全停 6 小时、doctor 全绿」。两项都只读证据，缺证据一律 PASS（没装 cron 插件不会因此告警）。

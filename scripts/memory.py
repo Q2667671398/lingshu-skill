@@ -1521,7 +1521,7 @@ def remember(text: str, kind: str = "fact", importance: float | None = None,
             rec["review_by"] = int(_num(review_at, 0))
         elif ttl_days is not None and _num(ttl_days, 0) > 0:
             rec["review_by"] = rec.get("expires_at")
-        # —— v3.58 三层元数据（借自 AOCI-CODE 的 Entry 规范，见 docs/进展与待办.md P4）——
+        # —— v3.58 三层元数据（借自 AOCI-CODE 的 Entry 规范，来历见 CHANGELOG v3.58）——
         # ① FRAS 四段：给"项目类知识"补上"改它之前还得知道什么"这层。
         #    灵枢原来只有 text/gist/tags，记得事情但不记得坑；S（不明显约束）信息密度
         #    最高，注入时优先展示。缺省不带 → 旧调用与旧数据行为完全不变。
@@ -2740,8 +2740,12 @@ def purge(memory_id: str, confirm_token: str) -> dict:
                         f"归档记忆需冷静满 {_PURGE_COOLDOWN_DAYS} 天后才能物理删除"
                         f"（当前归档于 {fmt_date(archived_at)}）")
                 archive = [m for m in archive if m.get("id") != memory_id]
+                # ⚠ 顺序：**先在锁内留底，再删**。旧代码是先 write_jsonl 再 _ledger_add，
+                # 而 _ledger_add 会吞掉所有异常只记 warn —— 于是"删成功 + 台账写失败"
+                # （磁盘满/权限/文件被占）时，这条归档记忆被物理销毁且哪里都没有副本，
+                # 用户无法恢复，直接违反"只移不删、删除必须先留底"。
+                _ledger_add(target, reason="purge-archive")
                 write_jsonl(HOME / "archive.jsonl", archive)
-            _ledger_add(target, reason="purge-archive")   # 先留底，再删
             _cut_assoc_links(memory_id)
             audit_log("user", "purge", memory_id, "物理删除（archive 副本）")
             return {"removed": True, "layer": "archive"}
