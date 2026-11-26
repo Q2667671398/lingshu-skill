@@ -263,6 +263,28 @@ def compile_persona() -> dict:
     return p
 
 
+PERSONA_REQUIRED = ("identity", "traits", "history")
+
+
+def _validate_persona_struct(obj, where: str = "persona.json") -> None:
+    """结构校验（schema 级 GIGO 防）：必需键与类型，坏了就抛 ValueError。
+
+    `load_persona()` 与 `persona_restore()` 共用**同一套**口径，
+    避免"读的时候严、恢复的时候松"导致写出一份读不回来的档案。
+    """
+    if not isinstance(obj, dict):
+        raise ValueError(f"{where} 结构损坏（不是 dict），请检查备份。")
+    for k in PERSONA_REQUIRED:
+        if k not in obj:
+            raise ValueError(f"{where} 缺必需字段 {k!r}，请检查备份。")
+    if not isinstance(obj["identity"], dict):
+        raise ValueError(f"{where} identity 字段不是 dict，请检查备份。")
+    if not isinstance(obj["traits"], dict):
+        raise ValueError(f"{where} traits 字段不是 dict，请检查备份。")
+    if not isinstance(obj["history"], list):
+        raise ValueError(f"{where} history 字段不是 list，请检查备份。")
+
+
 def load_persona() -> dict:
     ensure_home()
     path = HOME / "persona.json"
@@ -271,16 +293,7 @@ def load_persona() -> dict:
         if not isinstance(p, dict):
             raise ValueError("persona.json 结构损坏（不是 dict），请检查备份。")
         # 结构校验（schema 级 GIGO 防）：必需键与类型，字段全 dict/列表/字符串，绝不静默吞坏数据。
-        _REQUIRED = ("identity", "traits", "history")
-        for k in _REQUIRED:
-            if k not in p:
-                raise ValueError(f"persona.json 缺必需字段 {k!r}，请检查备份。")
-        if not isinstance(p["identity"], dict):
-            raise ValueError("persona.json identity 字段不是 dict，请检查备份。")
-        if not isinstance(p["traits"], dict):
-            raise ValueError("persona.json traits 字段不是 dict，请检查备份。")
-        if not isinstance(p["history"], list):
-            raise ValueError("persona.json history 字段不是 list，请检查备份。")
+        _validate_persona_struct(p, "persona.json")
     else:
         # 只读且档案缺失：给一份内存默认值，不影响读取已有记忆
         p = compile_persona() if not READONLY else default_persona()
@@ -993,7 +1006,14 @@ def persona_restore(name: str) -> dict:
     d = _slurp_json(path)
     if not isinstance(d, dict):
         raise ValueError(f"快照文件损坏，读不出来：{name}")
-    persona = d.get("persona") or {}
+    # ⚠ fail-closed：快照里的 persona 必须先过与 load_persona 同一套结构校验。
+    # 旧代码是 `d.get("persona") or {}`，缺键/空/截断都会得到一个空 dict，
+    # 随后 save_persona() 整档覆盖 → 写出缺 identity/traits 的档案 →
+    # 之后每次 load_persona() 都抛 ValueError，人格子系统整体不可用。
+    persona = d.get("persona")
+    if persona is None:
+        raise ValueError(f"快照 {name} 里没有 persona 数据，已拒绝恢复（当前人格未改动）")
+    _validate_persona_struct(persona, f"快照 {name} 的 persona")
     # 恢复前先给"当前状态"留一张自动快照（可随时反悔），并记一条历史，保证恢复动作可溯源
     try:
         persona_snapshot("restore前自动备份")

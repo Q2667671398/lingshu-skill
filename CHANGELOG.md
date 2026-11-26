@@ -1,5 +1,37 @@
 # 更新日志
 
+## v5.23（2026-11-26）
+
+> 主题：修掉 `persona_restore` 的**人格被写空**风险 + 订正两条审计误报。
+
+### 修：`persona_restore` 不校验快照结构就整档覆盖
+
+`load_persona()` 要求 `identity` / `traits` / `history` 三键且类型正确，
+但 `persona_restore()` 原来只做 `persona = d.get("persona") or {}`，随后**整档覆盖**。
+
+后果：快照的 `persona` 键缺失 / 为空 / 被截断（手工编辑、旧格式、写盘中断都可能）时，
+写出的 `persona.json` 缺 `identity` / `traits` → 之后**每次** `load_persona()` 都抛
+`ValueError` → **人格子系统整体不可用**，只能靠备份手工救回。
+
+修法：抽出 `_validate_persona_struct()`，让 `load_persona()` 与 `persona_restore()`
+共用**同一套**口径（避免"读的时候严、恢复的时候松"），恢复前 fail-closed；
+缺 `persona` 键直接拒绝并明确告知"当前人格未改动"。正常快照行为不变。
+
+### 订正：两条审计结论是误报（诚实记录）
+
+复核源码后确认：
+
+| 原结论 | 实际 |
+|---|---|
+| `safety_net.verify` 的 `allow_shrink` 与行数比对**从未实现** | **已实现**（L177/181/315/344）—— 误报 |
+| `safety_net.guarded_write` 回滚后把 `ok` 置 True | 回滚时返回 `ok=False` 且不抛异常 —— 误报 |
+
+另外核对了"裸 `except:`"：全库 **0 处**（188 处 `except ...: pass` 多为
+`except OSError: pass` 的可选操作，属正常工程取舍，不算缺陷）。
+
+验证：`tests/test_p35_persona_restore.py` **5/5**（缺键 / 缺字段 / 类型错 / 好快照仍可恢复 / 共用校验）；
+全套 **95/95**。
+
 ## v5.22（2026-11-26）
 
 > 主题：**修掉三处"静默毁数据 / 开权限口子"的高危 + 文档收口（三份合成一份）**。
