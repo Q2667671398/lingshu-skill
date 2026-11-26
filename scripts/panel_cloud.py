@@ -31,6 +31,7 @@ import urllib.request
 from pathlib import Path
 
 import brain
+import panels
 
 
 def _resolve_token(value: str) -> str:

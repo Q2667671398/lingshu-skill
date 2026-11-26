@@ -1,5 +1,71 @@
 # 更新日志
 
+## v5.19（2026-11-26）
+
+> 主题：**全量代码安全审计**——56 个文件 / 35855 行，产出 101 条发现
+> （13 high / 51 medium / 37 low），本轮先修最严重的，并顺手清掉最后 2 个 doctor WARN。
+
+### 审计怎么做的
+
+用 19 个并行审计员按「一个文件一个审计员、小文件两三并一」分工，每个都要求
+**必须给出具体行号 + 原文代码为证**、不报风格问题、不猜测。覆盖五个视角：
+安全（路径穿越/命令注入/代码注入/token 泄露/权限绕过/解包安全/ReDoS）、
+数据丢失（整文件覆写、跨层污染、并发覆盖、半新半旧、删除而非移动）、
+正确性（字段名不一致、边界、版本号、时间单位、off-by-one）、
+静默失败（裸 except 吞重要错误、fail-open 让故障永不暴露）、
+资源（无界增长、热路径 spawn、锁持有过久）。
+
+### 修掉的真问题（每条都先实证再动手）
+
+| # | 位置 | 问题 | 后果 |
+|---|---|---|---|
+| 1 | `core.py` 孤儿锁 | 判孤儿只看 pid；面板是多线程 HTTPServer，A 线程持锁超 1s 后 B 线程读到"owner pid == 自己进程"就判为遗留孤儿，**删掉 A 的活锁** | 两线程同时读-改-写 → **静默丢记忆**（这条是我 v5.16 自己引入的回归） |
+| 2 | `panel_cloud.py` | 模块顶层缺 `import panels`，`_safe_name` 等直接 NameError | 云端下载 / 拓展下载 / 拓展发布 **100% 失败**，且抛的是 NameError 不易诊断 |
+| 3 | `mem_lesson.py` | 只读闸读的是 `from core import *` 的**import 时副本**，未登记同步表 | `--ro lessons add` 退出码 0 并**真的写库**（主链路 remember 却被正确拒绝） |
+| 4 | `cli.py` `lesson` | 该命令三处写盘却没有 CLI 级只读闸 | `--ro lesson` 成功写库（与 `--ro remember` 被拒形成矛盾） |
+| 5 | `memory.py` `set_frozen` | `load_all → 改 → save_all` 全程无锁 | 整库覆写吞掉并发写入的新记忆 |
+| 6 | `core.py` `_patch_memory_fields` | 无锁读-改-写，用**锁外旧快照**整文件回写 | 并发删除后把记录**复活**（实证：`trash_restore` 偶发报"已经在库里"） |
+| 7 | `cli.py` prior/extract/speak-up | 直接 `unlink` 调用方传入的**任意路径**（prior 还在 `finally` 里，读失败也删） | 宿主传真实文件进来就跑完即消失，绕过"只移不删"且无垃圾桶兜底 |
+| 8 | `memory.py` 冲突检测 | 把**做梦聚合条目**当矛盾记忆 | 稳定产出一条假 WARN（顺带修：`state.*` 运行时状态不再算"AI 改人格"） |
+
+### 最后一处是我自己上一轮修出来的（诚实记录）
+
+为了修 #3，我把 `mem_*` 子模块登记进了 `_SYNC_TARGETS`；但 `_sync_state` 是拿 core 的
+**全量 globals** 做 `m.__dict__.update()`，core 里恰好有同名私有名字 `_mem`（一个模块），
+于是 `mem_dialogue._mem()` 被顶成模块 → 对话摄取每条都写失败
+（日志实测 `'module' object is not callable`，表现为 `imported:0 / chars:0`）。
+
+修法：`_sync_state` 分流——
+- `_SYNC_TARGETS`（brain/core/memory/emotion/persona/dream/cli）：整份同步（它们本来共享命名空间，刻意的过渡桥）
+- `_SYNC_STATE_ONLY`（mem_* 拆分模块）：**只同步全大写常量 + READONLY 三兄弟**，
+  绝不碰它们的私有 helper 与函数
+
+一条明确规则比"猜哪些名字重要"可靠：**全大写 = 常量/路径，小写 = 函数或私有变量**。
+
+### 顺手清零最后 2 个 doctor WARN
+
+- **`app-pin`**：profile 的 `lingshu-skill` 声明从 `github:...#dbfb0a3`（v3.44 的提交）
+  改成 `^5.18`，跑 `pnpm install --no-frozen-lockfile` → 实际 `3.44.0 → 5.18.0`。
+  改前已备份 `package.json` / `pnpm-lock.yaml` 到 `~/.dsh/profile-bak-<时间戳>/`。
+  这个 WARN 的实际危害：APP 商店显示旧版，用户点「重装/更新」会被**降级回 v3.44**。
+- **`runtime-liveness`**：`backup` 在 v4.2 已改成**小时驱动**，但自检仍拿 `days` 标记判落后
+  （那是改造前的旧残留，停在 11-23），于是每天报一次假警。改为跳过小时驱动任务。
+
+现在 `doctor`：**15 PASS / 0 WARN / 0 FAIL**。
+
+### 还没修的（诚实交代）
+
+101 条里本轮只修了 8 处 high。剩下的 **51 medium + 37 low** 已记录在
+`docs/进展与待办.md` #112，其中值得优先看的有：
+`panel_cloud.py` 远端 index.json 解析失败会重建空清单**覆盖整个商店目录**、
+拓展 zip 下载**不校验 sha256**（面板包却校验）、`purge` 归档分支**先删后写台账**、
+`persona_restore` 不校验结构**可能把人格写空**、备份脱敏只清 `panel.cloud` 里的 token
+（**顶层 `gitee_token` 会明文进备份包**）、`panels.delete` 用 `rmtree` 违反只移不删、
+`safety_net.verify` 的 `allow_shrink` 与行数比对**从未实现**。
+
+验证：`tests/test_p31_audit_fixes.py` 7/7（锁互斥/死锁接管/panel_cloud 可导入/
+只读闸/整库覆写持锁/用户文件不删/聚合不误判冲突）；全套 **87/87**。
+
 ## v5.18（2026-11-25）
 
 > 主题：**情绪惯性**——让它不再"一句话就换心情"。

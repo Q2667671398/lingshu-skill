@@ -1,13 +1,13 @@
 {
-  "version": "5.18",
+  "version": "5.19",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "7c74f3248a71ed34ef5f5ba3bf1013b2ae6df8a9e6947593d76d4461aae63d61",
-      "size": 341943
+      "sha256": "b48d230bb27180c487a5a983a3a386fcf7e85652c5954b2d0317f90e6e32ff4e",
+      "size": 347015
     },
     "README.md": {
-      "sha256": "1b09d7d41223ca22552aace5db6af2429d6d49dd71ee13e7b27fd45159128b4c",
-      "size": 109216
+      "sha256": "13f2f5053f281798f22d8f1f0bccdaafc7651d1b5f1afef35dd4d7d6059d2f06",
+      "size": 110262
     },
     "SKILL-lite.md": {
       "sha256": "423f97d64042233a5a1678384fba307a91a62ab0ed2e8d01f89e44a926d6e83d",
@@ -18,7 +18,7 @@
       "size": 1912
     },
     "SKILL.md": {
-      "sha256": "bdb1980db343cc333ad8535b985d29bb077a3d16a2edcf9d566259e6ec298dcf",
+      "sha256": "2a6e3c188770acee739ed304f0461576dc111d10adc53f864f462daaf67db47e",
       "size": 38633
     },
     "assets/lingshu-icon-preview.png": {
@@ -50,8 +50,8 @@
       "size": 2205
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "ce040783d9d7f351f98b90dd6d69fd4bc1bc9f111a59f2a022c8955ea2b08329",
-      "size": 60671
+      "sha256": "6bcead886479f64e15f6d13ebc2621a5daae97db7d5febe98e66a2b2679c543c",
+      "size": 60697
     },
     "cordis-plugin/lingshu-guard/plugin.js": {
       "sha256": "8c5432332cbb79aafe37f099b1e87f49dcabc7f925486adf112bd8f83629ac5b",
@@ -130,15 +130,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "ee88e29ec8ce4008316dca94bc2e8dcd4a8f4f47a553879c932177bb5bd77960",
-      "size": 159860
+      "sha256": "7cbe19de34d7cacf1e9f5d3a0b4d5008223cb5ece70fa3a5cee4526292bad912",
+      "size": 162593
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "0601df803212862e5f2da2a9e3d36979ca436ae4674e841a217bf08804b318e4",
+      "sha256": "555f0708ef59bd5ce6e9fe40fe73dc7e0ad25063c2f6ee52bc10e42626d5e981",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -154,8 +154,8 @@
       "size": 8455
     },
     "scripts/brain.py": {
-      "sha256": "659be7e951fa6d1505ea5a7c1a7aff7fb3cb182633573a68ae135ccaa4b7f05f",
-      "size": 1649
+      "sha256": "671ba08c6af91841eddab4bd2eedb79d3924b6a66fa6a87c8cb5acedb000ba1d",
+      "size": 2516
     },
     "scripts/check_pressure_sync.py": {
       "sha256": "46d53934f17c7b740d0ec9fdbef9d2653850f6e01e883eedd70ff9a1527e869a",
@@ -174,16 +174,16 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "5414a2d20bf8d13c33fc4f8686f7d4e9827f66bb3757d7e006ca1bbbc3d25478",
-      "size": 301461
+      "sha256": "d3a8e1eb85fd3aa4d0dc466efba41610a317e57b15a8cd278757661c5a3dd0c4",
+      "size": 304502
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
       "size": 9928
     },
     "scripts/core.py": {
-      "sha256": "8426e367c18454a88c6476c1cd3fa1bb82953dcdcee98c9bfd31871f507a490f",
-      "size": 103518
+      "sha256": "65ad61f3a6899960f15e15b5a8e59f7a5960b1f17bba9069bf6a583327e437b3",
+      "size": 107610
     },
     "scripts/desktop_shortcut.py": {
       "sha256": "77ea248bfaaf28e1e4299979d0c0d8c80a055642dde9a40f5e297b2008474091",
@@ -262,8 +262,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "16427360e2b9be69714a2812643668723bb0928088087086b91f7eb2a30758cd",
-      "size": 262371
+      "sha256": "230e34bb722b23c051ab8e785838aa0f9cfeb285609a0b6670363a42cbe75aec",
+      "size": 263584
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",
@@ -274,8 +274,8 @@
       "size": 4631
     },
     "scripts/panel_cloud.py": {
-      "sha256": "fff72888123d45bbf05ab329a06b2126f1c0b972c76283ecff32454bc4155c58",
-      "size": 27516
+      "sha256": "2059ee87ea08acdf84698ce40ebb4eaa4a8497ddc67f2fe01ef112bb0eb6b24f",
+      "size": 27530
     },
     "scripts/panel_data.py": {
       "sha256": "5788aaee9b4e56e73587c4d0474687cecaa40dd7e507f02c27dd07aa208ba237",

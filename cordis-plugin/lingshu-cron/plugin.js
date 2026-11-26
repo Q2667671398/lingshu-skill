@@ -742,7 +742,7 @@ export function apply(ctx, config) {
           writeFileSync(tmp, text, 'utf8')
           const pythonExe = findPythonExe(cfg.python)
           const out = await runBrain(pythonExe, cfg.python, brainPy,
-            ['extract', '--file', tmp, '--min-chars', String(cfg.extractMinChars)],
+            ['extract', '--file', tmp, '--cleanup', '--min-chars', String(cfg.extractMinChars)],
             cfg.timeoutMs)
           // 只有退出码 0/10（写入成功/惊异未过门）才算跑成；失败保留缓冲，
           // 下个 extractTurns 周期重试——原逻辑把错误退出也当成功清缓冲，会丢对话。
@@ -782,7 +782,7 @@ export function apply(ctx, config) {
         try {
           writeFileSync(tmp, stmt, 'utf8')
           const out = await runBrain(pythonExe, cfg.python, brainPy,
-            ['speak-up', '--statement-file', tmp, '--json'], cfg.timeoutMs)
+            ['speak-up', '--statement-file', tmp, '--cleanup', '--json'], cfg.timeoutMs)
           if (!out) return
           let r = null
           try { r = JSON.parse(String(out).trim().split('\n').pop()) } catch { return }

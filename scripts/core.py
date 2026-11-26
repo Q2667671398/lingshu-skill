@@ -1373,6 +1373,19 @@ def _held(lock: Path) -> bool:
     return (str(lock), threading.get_ident()) in _HELD_LOCKS
 
 
+def _held_any_thread(lock: Path) -> bool:
+    """本进程里**任意线程**是否正持有这把锁。
+
+    区分"孤儿锁"与"活锁"必须用它：只比当前线程 id 的话，B 线程看不到 A 线程
+    正持有的锁，会把活锁当孤儿删掉 → 两线程同时读-改-写 → 静默丢数据。
+    """
+    key = str(lock)
+    for path, _tid in list(_HELD_LOCKS):
+        if path == key:
+            return True
+    return False
+
+
 # Windows 瞬时占用类错误：杀软/搜索索引器会在文件刚写完的瞬间短暂持有句柄，
 # 读操作被拒通常是瞬时的（短退避重试即过），不能当成"文件不存在"或直接放弃。
 # 5=拒绝访问 32=共享冲突 33=锁冲突 145=目录非空（清理/替换竞态时的表象）。
@@ -1645,21 +1658,45 @@ def _locked(path: Path, timeout: float = 10.0):
                 acquired = True
                 break
             except FileExistsError:
+                # ★ 权威守卫（必须放在最前）：本进程**任意线程**正持有这把锁 ⇒ 活锁。
+                #   面板是 ThreadingHTTPServer，多线程写同一批 jsonl；若这里放行去抢，
+                #   两个线程会同时读-改-写，后写者覆盖先写者 → 静默丢记忆。
+                #   这条与下面各子路径无关，任何未来的改动都绕不过它。
+                if _held_any_thread(lock):
+                    if time.time() > deadline:
+                        log_event("lock", f"等不到写锁：{path.name}（{timeout:.0f}s 超时，"
+                                          f"本进程另有线程持锁）", level="error", path=path.name)
+                        raise TimeoutError(f"等不到写锁：{path}")
+                    time.sleep(0.05)
+                    continue
                 # ① 孤儿锁快通道：锁里写的是**本进程 pid**，但本进程没有持有它
                 #    （_held() 已为 False 才会走到这里）→ 这是我们自己遗留的锁，立刻接管。
                 #    否则会等满 timeout 才失败，实测能把同进程的 remember 循环卡死。
                 try:
                     _owner = _lock_owner(lock)
                     _age = time.time() - lock.stat().st_mtime
-                    # 通道 A：本进程遗留的孤儿锁（含"空锁文件"——O_CREAT 与写 pid
-                    # 之间有窗口，活着的进程不会把锁空着超过宽限期）。
-                    _owner_self = (_owner == os.getpid()) or (_owner is None)
+                    # ⚠ 本进程的锁**绝不能只按 pid 判孤儿**：面板是 ThreadingHTTPServer，
+                    # 多个线程会写同一批 jsonl。A 线程持锁超过宽限期时（全量重写上万条、
+                    # _replace_retry 退避都可能 >1s），B 线程会读到 owner pid == 自己进程
+                    # 而误判"遗留孤儿锁"，把 A 的活锁删掉 → 两线程同时读-改-写 → 静默丢记忆。
+                    # 正确判据是"**本线程是否真持有**"（_held 里有 (锁路径, 线程id)）。
+                    _held_by_me = _held_any_thread(lock)
+                    _same_proc = (_owner == os.getpid())
+                    # 通道 A：空锁文件（O_CREAT 与写 pid 之间的窗口）。
+                    # 活着的进程不会把锁空着超过宽限期，所以可接管；
+                    # 但若本线程正持有（重入已在函数开头 return），这里不涉及。
+                    # 空锁文件：本进程没人持有它，且已过宽限期 → 是遗留孤儿，可接管。
+                    # 若本进程有线程正持有（刚 create、还没写 pid 的一瞬）→ 是活锁，别动。
+                    _orphan_empty = (_owner is None and not _held_by_me)
                     # 通道 B：**持锁进程已死**。与时间无关（只要过了宽限），
-                    # 否则会撞上"STALE_LOCK_SECONDS(30) > timeout(10)"的死角：
-                    # 一次崩溃留下的锁会让后续写入连续超时，永远等不到 30 秒。
-                    _owner_dead = (_owner is not None and _owner != os.getpid()
+                    # 否则会撞上"STALE_LOCK_SECONDS(30) > timeout(10)"的死角。
+                    _owner_dead = (_owner is not None and not _same_proc
                                    and not _pid_alive(_owner))
-                    if _age > ORPHAN_LOCK_GRACE and (_owner_self or _owner_dead):
+                    # 本进程 + **没有线程持有** = 真孤儿（守卫已在上面排除"有线程持有"），
+                    # 可以安全接管：否则崩溃/异常后同进程后续写入会一直超时。
+                    _owner_self_orphan = _same_proc and not _held_by_me
+                    if _age > ORPHAN_LOCK_GRACE and (
+                            _orphan_empty or _owner_dead or _owner_self_orphan):
                         try:
                             lock.unlink()
                         except OSError:
@@ -1910,14 +1947,19 @@ def _patch_memory_fields(rec: dict) -> bool:
              ARCHIVE_LAYER: "archive.jsonl"}
     for layer in ("hippo", "cortex", "dust", ARCHIVE_LAYER):
         p = HOME / fname[layer]
-        rows = read_jsonl(p)
-        for r in rows:
-            if r.get("id") == rec["id"]:
-                for f in patch_fields:
-                    if f in rec:
-                        r[f] = rec[f]
-                write_jsonl(p, rows)
-                return True
+        # 必须进锁 + **锁内重读**：锁外 read_jsonl 拿到的是旧快照，
+        # 期间若有并发删除（purge/forget/drop），回写会把那条记录**复活**
+        # （实测让"删掉后恢复"的流程撞上"已经在库里"而失败）。
+        with _locked(p):
+            rows = read_jsonl(p)
+            hit = next((r for r in rows if r.get("id") == rec["id"]), None)
+            if hit is None:
+                continue
+            for f in patch_fields:
+                if f in rec:
+                    hit[f] = rec[f]
+            write_jsonl(p, rows)
+            return True
     log_event("memory", f"放弃复核确认 {rec['id']}：各层都找不到", level="warn")
     return False
 
@@ -2111,6 +2153,28 @@ def _override_home(argv: list) -> list:
 _SYNC_TARGETS: list = []
 
 
+# 只同步"状态名"的目标模块（拆分出去的 mem_* 子模块）。
+# 为什么不整份同步：`_sync_state` 的全量 globals 覆盖会顶掉模块自己的私有 helper
+# ——实测把 `mem_dialogue._mem()`（惰性取 memory 模块的函数）顶成了 core 里同名的
+# `_mem` 模块，对话摄取因此每条都写失败（'module' object is not callable）。
+_SYNC_STATE_ONLY: list = []
+
+# 状态名白名单：派生路径/常量（全大写）+ 只读三兄弟。
+# 一条明确规则比"猜哪些名字重要"可靠：全大写 = 常量/路径，小写 = 函数或私有变量。
+_STATE_EXTRA_NAMES = ("READONLY", "READONLY_FORCED", "READONLY_REASON")
+
+
+def _state_snapshot() -> dict:
+    """只挑"状态名"的快照（供 _SYNC_STATE_ONLY 用）。"""
+    snap = {}
+    for k, v in dict(globals()).items():
+        if k.startswith("__"):
+            continue
+        if k.isupper() or k in _STATE_EXTRA_NAMES:
+            snap[k] = v
+    return snap
+
+
 def _sync_state() -> None:
     """把 core 的当前全局状态同步到各子模块（brain.py 启动时登记同步目标）。
 
@@ -2118,11 +2182,15 @@ def _sync_state() -> None:
     （测试/宿主/面板迁移都会这么用）也不会把旧目录的路径同步出去。
     """
     _rebind_paths()
-    if not _SYNC_TARGETS:
-        return
     snap = {k: v for k, v in dict(globals()).items() if not k.startswith("__")}
-    for m in _SYNC_TARGETS:
-        m.__dict__.update(snap)
+    if _SYNC_TARGETS:
+        for m in _SYNC_TARGETS:
+            m.__dict__.update(snap)
+    # mem_* 拆分模块：只同步状态名，绝不碰它们的私有 helper/函数
+    if _SYNC_STATE_ONLY:
+        narrow = _state_snapshot()
+        for m in _SYNC_STATE_ONLY:
+            m.__dict__.update(narrow)
     # growth.py 不在 _SYNC_TARGETS（它在 brain 之后 import brain，会形成循环导入），
     # 但它缓存了 HOME 与一批派生路径常量；这里 import 一次并调用它的重算入口，
     # 让 --home 切换后 growth 的 knowledge/notes/skills 等路径也指向新目录

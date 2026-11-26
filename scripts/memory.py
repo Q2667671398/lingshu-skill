@@ -31,6 +31,14 @@ def detect_conflicts(limit: int = 50) -> list:
     records = load_all()
     by_entity: dict[str, list] = {}
     for m in records:
+        # 做梦聚合条目是派生视图（把一批记忆压成一段摘要），与原记忆天然"一正一反"，
+        # 那不是矛盾、是同一批数据的两种表示。它们早已被排除在注入/审核之外，
+        # 冲突检测这里也要同样跳过，否则会稳定产出一条假 WARN。
+        try:
+            if _is_dream_aggregate(m.get("text", "")):
+                continue
+        except Exception:  # noqa: BLE001
+            pass
         for ent in (m.get("entities") or []):
             by_entity.setdefault(str(ent), []).append(m)
 
@@ -167,6 +175,11 @@ def ai_persona_changes(days: int = 7) -> list:
         # 没真正改的记账行：字段带括号注记（如 "traits.幽默(漂移累积)"），
         # 或 to 是"未过门限/未变/撞在边界上"这类说明文字而非实际新值
         if "(" in field:
+            continue
+        # 运行时状态（state.mood_score / state.energy / state.closeness …）不算"改人格"：
+        # 它们是每天按记忆情感倾向自动漂移的数值，有独立的 drift/mood 观测渠道。
+        # 记进来只会让 audit 永远挂着一条假 WARN，还稀释真正的人格改动。
+        if field.startswith("state."):
             continue
         if isinstance(to, str) and ("未过门限" in to or "未变" in to or "边界" in to):
             continue
@@ -986,18 +999,22 @@ def set_frozen(memory_id: str, frozen: bool = True) -> dict:
         raise PermissionError("记忆库当前只读，无法冻结/解冻。")
     ensure_home()
     mid = str(memory_id or "").strip()
-    records = load_all()
-    found = next((m for m in records if str(m.get("id") or "") == mid), None)
-    if not found:
-        raise LookupError(f"没找到记忆 {mid}（活跃层与淡忘区都搜过了）。")
-    if bool(found.get("frozen")) == bool(frozen):
-        return {"ok": True, "id": mid, "frozen": bool(frozen), "changed": False}
-    found["frozen"] = bool(frozen)
-    if frozen:
-        found["frozen_at"] = now_ts()
-    else:
-        found.pop("frozen_at", None)
-    save_all(records)
+    # 必须持锁：load_all → 改 → save_all 是**整库覆写**，锁外做会把并发写入
+    # （另一进程/线程的 remember、面板请求、cron）新增的记录整片覆盖丢失。
+    # 与 forget / bulk_memory_action / set_memory_review 同口径。
+    with _locked(HOME / "hippocampus.jsonl"):
+        records = load_all()
+        found = next((m for m in records if str(m.get("id") or "") == mid), None)
+        if not found:
+            raise LookupError(f"没找到记忆 {mid}（活跃层与淡忘区都搜过了）。")
+        if bool(found.get("frozen")) == bool(frozen):
+            return {"ok": True, "id": mid, "frozen": bool(frozen), "changed": False}
+        found["frozen"] = bool(frozen)
+        if frozen:
+            found["frozen_at"] = now_ts()
+        else:
+            found.pop("frozen_at", None)
+        save_all(records)
     audit_log("user", "freeze" if frozen else "unfreeze", mid, "冻结，不参与召回/注入" if frozen else "解冻")
     log_event("memory", f"{'冻结' if frozen else '解冻'}了 {mid}")
     return {"ok": True, "id": mid, "frozen": bool(frozen), "changed": True}

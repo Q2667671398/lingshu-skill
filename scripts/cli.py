@@ -197,6 +197,42 @@ def _backup_drill(zip_path: Path, password: str | None) -> bool:
         return False
 
 
+def _cleanup_own_tempfile(path: str, enabled: bool) -> None:
+    """只删**我们自己创建的**临时文件；其它一律保留（规矩：只移不删）。
+
+    判据全部满足才删：
+      · enabled（调用方显式要求清理，插件会传；CLI 手工调用默认不传）
+      · 文件名带我们自己的前缀 lingshu-（prior/extract/speak-up 的临时文件都这么命名）
+      · 位于系统临时目录或调用方给的目录下
+    否则只提示"已保留"，绝不静默删除用户的文件。
+    """
+    import tempfile as _tf
+    from pathlib import Path as _Path
+    if not path:
+        return
+    try:
+        p_ = _Path(path).expanduser()
+        if not p_.is_file():
+            return
+        name = p_.name
+        if not name.startswith("lingshu-"):
+            if enabled:
+                print(f"[提示] 已保留 {p_}（不是灵枢创建的临时文件，不删除）",
+                      file=sys.stderr)
+            return
+        try:
+            in_tmp = p_.resolve().parent == _Path(_tf.gettempdir()).resolve()
+        except OSError:
+            in_tmp = False
+        if not in_tmp:
+            if enabled:
+                print(f"[提示] 已保留 {p_}（不在系统临时目录，不删除）", file=sys.stderr)
+            return
+        p_.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def cmd_backup(target: str | None = None, keep: int = 20, password: str | None = None,
                assume_yes: bool = False) -> int:
     """把整个记忆库打成 zip。保留最近 keep 份，旧的自动修剪。
@@ -1517,6 +1553,8 @@ def _main(argv=None) -> int:
     p_prior.add_argument("--json", action="store_true")
     p_prior.add_argument("--render", action="store_true",
                          help="只输出可直接注入的紧凑文本（插件用）")
+    p_prior.add_argument("--cleanup", action="store_true",
+                         help="用完删除 --task-file（仅删自家 lingshu-* 临时文件；默认不删）")
 
     p_deref = sub.add_parser("deref", help="按需解引用：取一条记忆的证据原文（#46 Memex）")
     p_deref.add_argument("memory_id", help="记忆 id（通常是合并/蒸馏产物的 id）")
@@ -1921,6 +1959,8 @@ def _main(argv=None) -> int:
     p_ext.add_argument("--tag", default="即记", help="自动封存的标签")
     p_ext.add_argument("--min-chars", type=int, default=80,
                        help="惊异门控下限：文本短于该值视为无新信息，直接跳过")
+    p_ext.add_argument("--cleanup", action="store_true",
+                       help="用完删除 --file（仅删自家 lingshu-* 临时文件；默认不删）")
 
     p_serve = sub.add_parser("serve", help="启动可视化面板")
     p_serve.add_argument("--port", type=int, default=None)
@@ -2298,7 +2338,8 @@ def _main(argv=None) -> int:
             fp = Path(args.file).expanduser()
             text = fp.read_text(encoding="utf-8", errors="replace").strip() if fp.exists() else ""
             try:
-                fp.unlink(missing_ok=True)  # 用完即删，临时文件不留痕
+                # 只删自家临时文件：调用方传进来的真实文件绝不删（规矩：只移不删）
+                _cleanup_own_tempfile(str(fp), bool(getattr(args, "cleanup", False)))
             except Exception:
                 pass
             if len(text) < args.min_chars:
@@ -2337,7 +2378,8 @@ def _main(argv=None) -> int:
                 return 1
             finally:
                 try:
-                    _P(_tf).unlink(missing_ok=True)   # 用完即删，别留临时文件
+                    # 只删自家临时文件；读取失败也**不删**调用方给的路径
+                    _cleanup_own_tempfile(_tf, bool(getattr(args, "cleanup", False)))
                 except OSError:
                     pass
         if not task:
@@ -2664,11 +2706,8 @@ def _main(argv=None) -> int:
                 print(f"[错误] 读不了 --statement-file：{exc}", file=sys.stderr)
                 return 1
             finally:
-                # 临时文件用完即删（插件创建的，不该留在磁盘上）
-                try:
-                    Path(_sf).unlink()
-                except OSError:
-                    pass
+                # 临时文件用完即删——但只删**自家**创建的（lingshu- 前缀 + 在系统临时目录）
+                _cleanup_own_tempfile(_sf, True)
         r = _su.maybe(_stmt,
                       force=bool(getattr(args, "force", False)))
         if args.json:
@@ -4109,9 +4148,17 @@ def _main(argv=None) -> int:
             if not isinstance(days, dict) or not days:
                 return ("runtime-liveness", "WARN", f"状态文件里没有 days：{state_p}")
 
+            # 按**小时**驱动的任务（如 backup）有独立的 hours 标记，不能拿 days 判落后：
+            # days 里那条是改造前的旧残留，会让自检每天报一次假警（实测 backup 停在
+            # 11-23，而 hours 标记一直是最新的）。
+            hours_markers = st.get("hours") if isinstance(st, dict) else None
+            hour_driven = set(hours_markers) if isinstance(hours_markers, dict) else set()
+
             today = _dt.date.today()
             lag: dict[str, int] = {}
             for task, last in days.items():
+                if str(task) in hour_driven:
+                    continue      # 小时驱动：交给 hours 判定，跳过 days
                 try:
                     lag[str(task)] = max(0, (today - _dt.date.fromisoformat(str(last)[:10])).days)
                 except ValueError:
@@ -4468,6 +4515,14 @@ def _main(argv=None) -> int:
 
     if args.cmd == "lesson":
         # 一条命令三写：memory(kind=mistake) + knowledge(pending, source_ids) + note
+        # 只读闸：这条路径**三处都要写盘**，必须先拦。原先只在 `remember` 那条有
+        # CLI 级 guard，`lesson` 没有 → `--ro lesson` 退出码 0 且真的写进了库
+        # （实测：--ro remember 被正确拒绝，--ro lesson 却成功）。
+        if READONLY:
+            print("[只读] 记忆库当前不可写，lesson 需要写盘"
+                  "（教训要同时写记忆/知识/笔记）。改用 --home 指向可写目录，"
+                  "或先解除写保护。", file=sys.stderr)
+            return 1
         import growth
         text = " ".join(args.text)
         try:
