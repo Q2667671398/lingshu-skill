@@ -1,13 +1,13 @@
 {
-  "version": "5.20",
+  "version": "5.21",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "87b95a22677d4f8768951e6c3dd0fe3a8f13825eda7967613126c2384cce0c3e",
-      "size": 349561
+      "sha256": "0d3f948edb8b332c3a2d1d0d9d8c793c2f225aa31aec47bb7f9214c2efa68923",
+      "size": 351327
     },
     "README.md": {
-      "sha256": "c609cac924b264aa115fff0679a0824bd4f05fc4a1259499226a230c3fd9e6ad",
-      "size": 111366
+      "sha256": "a98b373911d2cb5f70e5d72b11e8dc66985efdb90a8d42021192db30910de043",
+      "size": 112653
     },
     "SKILL-lite.md": {
       "sha256": "423f97d64042233a5a1678384fba307a91a62ab0ed2e8d01f89e44a926d6e83d",
@@ -18,8 +18,8 @@
       "size": 1912
     },
     "SKILL.md": {
-      "sha256": "4bcc6dd8d3ddf6dd1e0c671b8a0e52150f920c72553ad1b4a620ac97d8be5979",
-      "size": 38786
+      "sha256": "2abb4b991eb48f4a0c9ec5aa9f090fcc8ba140fab9d98a1cb8e0993b48122856",
+      "size": 38952
     },
     "assets/lingshu-icon-preview.png": {
       "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
@@ -130,15 +130,15 @@
       "size": 2632
     },
     "docs/进展与待办.md": {
-      "sha256": "85933300282fa5962715928554b72a126399d950752ebea8a998336377514300",
-      "size": 163882
+      "sha256": "db51494a2306966827210929969039a44cae2791349613798c86e5aa715f26ea",
+      "size": 165116
     },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "04cc2d785158cf1c275a8d1cb2e05cd0132bd8060241aa1338bcb887c3edfbda",
+      "sha256": "5ed066e72e5778dfd2c8a28cf771568b71a2e7359de3afe8362a6deb25787fa5",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -174,8 +174,8 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "a14d05bbde479db432395852b665c1d06e4c6c052c8b57423ee790dd24ab49e3",
-      "size": 305855
+      "sha256": "3d7eb01a32f2bd9bdf86c429249dc41bcfdb5d8da44964aab761027249bbd2fa",
+      "size": 308366
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
@@ -206,8 +206,8 @@
       "size": 4363
     },
     "scripts/growth.py": {
-      "sha256": "a822df847fde755c5f78fee5862f16fda999a50674d8f7aed9ee32e499813811",
-      "size": 245640
+      "sha256": "02ca8df2809bab0e197a08e8d1f469e155ae3724610121997661022d47f4ce52",
+      "size": 251559
     },
     "scripts/growth_parts.py": {
       "sha256": "d8f8d1808d4097630e7a0425d1ad9bc8f3826c11a64625304e25336f2a8aa592",

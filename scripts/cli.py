@@ -1627,6 +1627,12 @@ def _main(argv=None) -> int:
     p_tr.add_argument("--json", action="store_true")
 
     # P11 #76 桌面快捷方式「灵枢面板」
+    p_sk_evo = sub.add_parser(
+        "skill-evolve", help="技能自我进化（P2-2）：把记忆里的踩坑经验回灌到技能旁的贴士文件")
+    p_sk_evo.add_argument("--days", type=int, default=7)
+    p_sk_evo.add_argument("--dry-run", action="store_true")
+    p_sk_evo.add_argument("--json", action="store_true")
+
     p_stage = sub.add_parser("stage", help="灵枢成长阶段（P2-4）：蛋/幼体/少年/成年/传奇")
     p_stage.add_argument("--json", action="store_true")
 
@@ -2700,6 +2706,26 @@ def _main(argv=None) -> int:
         if res["moved"]:
             print("没有删除任何东西；要清空请你自己动手。")
         return 0 if res["ok"] else 1
+
+    if args.cmd == "skill-evolve":
+        import growth as _g_evo
+        r = _g_evo.skill_evolve(days=args.days, dry_run=args.dry_run)
+        if args.json:
+            print(json.dumps(r, ensure_ascii=False, indent=2))
+            return 0 if r.get("ok") else 1
+        if not r.get("ok"):
+            print(f"[错误] {r.get('error')}", file=sys.stderr)
+            return 1
+        if not r["skills"]:
+            print("没有标了 `skill:<名字>` 标签的记忆（至少 2 条才会生成贴士）。")
+            return 0
+        for s in r["skills"]:
+            note = s.get("skipped") or f"贴士 {s['tips']} 条，新写入 {s['written']} 条"
+            print(f"  {s['name']}：{s['memories']} 条相关记忆 → {note}")
+            if s.get("path"):
+                print(f"    {s['path']}")
+        print(f"合计新写入 {r['total_written']} 条" + ("（dry-run，未落盘）" if args.dry_run else ""))
+        return 0
 
     if args.cmd == "stage":
         import growth as _g
@@ -4229,6 +4255,25 @@ def _main(argv=None) -> int:
                 return ("runtime-liveness", "WARN", "；".join(parts))
             return ("runtime-liveness", "PASS", "；".join(parts))
 
+        def _doctor_skill_evolve() -> tuple:
+            """P2-2：技能贴士文件是否存在（有经验被回灌过）。只读，无贴士不算错误。"""
+            try:
+                import growth as _g_se
+                dirs = []
+                try:
+                    for d in _g_se.SKILLS_DIR.iterdir():
+                        if (d / _g_se.TIPS_FILENAME).is_file():
+                            dirs.append(d.name)
+                except OSError:
+                    return ("skill-evolve", "PASS", "技能库不可读（跳过）")
+                if dirs:
+                    return ("skill-evolve", "PASS",
+                            f"{len(dirs)} 个技能已有贴士：{('、'.join(dirs[:3]))}")
+                return ("skill-evolve", "PASS",
+                        "暂无贴士（记忆里还没有 ≥2 条同一 `skill:` 标签的经历）")
+            except Exception as exc:  # noqa: BLE001
+                return ("skill-evolve", "WARN", f"检查失败：{exc}")
+
         def _doctor_desktop_shortcut() -> tuple:
             """桌面「灵枢面板」快捷方式还在不在。
 
@@ -4488,6 +4533,12 @@ def _main(argv=None) -> int:
             checks.append(_doctor_runtime_liveness())
         except Exception as e:
             checks.append(("runtime-liveness", "WARN", f"自检失败：{e}"))
+
+        # 13b. P2-2：技能贴士（自我进化的落点）
+        try:
+            checks.append(_doctor_skill_evolve())
+        except Exception as e:
+            checks.append(("skill-evolve", "WARN", f"自检失败：{e}"))
 
         # 14. 桌面快捷方式是否还在（用户可能不小心删了）
         try:

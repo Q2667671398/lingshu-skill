@@ -3077,6 +3077,151 @@ def check_skill(name: str | None = None) -> list:
 # 用户要求"每隔 2-3 天就总结下自己的灵枢技能"：这里生成一份自省素材，
 # 由 AI 写进成长笔记，并把 last_self_review 记到 config，注入包据此提醒。
 
+# ---------------------------------------------------------------- 技能自我进化（P2-2）
+
+TIPS_FILENAME = ".lingshu-tips.md"
+SKILL_TAG_PREFIXES = ("skill:", "skill/")
+TIPS_MIN_MEMORIES = 2      # 同一技能至少几条相关记忆才成"经验"
+TIPS_MAX_CHARS = 150       # 单条贴士正文上限
+
+
+def _skill_tags_of(m: dict) -> list:
+    """一条记忆里标了哪些 skill（`skill:name` / `skill/name` 两种写法都认）。"""
+    out = []
+    for raw in (m.get("tags") or []):
+        s = str(raw).strip()
+        for pref in SKILL_TAG_PREFIXES:
+            if s.lower().startswith(pref):
+                name = s[len(pref):].strip()
+                if name:
+                    out.append(name)
+    return out
+
+
+def _skill_dir_of(name: str) -> Path | None:
+    """已安装的技能目录；不存在返回 None（绝不新建）。"""
+    try:
+        d = SKILLS_DIR / str(name)
+        if (d / "SKILL.md").is_file():
+            return d
+    except OSError:
+        pass
+    return None
+
+
+def _tip_line(m: dict) -> str:
+    """把一条相关记忆压成一句"可能踩的坑"（引用索引原文，不自己编）。"""
+    idx = str(m.get("index") or "").strip()
+    if not idx:
+        try:
+            idx = _make_gist(str(m.get("text") or ""))
+        except Exception:  # noqa: BLE001
+            idx = str(m.get("text") or "")[:40]
+    kind = str(m.get("kind") or "")
+    tag = {"mistake": "踩过的坑", "correction": "被纠正过", "emotion": "情绪高点"}.get(kind, "相关记录")
+    line = f"{tag}：{idx}"
+    return line[:TIPS_MAX_CHARS]
+
+
+def _make_gist(text: str, limit: int = 40) -> str:
+    """极简取首句（growth 侧没有 memory 的 _make_index，这里就地实现一份）。"""
+    s = " ".join(str(text or "").split())
+    for ch in "。！？!?\n;；，,":
+        i = s.find(ch)
+        if 0 < i <= limit:
+            return s[:i]
+    return s[:limit]
+
+
+def _tips_append(skill_dir: Path, lines: list, stamp: str) -> int:
+    """追加贴士，按正文 sha256 去重。返回新写入条数。"""
+    path = skill_dir / TIPS_FILENAME
+    existing = ""
+    if path.is_file():
+        try:
+            existing = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            existing = ""
+    seen = set()
+    for ln in existing.splitlines():
+        ln = ln.strip()
+        if ln.startswith("- "):
+            seen.add(hashlib.sha256(ln[2:].strip().encode("utf-8")).hexdigest()[:12])
+    fresh = []
+    for ln in lines:
+        key = hashlib.sha256(ln.strip().encode("utf-8")).hexdigest()[:12]
+        if key in seen:
+            continue
+        seen.add(key)
+        fresh.append(ln)
+    if not fresh:
+        return 0
+    try:
+        if not existing:
+            head = ("# 灵枢给这个技能的贴士（自动追加，保留历史）\n\n"
+                    "> 来源：记忆里标了 `skill:` 标签的真实经历。只引用索引原文，不臆造。\n")
+            path.write_text(head, encoding="utf-8", newline="\n")
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(f"\n## {stamp}\n")
+            for ln in fresh:
+                f.write(f"- {ln}\n")
+    except OSError:
+        return 0
+    return len(fresh)
+
+
+def skill_evolve(days: int = 7, dry_run: bool = False) -> dict:
+    """扫描最近记忆里的 `skill:` 标记，给对应技能追加贴士（P2-2）。
+
+    返回 {ok, skills: [{name, memories, tips, written, path}], total_written}。
+    任何异常都不抛出：这是锦上添花的能力，不该让 self-review 挂掉。
+    """
+    try:
+        import memory as _mem
+        rows = [m for m in _mem.load_all() if isinstance(m, dict) and m.get("id")]
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"读记忆失败：{exc}", "skills": [],
+                "total_written": 0}
+    cutoff = brain.now_ts() - max(1, int(days)) * brain.DAY
+    by_skill: dict[str, list] = {}
+    for m in rows:
+        try:
+            if int(m.get("created") or 0) < cutoff:
+                continue
+        except (TypeError, ValueError):
+            continue
+        for name in _skill_tags_of(m):
+            by_skill.setdefault(name, []).append(m)
+
+    stamp = time.strftime("%Y-%m-%d")
+    out, total = [], 0
+    for name, mems in sorted(by_skill.items()):
+        if len(mems) < TIPS_MIN_MEMORIES:
+            continue
+        d = _skill_dir_of(name)
+        if d is None:
+            out.append({"name": name, "memories": len(mems), "tips": 0,
+                        "written": 0, "path": "", "skipped": "技能目录不存在"})
+            continue
+        # 优先 mistake / correction（那才是"坑"），再补其它，最多 5 条
+        def _imp(_m: dict) -> float:
+            try:
+                return float(_m.get("importance") or 0.5)
+            except (TypeError, ValueError):
+                return 0.5
+
+        ranked = sorted(mems, key=lambda m: (0 if str(m.get("kind")) in ("mistake", "correction") else 1,
+                                             -_imp(m)))
+        lines = [_tip_line(m) for m in ranked[:5]]
+        lines = [ln for ln in lines if ln]
+        written = 0 if dry_run else _tips_append(d, lines, stamp)
+        total += written
+        out.append({"name": name, "memories": len(mems), "tips": len(lines),
+                    "written": written, "path": str(d / TIPS_FILENAME)})
+    return {"ok": True, "skills": out, "total_written": total,
+            "scanned": len(rows), "days": days, "dry_run": bool(dry_run)}
+
+
 def self_review(force: bool = False, days: int = 3) -> dict:
     cfg = brain.load_config()
     now = brain.now_ts()
@@ -3138,7 +3283,14 @@ def self_review(force: bool = False, days: int = 3) -> dict:
             saved = True
         except OSError:
             saved = False
-    return {"due": True, "last": last, "days": days, "summary": summary, "saved": saved}
+    # P2-2 技能自我进化：把这一轮的"踩坑经验"回灌到对应技能旁边。
+    # 整段兜住——回灌失败绝不能让自我总结挂掉。
+    try:
+        _evolve = skill_evolve(days=max(2, days))
+    except Exception as _exc:  # noqa: BLE001
+        _evolve = {"ok": False, "error": str(_exc), "total_written": 0}
+    return {
+        "skill_evolve": _evolve,"due": True, "last": last, "days": days, "summary": summary, "saved": saved}
 
 
 def _readonly() -> bool:
