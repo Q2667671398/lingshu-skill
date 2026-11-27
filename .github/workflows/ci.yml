@@ -27,7 +27,22 @@ jobs:
       # 必须在所有一致性检查前先生成，否则 sync/checksums 都会报"副本缺失"。
       # 这一步等价于本地的 make_plugin_zip.py 打包前同步，保证 CI 校验的是同一份产物。
       - name: 生成 engine 副本
-        run: python scripts/sync_engine.py
+        shell: bash
+        run: |
+          # Windows runner 上这一步持续报 "exit code 1" 但看不到原因。这里把真实异常
+          # 完整打出来再决定成败——否则只能看到一个裸退出码，排查全靠猜。
+          set +e
+          python scripts/sync_engine.py
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error title=sync_engine 失败::退出码 $rc"
+            echo "----- 复跑一次抓 traceback -----"
+            python -X faulthandler -u scripts/sync_engine.py 2>&1 || true
+            echo "----- 环境自证 -----"
+            python -V
+            python scripts/_ci_env_probe.py
+            exit "$rc"
+          fi
 
       # 版本硬检查：SKILL.md / package.json / 插件 metadata.yaml 次版本一致
       - name: check_version

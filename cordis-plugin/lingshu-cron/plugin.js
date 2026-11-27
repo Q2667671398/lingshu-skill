@@ -963,13 +963,22 @@ export function apply(ctx, config) {
       // 先把"真实对话字符数"算出来：既给下面的 chars 分支用，也给盈不足标定
       // 提供自变量（宿主给真值 token 时才成对记录）。
       let chars = 0
+      let lingshuChars = 0   // 灵枢注入虽不算"对话"，但真的占上下文（v3.59 只排除没加回）
       for (const m of msgs) {
-        // 估算只看"真实对话"：灵枢自己注入的消息不算（v3.59：三个子插件各有名字）
-        if (LINGSHU_SOURCES.has(m?.source?.name)) continue
+        const isLingshu = LINGSHU_SOURCES.has(m?.source?.name)
         for (const c of (Array.isArray(m?.content) ? m.content : [])) {
-          if (c?.type === 'text' && typeof c.text === 'string') chars += c.text.length
+          if (typeof c?.text !== 'string') continue
+          // text 与 tool_result 都算（v3.59 只看 text，工具结果整块漏计——那才是大头）
+          const n = c.text.length
+          if (n <= 0) continue
+          if (isLingshu) lingshuChars += n
+          else chars += n
         }
       }
+      // 灵枢注入要加回：它占上下文空间，只是不属于"对话"
+      // （v3.59 只排除没加回 = 灵枢注入整块漏计，实测水位被低估 4 倍多）
+      const dialogChars = chars          // 纯对话字符：标定样本要用它
+      chars += lingshuChars              // 含注入的总字符：水位分母要用它
       for (let i = msgs.length - 1; i >= 0; i--) {
         const u = msgs[i]?.metadata?.usage || msgs[i]?.usage || msgs[i]?.modelUsage
           || msgs[i]?.metadata?.modelUsage
@@ -979,8 +988,9 @@ export function apply(ctx, config) {
         const total = num(u.totalTokens)
         const used = total > 0 ? total : prompt
         if (used > 0) {
-          // 盈不足：拿到真值时顺手记一组 (字符数, 真实 token)，交给 _recordCalib 拟合
-          _recordCalib(chars, used)
+          // 盈不足：拿到真值时顺手记一组 (字符数, 真实 token)，交给 _recordCalib 拟合。
+          // 用 dialogChars 而不是 chars：灵枢注入的体积每次都变，掺进拟合会把斜率带偏。
+          _recordCalib(dialogChars, used)
           return { pct: Math.min(100, Math.round(used / cfg.contextLimit * 100)), source: 'usage' }
         }
       }

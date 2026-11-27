@@ -1,24 +1,24 @@
 {
-  "version": "5.25",
+  "version": "5.26",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "cba644df2d4d4026d8af82f7e2ed35ba987fd0d2c67ff3d33ba01c018572bd5e",
-      "size": 360034
+      "sha256": "20277aa70f2d4fcb0e830e1cf6718e150b890175d02b64a828a52932e508258d",
+      "size": 362367
     },
     "README.md": {
-      "sha256": "ca116dd0efe631bd9ff8f2cb097c23c224f358593bbfcb4bd7d5fc760ae6bee3",
+      "sha256": "98939081784d7af983b1c02ef8f8f81b96f84314474bb4d59fd22bb8e6096d8c",
       "size": 112859
     },
     "SKILL-lite.md": {
-      "sha256": "5dcbdc1c4a3a52dbf0f83b0f139ff98f43721de366da5c9a78e3b4790bfabc05",
+      "sha256": "9395b7f4a8dc7531e9520382c1b93f3a2bf7a424a194d4c36b60075370a6db08",
       "size": 4440
     },
     "SKILL-tiny.md": {
-      "sha256": "d7ce96d706c00d0508e9cf7a6ce7581533a5947a4bab56b19c9f73b1c7e023c3",
+      "sha256": "71f52d1abb96973cd9f00c1f7b8023055bc1e3330884ded0f5bfa117f8f16cd9",
       "size": 1913
     },
     "SKILL.md": {
-      "sha256": "bfadc0d26c184f4999b3bc9c256cf48de69f56c9d197cd7fd529d7f15bb4d530",
+      "sha256": "af2f3e0e175ad9a7d9908cf80eb9c831e3414d4f21551acb4a6d0efa8d8cccdb",
       "size": 39250
     },
     "assets/lingshu-icon-preview.png": {
@@ -50,8 +50,8 @@
       "size": 2205
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "6bcead886479f64e15f6d13ebc2621a5daae97db7d5febe98e66a2b2679c543c",
-      "size": 60697
+      "sha256": "011b5151bbb7e4efc47406405ed9dcb2e76fd5cb73ae15ca2372838aacbab5ad",
+      "size": 61394
     },
     "cordis-plugin/lingshu-guard/plugin.js": {
       "sha256": "8c5432332cbb79aafe37f099b1e87f49dcabc7f925486adf112bd8f83629ac5b",
@@ -114,7 +114,7 @@
       "size": 5588
     },
     "package.json": {
-      "sha256": "ca8fd8f3214177e2c2d194b45ae9c60d3f96bc0e80e1fa5aa28f3680ef734e8c",
+      "sha256": "d3399fc448c41652b35397c974dd03a556c77e2571c78265772eb98fdcdc9c52",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -134,16 +134,16 @@
       "size": 2516
     },
     "scripts/check_pressure_sync.py": {
-      "sha256": "46d53934f17c7b740d0ec9fdbef9d2653850f6e01e883eedd70ff9a1527e869a",
-      "size": 2055
+      "sha256": "d7ea8acfa8a2d07baca12c9a6664c76a259766d6e1cecf06963ed30241f9bb8b",
+      "size": 3402
     },
     "scripts/check_tag.py": {
       "sha256": "6f0b8209dc2deebb1f9ec90d429e1fad60c040a2ec014a6406d9d3498faafd7f",
       "size": 9011
     },
     "scripts/check_version.py": {
-      "sha256": "22a52a6f8ad8903a6ecc738a5b544ed7ed9a35109d8a7fe7d58bcdeaee1c4c24",
-      "size": 12562
+      "sha256": "6374e97feea8035c56e05027ea8fb7574b5d3e65d7b22a13bb0204a27519357b",
+      "size": 13909
     },
     "scripts/checkpoint.py": {
       "sha256": "3a9292121042692dc872a865b6ee1c1e5f14c054791887e0791f19ccdb9638fb",
@@ -214,8 +214,8 @@
       "size": 5493
     },
     "scripts/make_manifest.py": {
-      "sha256": "637b2fbfaf6e540356f87329526f83a96ca1d51f019f54aac31e9c1113ffc65b",
-      "size": 11386
+      "sha256": "0bdde400772be8bd10b80190c59c83fd5a3bc9e5a00670f19c77d40a33d8c727",
+      "size": 12733
     },
     "scripts/make_plugin_zip.py": {
       "sha256": "7cb60d93a97e1867262e5839cdf2fbd5efd07b1ec5e77886c3fd15941d89f7aa",
@@ -250,8 +250,8 @@
       "size": 977
     },
     "scripts/panel_build.py": {
-      "sha256": "6394c1d74d203093e43b2106d7acca6e0ca9db61ca1cd6cd3a1616053653414b",
-      "size": 4631
+      "sha256": "e36dbc2e2c3ea1e36da6a4aa279f666937199d685ea3af7f676b1f350f59d608",
+      "size": 5978
     },
     "scripts/panel_cloud.py": {
       "sha256": "956b1ae529b1c29fc1271b635b5a6a73be6b82c9acb94aa59fab8cfda63c9440",
@@ -294,8 +294,8 @@
       "size": 7383
     },
     "scripts/run_tests.py": {
-      "sha256": "d3b0bfa590e7f9ae2594a1d7e468445425556b80311339ccbfb89b85d986af88",
-      "size": 5406
+      "sha256": "840be3f6ead0ae30f24faef366e874686a6fdaf3982e1f9fc66b0b24b9e9e8b3",
+      "size": 6753
     },
     "scripts/safety.py": {
       "sha256": "01ff42b7dac0eeac45c4a1e8cee97a21d8f0de55067213a61efbb95073186638",
@@ -330,8 +330,8 @@
       "size": 10473
     },
     "scripts/sync_engine.py": {
-      "sha256": "a07c430992c9ed4d4801faad79a1f00d64e1f55f982dd8ac5bdf674bd4f1ff40",
-      "size": 5947
+      "sha256": "9549cd8e266da3e15008da6ed18ecfd838c1914e48267e68f95340d39dd7c95c",
+      "size": 7294
     },
     "scripts/token_calib.py": {
       "sha256": "17d3cbbe5cca2bac3ff1d183f56b48460e71cebc8b8f43a299dd1720c5f3821a",

@@ -1,5 +1,54 @@
 # 更新日志
 
+## v5.26（2026-11-27）
+
+> 主题：**修 Windows CI 的编码崩溃** + **水位估算漏算**（两处都是实测出来的真 bug）。
+
+### 修：Windows CI 长期失败——cp1252 编不了中文
+
+CI 的 `windows-latest` 一直在 `生成 engine 副本` 这一步失败，只看到一个裸
+`exit code 1`（Ubuntu 同期全绿，所以一直被当成 Windows 特有问题去猜）。
+拿到私密日志后原因很清楚：
+
+```
+File "sync_engine.py", line 90, in sync
+    print(f"[sync] engine 副本已同步：...")
+File "encodings\cp1252.py", line 19, in encode
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 14-21
+```
+
+Windows runner 的 stdout 编码是 **cp1252**，脚本一 print 中文就崩。
+与换行、文件内容、业务逻辑全无关，纯粹是"中文输出 + 非 UTF-8 控制台"。
+
+修法：新增 `_ensure_utf8_stdout()`（`reconfigure(encoding='utf-8', errors='replace')`，
+不可用时退回包一层 TextIOWrapper），接进 6 个会打印中文的入口脚本：
+`sync_engine.py` / `make_manifest.py` / `check_version.py` / `check_pressure_sync.py` /
+`panel_build.py` / `run_tests.py`。
+
+教训：**CI 只报一个退出码时，先想办法拿到日志，别靠猜**。这一条猜了两轮。
+
+### 修：水位估算漏算（14% vs 真实 62%）
+
+`lingshu-cron` 的 `estimateWater()` 只累加"真实对话"的 `type==='text'` 字符，
+把三样真实占用漏掉了，实测低估约 **4.4 倍**：
+
+| 漏算项 | 说明 |
+|---|---|
+| 灵枢自己的注入包 | 被 `LINGSHU_SOURCES` 排除后**没有加回**，可它真占上下文 |
+| 工具调用结果 | 只看 `type==='text'`，工具结果块整块不计 |
+| 标定样本被污染 | `_recordCalib` 用含注入的总字符，注入体积每次都变，拟合斜率会漂 |
+
+修法：
+- 灵枢注入单独计数后**加回总字符**（水位分母用总字符 `chars`）
+- 所有内容块（含 tool_result）都累加
+- 标定改用**纯对话字符** `dialogChars`（保持样本可比）
+- 有宿主 usage 时仍优先用真值，估算只是兜底
+
+不改配置里的 `charsPerToken`/`systemOverheadTokens`：它们是拟合兜底值，
+真正的偏差来自"漏算"，不是"系数不对"。
+
+验证：93/93 测试通过；`sync_engine.py` 在模拟 cp1252 环境下退出码 0（修复前崩溃）。
+
 ## v5.25（2026-11-27）
 
 > 主题：**三个真问题** + 中转站 compat 修复。

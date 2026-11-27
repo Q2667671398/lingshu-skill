@@ -128,6 +128,36 @@ def check() -> int:
     return 0
 
 
+def _ensure_utf8_stdout() -> None:
+    """把 stdout/stderr 切到 UTF-8，避免 Windows 控制台（cp1252/cp936）编不了中文就崩。
+
+    为什么必须有：CI 的 windows-latest stdout 是 cp1252，脚本一 print 中文就
+    UnicodeEncodeError 直接退出（实测 sync_engine.py 因此挂掉，Ubuntu 同期正常）。
+    这不是业务 bug，是"中文输出 + 非 UTF-8 控制台"的必然结果。
+
+    reconfigure 不可用（3.6 及更早 / 被替换过的流）时静默跳过，绝不因此再崩。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        fn = getattr(stream, "reconfigure", None)
+        if callable(fn):
+            try:
+                fn(encoding="utf-8", errors="replace")
+                continue
+            except (OSError, ValueError, AttributeError):
+                pass
+        # 退路：包一层 UTF-8 writer（errors=replace，坏字符变 ?，不打断程序）
+        try:
+            import io
+            buf = getattr(stream, "buffer", None)
+            if buf is not None:
+                setattr(sys, name,
+                        io.TextIOWrapper(buf, encoding="utf-8", errors="replace",
+                                         line_buffering=True))
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="灵枢：engine 副本同步与校验")
     ap.add_argument("--check", action="store_true", help="只校验一致性，不写文件")
@@ -136,4 +166,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    _ensure_utf8_stdout()
     sys.exit(main())
