@@ -1,5 +1,48 @@
 # 更新日志
 
+## v5.27（2026-11-27）
+
+> 主题：**把 UTF-8 输出防护铺全**。v5.26 只补了 6 个脚本，CI 立刻在下一个
+> `checksums --check` 上以**同一个** cp1252 错误挂掉——这次一次扫全。
+
+### 为什么还要再修一次
+
+v5.26 修好 `sync_engine.py` 后，Windows CI 越过了 `生成 engine 副本`，
+但停在了下一步 `checksums --check`：
+
+```
+File "...\scripts\astrbot_plugin_lingshu\make_checksums.py", line 78, in main
+    print(f"[checksums] OK\uff1a{len(current)} \u4e2a\u6587\u4ef6\u54c8\u5e0c\u4e00\u81f4...")
+File "...\Lib\encodings\cp1252.py", line 19, in encode
+UnicodeEncodeError: 'charmap' codec can't encode character '\uff1a' in position 14
+```
+
+同一个根因（Windows stdout 是 cp1252，编不了中文），只是换了个脚本。
+挤牙膏式修复（发现一个补一个）在这种"普遍性缺陷"上注定要来回好几轮。
+
+### 改了什么
+
+全量扫描 `scripts/**/*.py`，凡是满足三条的都补上 `_ensure_utf8_stdout()`：
+有 `if __name__ == "__main__"`、有非 ASCII 的 `print(...)`、还没加防护。
+共补 **20 个**：
+
+`_ci_env_probe.py`、`behavior_baseline.py`、`bench.py`、`check_tag.py`、
+`coverage_report.py`、`growth.py`、`make_plugin_zip.py`、`panel_server.py`、
+`release.py`、`session_import.py`、`astrbot_plugin_lingshu/make_checksums.py`
+（含它们 `engine/` 下的副本）。
+
+跳过 2 个（`make_icon.py` 主副本）：它们没有 `import sys`，加防护要先补 import；
+且只画图标、输出全是 ASCII，不在崩溃路径上。
+
+### 教训
+
+**"普遍性缺陷"要一次全扫，别按报错逐个补。** 第一次报 `sync_engine.py`、
+第二次报 `make_checksums.py`——这个模式说明问题在"所有中文 print + cp1252"，
+而不是某两个脚本。全扫一遍的成本远低于反复等 CI。
+
+验证：10 个改动脚本 `py_compile` 全过；`make_checksums.py --check` 在模拟
+cp1252 环境下退出码 0（修复前正是这里崩）；`sync --check` 53 脚本 + 11 文档一致。
+
 ## v5.26（2026-11-27）
 
 > 主题：**修 Windows CI 的编码崩溃** + **水位估算漏算**（两处都是实测出来的真 bug）。
