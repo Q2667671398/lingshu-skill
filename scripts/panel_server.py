@@ -551,6 +551,19 @@ def _migrate_home(target_raw: str) -> dict:
         raise ValueError("目标目录不能为空")
     if target == brain.HOME.resolve():
         raise ValueError("目标目录与当前数据目录相同")
+    # ★ 目标不能落在数据目录**内部**（审计 panel_server.py:559）：
+    #   `copytree(HOME, target)` 时目标若在 HOME 底下，copytree 边复制边把刚创建的
+    #   目标目录自己也扫进去 → 递归膨胀，或中途 OSError 留下一份半截副本，
+    #   而且此时指针文件还没写，用户会得到一个"看起来迁好了、其实不完整"的目录。
+    #   CLI 的 `home move` 有这道检查（relative_to 直接拒），这里漏了。
+    try:
+        target.relative_to(brain.HOME.resolve())
+    except ValueError:
+        pass  # 不在内部，正常
+    else:
+        raise ValueError(
+            "目标目录在数据目录内部——复制时会把目标自己也扫进去（递归膨胀）。"
+            f"请选数据目录之外的路径（当前数据目录：{brain.HOME}）")
     if target.exists() and any(target.iterdir()):
         raise ValueError("目标目录已存在且非空——请选一个空目录（或先手动清理）")
     # 计划写指针的位置必须可写：指针文件永远在默认位置 ~/.brain-memory/ 下
@@ -909,7 +922,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/graph":
             limit = _int_param(url, "limit", 300, 10, 800)
-            self._json(brain.assoc_graph(limit))
+            # v3.48 联想图密度闸门：把"元数据标签不算关联""单节点边数上限"
+            # "孤立记忆是否入图"三个开关暴露出来，面板可调、也可用它自查边爆炸。
+            qs = parse_qs(url.query)
+            def _flag(name: str, default: bool) -> bool:
+                v = (qs.get(name) or [""])[0].strip().lower()
+                if not v:
+                    return default
+                return v not in ("0", "false", "no", "off")
+            def _num(name: str, default):
+                v = (qs.get(name) or [""])[0].strip()
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return default
+            self._json(brain.assoc_graph(
+                limit,
+                generic_ratio=_num("generic_ratio", None),
+                max_degree=_num("max_degree", None),
+                hide_isolated=_flag("hide_isolated", True),
+            ))
             return
         if path == "/api/diagnostics":
             # 自诊断：死链 / 冲突未裁决 / 数据膨胀 / 淡忘可逆状态 / 来源归属完整率
@@ -2578,6 +2610,28 @@ def ollama_status() -> dict:
     return st
 
 
+def _ollama_write_embed_cfg() -> None:
+    """在 `config.json` 写锁内把 Ollama 的 embed 配置写进去。
+
+    审计 panel_server.py:2599：Ollama 的 enable / setup / install / auto_probe
+    原来都是 `brain.load_config()` → 改 `embed` → `brain.atomic_json(config.json)`
+    **整份回写**，绕开了 `config_set` / `_set_cfg_path` 用的
+    `_locked(HOME / "config.json")`。与设置页保存或 CLI `config set` 并发时，
+    后写者会把对方刚设的 token / 阈值 / 档位静默覆盖掉——用户改完设置发现又变回去，
+    却找不到原因。
+
+    统一走这里：读-改-写在同一个锁内完成，和 `_set_cfg_path` 同一互斥口径。
+    `_locked` 可重入，所以外层若已持锁也不会死锁。
+    """
+    with brain._locked(brain.HOME / "config.json"):
+        cfg = brain.load_config()
+        embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
+        embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
+        embed["model"] = _OLLAMA_MODEL
+        cfg["embed"] = embed
+        brain.atomic_json(brain.HOME / "config.json", cfg)
+
+
 def _api_ollama_enable(self, path, data):
     """自动探测接管：Ollama 已在跑但没接入灵枢时，一键写好 embed 配置。
     模型没拉则先拉（同步，拉模型耗时可观但属于用户显式点按钮）。"""
@@ -2591,12 +2645,7 @@ def _api_ollama_enable(self, path, data):
             if not _ollama_pull_model():
                 self._json({"ok": False, "error": f"模型 {_OLLAMA_MODEL} 拉取失败"}, 502)
                 return
-        cfg = brain.load_config()
-        embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
-        embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
-        embed["model"] = _OLLAMA_MODEL
-        cfg["embed"] = embed
-        brain.atomic_json(brain.HOME / "config.json", cfg)
+        _ollama_write_embed_cfg()
         self._json({"ok": True, "stage": "done"})
     except Exception as exc:
         self._log_write_failure("ollama enable", exc, 500)
@@ -2652,12 +2701,7 @@ def _ollama_setup_async() -> None:
                 _ollama_state_write("error", detail=f"模型 {_OLLAMA_MODEL} 拉取失败（网络或磁盘问题）")
                 return
         # ④ 写 embed 配置启用向量（与 enable/install 同款读-改-写）
-        cfg = brain.load_config()
-        embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
-        embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
-        embed["model"] = _OLLAMA_MODEL
-        cfg["embed"] = embed
-        brain.atomic_json(brain.HOME / "config.json", cfg)
+        _ollama_write_embed_cfg()
         _ollama_state_write("done", percent=100, detail="语义召回已就绪（真模型向量）")
     except Exception as exc:
         _ollama_state_write("error", detail=f"一键流程失败：{exc}")
@@ -2742,24 +2786,14 @@ def _ollama_auto_probe() -> None:
         # 服务在跑但灵枢还没接入 → 接管写配置
         if not _ollama_embed_configured():
             if _OLLAMA_MODEL in _ollama_model_names():
-                cfg = brain.load_config()
-                embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
-                embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
-                embed["model"] = _OLLAMA_MODEL
-                cfg["embed"] = embed
-                brain.atomic_json(brain.HOME / "config.json", cfg)
+                _ollama_write_embed_cfg()
                 return
             # 模型没拉：整个生命周期只自动 pull 一次（避免反复打扰/重复下载）
             if _AUTO_PROBE_STATE["pulled"]:
                 return
             _AUTO_PROBE_STATE["pulled"] = True
             if _ollama_pull_model():
-                cfg = brain.load_config()
-                embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
-                embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
-                embed["model"] = _OLLAMA_MODEL
-                cfg["embed"] = embed
-                brain.atomic_json(brain.HOME / "config.json", cfg)
+                _ollama_write_embed_cfg()
     except Exception:
         pass  # 探测接管是锦上添花：任何失败都静默，降级兜底照常
     finally:
@@ -2832,12 +2866,7 @@ def _ollama_install_async() -> None:
             _ollama_state_write("error", detail=f"模型 {_OLLAMA_MODEL} 拉取失败（网络或磁盘问题）")
             return
         # 写 embed 配置：config_set 是扁平键，embed 是嵌套对象，读-改-写整段 config.json
-        cfg = brain.load_config()
-        embed = cfg.get("embed") if isinstance(cfg.get("embed"), dict) else {}
-        embed["url"] = f"http://localhost:{_OLLAMA_PORT}/api/embeddings"
-        embed["model"] = _OLLAMA_MODEL
-        cfg["embed"] = embed
-        brain.atomic_json(brain.HOME / "config.json", cfg)
+        _ollama_write_embed_cfg()
         _ollama_state_write("done", percent=100, detail="语义召回已就绪")
     except Exception as exc:
         _ollama_state_write("error", detail=f"安装失败：{exc}")

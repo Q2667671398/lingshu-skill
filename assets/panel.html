@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
     <meta name="lingshu-panel" content="1" />
@@ -785,6 +785,10 @@
               <option value="300" selected>300 节点</option>
               <option value="600">600 节点</option>
             </select>
+            <label class="sub" style="display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none"
+                   title="只画有真实联想关系的记忆。孤立记忆不贡献结构，还会用斥力把可见部分挤成一坨——这是「点开就是个球」的主因之一。取消勾选可看全部">
+              <input type="checkbox" id="graph-hide-isolated" checked>只看有联想的
+            </label>
             <button class="ghost" id="btn-graph-reset">重置视角</button>
             <button class="ghost" id="btn-graph-refresh">刷新</button>
             <button class="ghost" id="btn-graph-auto">自动联想</button>
@@ -1754,9 +1758,12 @@ function renderDailyCards(){
 }
 
 // ---------------- 记忆联想 · 3D 空间（零依赖力导向） ----------------
+// hideIsolated：默认只看"真有联想关系"的记忆。孤立记忆不是被丢了，是被收起——
+//   它们在图里既不贡献结构、又用斥力把可见部分挤成一坨（毛球的主要成因之一）。
 const GRAPH = { data: null, pos: [], yaw: 0.6, pitch: -0.35, dist: 360,
                 focus: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}, targetDist: 360,
-                selected: null, hover: null, loaded: false, nbrs: null, anim: null, pathEdges: null };
+                selected: null, hover: null, loaded: false, nbrs: null, anim: null,
+                pathEdges: null, hideIsolated: true, stats: null, deg: null };
 const LAYER_COLOR = { cortex: "#d9a441", hippo: "#5fa8a0", dust: "#5d646e", archive: "#8f92b8" };
 // 颜色 = 重要程度（与图例一致）：红=很重要 / 金=较重要 / 青=一般 / 灰=不重要；人格星核专属暖金
 // 主题跟随：取 --node-* RGB 三元组（浅色主题在 enhance.css 里覆盖为深色版本）
@@ -1812,6 +1819,9 @@ function startPhysics(){
     if (!nodes || !pos || !vel || !GRAPH.loaded){ GRAPH.phys = null; return; }
     const n = Math.min(nodes.length, 260);
     const kk = 24, rep = 5200;
+    // 初始半径随节点数放大：节点多时还按 24 的"理想边长"铺，力不够撑开，
+    // 一堆节点只能互相重叠着挤在中心——那是"一个球"的另一半原因。
+    const ideal = kk * Math.max(1, Math.sqrt(nodes.length / 12));
     // 防重叠：硬斥力只对"贴在一起"的节点生效，避免大图里互相穿透成一坨；>250 个节点跳过保性能
     const overlap = nodes.length <= 250;
     let energy = 0;
@@ -1834,7 +1844,13 @@ function startPhysics(){
       (GRAPH.springs[i] || []).forEach(([j, w]) => {
         const dx = pos[j].x - pos[i].x, dy = pos[j].y - pos[i].y, dz = pos[j].z - pos[i].z;
         const d = Math.sqrt(dx*dx + dy*dy + dz*dz) + 1e-6;
-        const f = (d - kk) * 0.03 * (0.5 + w * 0.5);
+        // 弹簧力按两端度数归一（除以 sqrt(deg)）：枢纽节点连了十几条边时，
+        // 每条边都按原样拉会让整个子图被拽进一点、坍缩成球。
+        // 归一后"每个连接的权重"相近，结构才铺得开——这是力导向做密度补偿的常规做法。
+        const di = Math.max(1, (GRAPH.deg && GRAPH.deg[i]) || 1);
+        const dj = Math.max(1, (GRAPH.deg && GRAPH.deg[j]) || 1);
+        const norm = 1 / Math.sqrt(di * dj);
+        const f = (d - ideal) * 0.03 * (0.5 + w * 0.5) * norm;
         fx += dx / d * f; fy += dy / d * f; fz += dz / d * f;
       });
       vel[i].x = (vel[i].x + fx * 0.06) * 0.86;
@@ -1861,7 +1877,7 @@ function startPhysics(){
     for (let i = n; i < nodes.length; i++){
       const p = pos[i];
       const d = Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z) + 1e-6;
-      const f = (d - kk) / d * -0.006;   // 远的往回收、近的往外推，缓慢归位到 kk 半径
+      const f = (d - ideal) / d * -0.006;   // 远的往回收、近的往外推，缓慢归位到 ideal 半径
       vel[i].x = (vel[i].x + p.x * f) * 0.9;
       vel[i].y = (vel[i].y + p.y * f) * 0.9;
       vel[i].z = (vel[i].z + p.z * f) * 0.9;
@@ -1919,7 +1935,9 @@ async function loadGraph(limit){
   GRAPH.focus = {x: 0, y: 0, z: 0}; GRAPH.target = {x: 0, y: 0, z: 0};
   GRAPH.targetDist = 360;
   try {
-    GRAPH.data = await api("/api/graph?limit=" + (limit || 300));
+    GRAPH.data = await api("/api/graph?limit=" + (limit || 300)
+      + (GRAPH.hideIsolated ? "&hide_isolated=1" : "&hide_isolated=0"));
+    GRAPH.stats = GRAPH.data.stats || null;
     // 节点从中心附近"绽放"散开（借鉴 Obsidian graph view 的加载动效）
     GRAPH.vel = GRAPH.data.nodes.map(() => ({ x: 0, y: 0, z: 0 }));
     GRAPH.pos = GRAPH.data.nodes.map(n => {
@@ -1938,6 +1956,14 @@ async function loadGraph(limit){
     nodes.forEach((_, i) => GRAPH.nbrs.set(i, new Set()));
     edges.forEach(e => { const a = idx.get(e.src), b = idx.get(e.dst);
       if (a != null && b != null){ GRAPH.nbrs.get(a).add(b); GRAPH.nbrs.get(b).add(a); } });
+    // 真实关联度数（不含人格星核）：孤立节点判定、LOD 都用它
+    GRAPH.deg = nodes.map(() => 0);
+    edges.forEach(e => {
+      if (e.src === "__persona__" || e.dst === "__persona__") return;
+      const a = idx.get(e.src), b = idx.get(e.dst);
+      if (a != null) GRAPH.deg[a]++;
+      if (b != null) GRAPH.deg[b]++;
+    });
     GRAPH.loaded = true;
     startPhysics();   // 持续物理模拟：节点像活物一样漂浮舒展
     renderGraph();
@@ -1950,7 +1976,16 @@ async function loadGraph(limit){
     } else {
       if (loadTip) loadTip.classList.add("hidden");
       const nAuto = edges.filter(e => e.auto).length;
-      $("graph-hint").textContent = `${nodes.length} 条记忆 · ${edges.length} 条关联（${nAuto} 条自动联想）· 点节点：以它为中心 + 激活相邻记忆`;
+      const s = GRAPH.stats || {};
+      // 把"为什么边这么少"讲明白：拦下了哪几个泛标签、收起了多少孤立记忆。
+      // 不解释的话，用户会以为记忆丢了——这是比"球"更难查的误解。
+      const gb = (s.generic_buckets || []).slice(0, 3)
+        .map(b => `${b.name}(${b.count})`).join("、");
+      const bits = [`${nodes.length} 条记忆`, `${edges.length} 条关联`];
+      if (s.auto_candidates != null) bits.push(`候选 ${s.auto_candidates} → 保留 ${s.auto_kept}`);
+      if (gb) bits.push(`泛标签已忽略：${gb}${s.generic_bucket_count > 3 ? " 等" + s.generic_bucket_count + "个" : ""}`);
+      if (s.isolated_hidden) bits.push(`收起 ${s.isolated_hidden} 条无联想的记忆（可勾选显示）`);
+      $("graph-hint").textContent = bits.join(" · ") + " · 点节点：以它为中心 + 激活相邻记忆";
       $("graph-stat").textContent = `${nodes.length} 节点 · ${edges.length} 关联边 · 手动 ${edges.length - nAuto} / 自动 ${nAuto}`;
     }
   } catch (e) {
@@ -3843,6 +3878,12 @@ if (btnGa) btnGa.addEventListener("click", async () => {
   } catch (e) { console.error("自动联想:", e); toast(e.message, true); }
 });
 $("graph-limit").addEventListener("change", () => loadGraph(Number($("graph-limit").value || 300)));
+// 「只看有联想的」：切换要重新拉图——孤立记忆必须整批退出力学，只在前端隐藏没用，
+// 它们看不见的斥力照样会把可见部分挤成一坨。
+$("graph-hide-isolated") && $("graph-hide-isolated").addEventListener("change", e => {
+  GRAPH.hideIsolated = !!e.target.checked;
+  loadGraph(Number($("graph-limit").value || 300));
+});
 // 图内搜索：输入即定位（300ms 防抖），回车看下一个命中
 let _gsTimer = null;
 $("graph-search").addEventListener("input", e => {

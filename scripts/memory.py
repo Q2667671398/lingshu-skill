@@ -678,17 +678,38 @@ def verify_integrity() -> dict:
 
 
 def load_all() -> list:
-    """三层热层合并；缺 id 或不是 dict 的畸形记录一律跳过——
-    项目里没有任何调用方想处理畸形记录，在这里统一过滤最省事。"""
-    raw = read_jsonl(HOME / "hippocampus.jsonl") + read_jsonl(HOME / "cortex.jsonl") + read_jsonl(HOME / "dust.jsonl")
-    good, bad = [], 0
+    """三层热层合并；缺 id 的 dict 记录**补一个稳定 id**，而不是丢弃。
+
+    为什么不丢：`_locked_save_all` 专门保留 `no_id`、`dream.py:182` 也明确承诺
+    "这些记录会原样保留在库，不会被 save_all 丢掉"。但早期版本在这里直接略过
+    它们 → 任何一次 `save_all(load_all())` 就把它们永远抹掉
+    （审计 memory.py:686，承诺与实际相反）。
+
+    现在按内容哈希补 id：同一条记录重复 load 得到同一个 id（幂等），于是它能
+    安全穿过 read-modify-write 而不蒸发，也不会每次 load 都长出重复副本。
+    仍然跳过非 dict 的记录（无法附加字段，也读不出 id）。
+    """
+    raw = (read_jsonl(HOME / "hippocampus.jsonl")
+           + read_jsonl(HOME / "cortex.jsonl")
+           + read_jsonl(HOME / "dust.jsonl"))
+    good, fixed, bad = [], 0, 0
     for r in raw:
-        if isinstance(r, dict) and r.get("id"):
-            good.append(r)
-        else:
+        if not isinstance(r, dict):
             bad += 1
+            continue
+        if not r.get("id"):
+            r = dict(r)
+            seed = json.dumps({k: r.get(k) for k in
+                               ("text", "kind", "created", "layer", "gist")},
+                              ensure_ascii=False, sort_keys=True, default=str)
+            r["id"] = "m_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+            fixed += 1
+        good.append(r)
+    if fixed:
+        log_event("load", f"load_all 给 {fixed} 条缺 id 的记录补了内容哈希 id"
+                          "（不再丢弃，避免 save_all 抹掉它们）", level="warning")
     if bad:
-        log_event("load", f"load_all 跳过 {bad} 条畸形记录（缺 id 或类型错）", level="warning")
+        log_event("load", f"load_all 跳过 {bad} 条非 dict 畸形记录", level="warning")
     return good
 
 
@@ -917,44 +938,54 @@ def save_all(records: list) -> None:
     targets = [("hippocampus.jsonl", groups["hippo"]),
                ("cortex.jsonl", groups["cortex"]),
                ("dust.jsonl", groups["dust"])]
-    staged = []
-    try:
-        for fname, rows in targets:
-            p = HOME / fname
-            p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = _tmp_path(p)
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-                for r in rows:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-            staged.append((tmp, p))
-    except Exception:
-        for tmp, _ in staged:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        raise
-    for tmp, p in staged:
-        _replace_retry(tmp, p)
-
-    # 写后校验：JSON 可解析 + 末行完整 + 层级自洽。不通过就回滚并抛错
-    # （回滚成功时数据是"旧的一致状态"，比留着一份写坏的新数据安全）。
-    if _snap and _sn is not None:
+    # ★ 三层锁必须**一起持**（审计 core.py:2044）：`_patch_memory_fields` 是按
+    #   「该层文件」加锁的（改 cortex 记录就持 cortex.jsonl.lock），而 save_all 写的是
+    #   三层全量——如果这里只持 hippocampus 锁，它随时能穿过 patch 正在进行的 cortex
+    #   写回，两边各自 read-modify-write，后写者把对方的 `review_by_confirmed` 等字段
+    #   抹掉。同一文件存在两套互斥口径，等于没有互斥。
+    #   `_locked` 可重入（同线程已持锁直接 yield），所以调用方已经 `with _locked(...)`
+    #   时也不会死锁；固定 hippocampus→cortex→dust 的顺序避免跨线程循环等待。
+    with _locked(HOME / "hippocampus.jsonl"), \
+            _locked(HOME / "cortex.jsonl"), \
+            _locked(HOME / "dust.jsonl"):
+        staged = []
         try:
-            _v = _sn.verify(("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl"))
-            if not _v.get("ok"):
-                _sn.restore(_snap)
-                raise RuntimeError(
-                    "save_all 写后校验失败，已从快照自动回滚："
-                    + "；".join((_v.get("issues") or [])[:3]))
-        except RuntimeError:
+            for fname, rows in targets:
+                p = HOME / fname
+                p.parent.mkdir(parents=True, exist_ok=True)
+                tmp = _tmp_path(p)
+                with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                    for r in rows:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                staged.append((tmp, p))
+        except Exception:
+            for tmp, _ in staged:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
             raise
-        except Exception as exc:  # noqa: BLE001
+        for tmp, p in staged:
+            _replace_retry(tmp, p)
+
+        # 写后校验：JSON 可解析 + 末行完整 + 层级自洽。不通过就回滚并抛错
+        # （回滚成功时数据是"旧的一致状态"，比留着一份写坏的新数据安全）。
+        if _snap and _sn is not None:
             try:
-                log_event("safety", f"写后校验本身出错（已跳过，数据未动）：{exc}",
-                          level="warn")
-            except Exception:
-                pass
+                _v = _sn.verify(("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl"))
+                if not _v.get("ok"):
+                    _sn.restore(_snap)
+                    raise RuntimeError(
+                        "save_all 写后校验失败，已从快照自动回滚："
+                        + "；".join((_v.get("issues") or [])[:3]))
+            except RuntimeError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    log_event("safety", f"写后校验本身出错（已跳过，数据未动）：{exc}",
+                              level="warn")
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------- 记忆记录
@@ -4161,17 +4192,43 @@ def assoc_auto(weight: float = 0.8, dry_run: bool = False) -> dict:
             "pairs": added[:20]}
 
 
-def assoc_graph(limit: int = 300) -> dict:
+# 联想图的边密度闸门。为什么需要（实测 2026-11-27）：本机 165 条记忆、
+# 自动联想产生 **9278 条边**（密度 65%，完全图才 13530），前端力导向必然坍缩成一个毛球
+# 并且卡死。根因不是"记忆多"，而是 **两个存档流程标签**：
+#   「封存」挂在 135 条记忆上（80.4%）→ 单这一个桶就是 135×134/2 = 9045 对
+#   「即记」挂在 103 条（61.3%）    → 再 5253 对
+# 这类标签描述的是**存储动作**，不是内容关联，不该被当成"相关"。
+#
+# 处理分两道（都是数据驱动、不写死具体标签名，换库/换语言也成立）：
+#   1. 泛标签闸：某个标签/实体覆盖了超过 GRAPH_GENERIC_RATIO 的节点 → 视为元数据，
+#      不参与两两配对。实测阈值 15% 是自然断点：封存/即记/会话存档 全部被拦下，
+#      边从 9278 → 68（-99.3%），剩下的结构是真实相关的。
+#   2. 度数闸：单节点自动边只留最强的 GRAPH_MAX_DEGREE 条（Gephi 的 Degree Filter
+#      等价物；k-core 掉到 1 时仍能保证稀疏）。
+GRAPH_GENERIC_RATIO = 0.15   # 覆盖超过 15% 节点的标签/实体 = 元数据，不参与联想
+GRAPH_MAX_DEGREE = 6         # 单节点最多保留的自动联想边数
+
+
+def assoc_graph(limit: int = 300, generic_ratio: float | None = None,
+                max_degree: int | None = None, hide_isolated: bool = False) -> dict:
     """联想图谱数据：面板 3D 空间用的节点与关联边。
 
-    v2.32 起两处升级（均为自动，无需手动连线）：
+    v2.32 起三处升级（均为自动，无需手动连线）：
       * 人格中心：虚构一个 __persona__ 中心节点，与所有非淡忘记忆自动连边——
         图谱以人格为星核呈放射状，一眼看出"哪些记忆离我最近"。
       * 自动联想：共享实体/标签的记忆对之间补自动边（复用 assoc_auto 的
         计划逻辑但只读不落盘），图谱显示的关联远多于手工 link 的存量边。
+      * **边密度闸门**（v3.48）：泛标签（覆盖 >15% 节点，如「封存」「即记」）
+        不参与配对；单节点自动边只留最强 6 条。没有这道闸，几百条记忆就会把
+        图连成 9000+ 边的毛球，既看不出结构也画不动。
 
     节点上限 limit（默认 300，太多画不动）；边只保留两端都在图里的。
+    返回里的 `pruned`/`generic_buckets` 是给面板显示"为什么边这么少"用的，
+    不隐藏事实：关掉闸门会是什么规模，一眼可见。
     """
+    ratio = GRAPH_GENERIC_RATIO if generic_ratio is None else float(generic_ratio)
+    maxdeg = GRAPH_MAX_DEGREE if max_degree is None else int(max_degree)
+
     records = [m for m in load_all() if m.get("layer") != "dust"]
     records.sort(key=lambda m: (_num(m.get("importance"), 0.5),
                                 float(retention(m))), reverse=True)
@@ -4183,8 +4240,9 @@ def assoc_graph(limit: int = 300) -> dict:
             edges.append({"src": r["src"], "dst": r["dst"],
                           "relation": r.get("relation", "相关"),
                           "weight": float(r.get("weight", 1))})
+    manual_edges = len(edges)   # 手工连线永远保留，不受下面两道闸影响
     seen_edges = {(e["src"], e["dst"]) for e in edges}
-    # 自动联想边（只读计划，不落盘——面板每次刷新重算，落盘交给 assoc_auto）
+
     # 倒排索引：实体/标签 -> 记忆 id 集合。两两组合只发生在同一桶内，
     # 复杂度从 O(P×(E+T)) 降到 Σ(桶内两两)，记忆多了不再卡面板。
     by_ent, by_tag = {}, {}
@@ -4193,30 +4251,90 @@ def assoc_graph(limit: int = 300) -> dict:
             by_ent.setdefault(e, set()).add(m["id"])
         for t in m.get("tags", []):
             by_tag.setdefault(t, set()).add(m["id"])
-    buckets = list(by_ent.values()) + list(by_tag.values())
-    auto_pairs = set()
-    for bucket in buckets:
+
+    n_nodes = max(1, len(nodes))
+    generic_buckets = []      # 被判为元数据的标签/实体（附覆盖数，便于排错）
+    buckets = []              # (bucket_key, id_set)
+    for kind, table in (("标签", by_tag), ("实体", by_ent)):
+        for name, bucket in table.items():
+            if len(bucket) < 2:
+                continue
+            if len(bucket) / n_nodes > ratio:
+                generic_buckets.append({"kind": kind, "name": name,
+                                        "count": len(bucket),
+                                        "ratio": round(len(bucket) / n_nodes, 3)})
+                continue
+            buckets.append(bucket)
+    generic_buckets.sort(key=lambda x: -x["count"])
+
+    # 每条候选边的权重 = 两端共享的桶数（共享的标签/实体越多越相关）
+    pair_weight: dict[tuple, int] = {}
+    owner: dict[str, set] = {}          # id -> 命中的桶下标集合（算共享数用）
+    for bi, bucket in enumerate(buckets):
         bl = sorted(bucket)
         for i, a in enumerate(bl):
+            owner.setdefault(a, set()).add(bi)
             for b in bl[i + 1:]:
+                owner.setdefault(b, set()).add(bi)
                 key = (a, b) if a < b else (b, a)
-                if key not in seen_edges:
-                    auto_pairs.add(key)
-    for a, b in auto_pairs:
-        # 共享的实体/标签越多边越粗（权重 = 共享桶数，封顶 3）
-        w = sum(1 for bucket in buckets if a in bucket and b in bucket)
+                if key in seen_edges:
+                    continue
+                pair_weight[key] = pair_weight.get(key, 0) + 1
+
+    # 度数闸：优先保留"共享桶多（更相关）+ 两端总度数低（更稀缺）"的边，
+    # 贪心填到每个节点 maxdeg 为止——避免大节点吃掉所有名额。
+    degree_seen: dict[str, int] = {}
+    kept = []
+    for (a, b), w in sorted(pair_weight.items(),
+                            key=lambda kv: (-kv[1], kv[0])):
+        if maxdeg and (degree_seen.get(a, 0) >= maxdeg or degree_seen.get(b, 0) >= maxdeg):
+            continue
+        kept.append((a, b, w))
+        degree_seen[a] = degree_seen.get(a, 0) + 1
+        degree_seen[b] = degree_seen.get(b, 0) + 1
+    for a, b, w in kept:
         edges.append({"src": a, "dst": b, "relation": "相关",
-                      "weight": min(3.0, 0.8 * w), "auto": True})
-    # 人格中心节点：星核，连向所有展示的记忆（权重随重要度，重要的连线更亮）
+                      "weight": min(3.0, 0.8 * max(1, w)),
+                      "auto": True, "shared": w})
+
+    # 人格中心节点：星核。**不连全部记忆**——那是另一条"必成毛球"的路：
+    # 300 个节点各连一根，中心点的视觉权重会盖过一切，且弹簧把全图拽向一点。
+    # 改为只连"重要度高 + 自身已出现在联想里"的那一小撮（最多 GRAPH_MAX_DEGREE×2），
+    # 星核仍然是视觉中心，但不再主导力学。
     persona_id = "__persona__"
     import persona as _persona_mod  # 延迟导入避免循环依赖
     p = _persona_mod.load_persona()
+
+    # 孤立记忆闸（v3.48）：没有真实关联的记忆只留一个点，但它的**斥力还在**——
+    # 137 个孤立节点会把 32 个有结构的节点挤成一坨，视觉上还是那个毛球。
+    # 所以默认把它们整批排除出图（前端可一键「显示全部」重新拉）。
+    isolated_hidden = 0
+    if hide_isolated:
+        linked = set()
+        for a, b, _w in kept:
+            linked.add(a)
+            linked.add(b)
+        for e in edges:
+            if not e.get("auto"):
+                linked.add(e["src"])
+                linked.add(e["dst"])
+        before = len(nodes)
+        nodes = [m for m in nodes if m["id"] in linked]
+        isolated_hidden = before - len(nodes)
+
     nodes.insert(0, {"id": persona_id, "gist": "人格 · " + (p.get("name") or "砚"),
                      "kind": "persona", "layer": "persona",
                      "importance": 1.0, "emotion": "", "recency": 1.0})
-    for m in nodes[1:]:
+    hub_cap = max(4, maxdeg * 2) if maxdeg else len(nodes)
+    hub_ids = {i for pair in kept for i in pair[:2]}
+    hub_targets = sorted(nodes[1:], key=lambda m: -_num(m.get("importance"), 0.5))
+    # 优先连"已经在联想网里"的高重要度记忆，补足到 hub_cap
+    hub_targets.sort(key=lambda m: (m["id"] not in hub_ids, -_num(m.get("importance"), 0.5)))
+    for m in hub_targets[:hub_cap]:
         edges.append({"src": persona_id, "dst": m["id"], "relation": "自我",
                       "weight": 0.4 + _num(m.get("importance"), 0.5), "auto": True})
+    kept_ids = {n["id"] for n in nodes}
+    edges = [e for e in edges if e["src"] in kept_ids and e["dst"] in kept_ids]
     return {
         "nodes": [{"id": m["id"], "gist": m.get("gist") or heuristic_gist(m.get("text", "")),
                    "kind": m.get("kind", ""), "layer": m.get("layer", "hippo"),
@@ -4226,6 +4344,20 @@ def assoc_graph(limit: int = 300) -> dict:
         "edges": edges,
         "connected": len({e["src"] for e in edges} - {persona_id}
                          | {e["dst"] for e in edges} - {persona_id}),
+        # 闸门透明化：面板要能说"为什么这么少"，而不是让人以为丢数据了
+        "stats": {
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "manual": manual_edges,
+            "auto_candidates": len(pair_weight),
+            "auto_kept": len(kept),
+            "generic_ratio": ratio,
+            "max_degree": maxdeg,
+            "generic_buckets": generic_buckets[:12],
+            "generic_bucket_count": len(generic_buckets),
+            "hide_isolated": bool(hide_isolated),
+            "isolated_hidden": isolated_hidden,
+        },
     }
 
 # ---------------------------------------------------------------- 上下文注入

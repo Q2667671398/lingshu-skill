@@ -1,5 +1,94 @@
 # 更新日志
 
+## v5.30（2026-11-27）
+
+> 主题：**代码审计 P0 九条全部修完**——全是"会静默丢数据"的 bug，一条 high。
+
+这一批的共同特征是：**注释/文档写着有保护，代码里其实没有**。所以历次审计都没抓到，
+因为它们看起来是被处理过的。
+
+### 修：`cmd_relink` 整库覆写没有锁（唯一 high）
+
+`load_all()` → 改 `links` → `save_all(rows)` 是**整库快照回写**，但 61 行里一处
+`_locked` 都没有，docstring 却写着「整体一把写锁」。它是 O(n²) 长操作，锁外窗口最大
+→ 与 remember / dream / 面板并发时，后写者用旧快照把对方刚写入的记忆**整片覆盖**。
+
+修法：拆 `cmd_relink`（只读检查 + 持锁）与 `_relink_locked`（遍历）。
+验证：另一线程持锁 1.2s 时 relink 实测等 **1.13s**。
+
+### 修：`dream` 沿用旧任务时覆盖 pending → 自动做梦必然失败
+
+`new_pending` 用**新** task_id 构造，随后进入「已有未消费 pending」分支时把 task_id
+改写成旧的，但 `new_pending` 没跟着改，最后无条件写盘。于是盘上是新 id、`report` 是旧 id
+→ `dream --auto`（面板一键做梦 / daily 第 3 步 / cron 天级任务全走它）**稳定报"任务对不上"**，
+且旧任务真正的簇被新簇顶掉。
+
+修法：`keep_old` 闸——沿用旧任务时完全不写盘；写盘时显式同步 task_id。
+
+### 修：做梦回滚点漏了 cortex / dust
+
+`save_all` 写的是三层（hippo/cortex/dust），而快照只备份了 hippocampus。dream 恰好会
+promote 到 cortex、淡忘到 dust → restore 后 cortex/dust 保持新状态、hippocampus 回到旧状态，
+**同一条记忆同时出现在两处**，库半新半旧，而报告写着"可用 restore 还原"。
+
+修法：`core_files` 补齐三层；顺带把超量快照从 `unlink` 改成移入 `.pruned/`（符合只移不删）。
+
+### 修：`load_all` 丢弃缺 id 的记录，`save_all` 随即抹掉它们
+
+`dream.py` 明确承诺「这些记录会原样保留」、`_locked_save_all` 也专门保留 `no_id`，
+但 `load_all` 直接略过 → 任何一次 `save_all(load_all())` 就永久抹掉。**承诺与实际相反。**
+
+修法：按内容哈希补一个稳定 id（`m_<sha1[:12]>`，取自 text/kind/created/layer/gist）。
+同一条记录重复 load 得到同一个 id，幂等，能安全穿过 read-modify-write。
+
+### 修：`save_all` 只持 hippocampus 锁，却重写三层
+
+`_patch_memory_fields` 是按**该层文件**加锁的（改 cortex 记录就持 cortex.jsonl.lock），
+而 `save_all` 只持 hippocampus 锁就重写 cortex/dust → 同一文件两套互斥口径 = 没有互斥。
+recall 的定向写回与 `mark_reviewed` 的补丁并发时互相覆盖 `review_by_confirmed` 等字段。
+
+修法：`save_all` 按固定顺序 hippocampus→cortex→dust 持全三层锁（`_locked` 可重入，
+调用方已持锁也不会死锁）。
+
+### 修：`safety_net.restore` 先改盘、后判污染
+
+逐个 `os.replace`，某文件 sha256 不符只 `append` 并 `continue`，循环跑完才 raise
+→ 已回滚的是旧内容、被判污染的是新内容，**半新半旧**，调用方只看到异常。
+
+修法：两阶段——先全部校验，任何一份不干净就整体拒绝（提示"未写入任何文件"），再统一写盘。
+
+### 修：人格按版本回滚时锁边界被劈开
+
+`load_persona()`（读当前值做"回滚前快照"）在锁外，`save_persona(p)` 内部才有锁
+→ 两步之间的窗口里若有 update_persona / 面板保存写进来，紧接着的整份覆写会把它抹掉。
+
+修法：快照 + 覆写包进同一把 `persona.json` 锁。
+
+### 修：面板 home 迁移不检查目标在数据目录内部
+
+`copytree(HOME, target)` 时目标若在 HOME 底下，copytree 边复制边把刚创建的目标目录
+自己也扫进去 → 递归膨胀，或中途 OSError 留下半截副本（此时指针还没写）。
+CLI 的 `home move` 有这道检查，面板漏了。
+
+修法：加 `target.relative_to(brain.HOME)` 守卫，在内部直接拒绝并提示改选外部路径。
+
+### 修：Ollama 五条路径整份回写 config.json 不持锁
+
+`enable` / `setup` / `install` / `auto_probe`(×2) 都是 `load_config()` → 改 embed →
+`atomic_json(config.json)` **整份回写**，绕开 `_set_cfg_path` 的 `_locked(config.json)`。
+与设置页保存或 CLI `config set` 并发时，后写者把对方刚设的 token / 阈值 / 档位静默覆盖
+→ 用户改完设置发现又变回去，却找不到原因。
+
+修法：新增 `_ollama_write_embed_cfg()`，读-改-写全在锁内，5 处调用点统一走它。
+
+### 文档
+
+`docs/审核改进待办.md`（本地，不入库）新增 **§0 已结案**（三条非灵枢问题的排查结论，
+防止下次重复调研）、**P0.6 生成产物不同步**（本仓库最高频的假失败来源 + 标准收尾顺序）。
+
+验证：94/94 测试通过（新增 6 条回归）；`sync --check` / `checksums --check` /
+`manifest --check` / `panel_build --check` 全部一致。
+
 ## v5.29（2026-11-27）
 
 > 主题：**全量代码审计的第一批修复**（34 条发现里唯一 high + 一条必现死循环）。

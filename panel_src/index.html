@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8">
     <meta name="lingshu-panel" content="1" />
@@ -475,6 +475,10 @@
               <option value="300" selected>300 节点</option>
               <option value="600">600 节点</option>
             </select>
+            <label class="sub" style="display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none"
+                   title="只画有真实联想关系的记忆。孤立记忆不贡献结构，还会用斥力把可见部分挤成一坨——这是「点开就是个球」的主因之一。取消勾选可看全部">
+              <input type="checkbox" id="graph-hide-isolated" checked>只看有联想的
+            </label>
             <button class="ghost" id="btn-graph-reset">重置视角</button>
             <button class="ghost" id="btn-graph-refresh">刷新</button>
             <button class="ghost" id="btn-graph-auto">自动联想</button>

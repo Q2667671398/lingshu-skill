@@ -232,7 +232,12 @@ def restore(snap_id: str) -> dict:
     except Exception:
         meta = {}
     want = meta.get("sha256") or {}
-    restored, corrupt = [], []
+    # ★ 两阶段：**先全部校验，再统一写盘**（审计 safety_net.py:257）。
+    #   原来是一边校验一边 `_replace_retry` 覆盖，等循环跑完才 `if corrupt: raise`
+    #   ——于是某个文件指纹不符时，前面几个已经被改成旧内容了，库处于「半新半旧」，
+    #   调用方只看到一个异常，却不知道数据已经被部分回滚。
+    #   校验阶段不碰工作文件，任何一份不干净就整体拒绝，数据保持原样。
+    verified, corrupt = [], []
     for f in sorted(src.glob("*")):
         if f.name == "meta.json" or f.is_dir():
             continue
@@ -251,16 +256,21 @@ def restore(snap_id: str) -> dict:
             except OSError:
                 corrupt.append(f.name)
                 continue
+        verified.append(f)
+    if corrupt:
+        raise RuntimeError(
+            "快照已被污染（内容与快照时记录的 sha256 不符），拒绝用它回滚："
+            + ", ".join(corrupt)
+            + "。已中止，**未写入任何文件**，库保持回滚前的状态。"
+            + "原因通常是有代码路径就地写文件而不是原子替换。")
+    # 写盘阶段：到这里所有文件都已验过，不会再中途因为某个坏文件留下半截状态
+    restored = []
+    for f in verified:
         dst = _home() / f.name
         tmp = dst.with_name(dst.name + ".restore.tmp")
         shutil.copy2(f, tmp)
         core._replace_retry(tmp, dst)
         restored.append(f.name)
-    if corrupt:
-        raise RuntimeError(
-            "快照已被污染（内容与快照时记录的 sha256 不符），拒绝用它回滚："
-            + ", ".join(corrupt)
-            + "。原因通常是有代码路径就地写文件而不是原子替换。")
     try:
         core.log_event("safety", f"已从快照回滚 {snap_id}：{', '.join(restored)}",
                        level="warn")

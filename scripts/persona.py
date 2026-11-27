@@ -447,14 +447,20 @@ def rollback_persona_snapshot(version: int) -> dict | None:
         return None
     if not target or not isinstance(target.get("persona"), dict):
         return None
-    # 先存一份"回滚前"的快照，这样用户回滚错了还能再回回来
-    try:
-        save_persona_snapshot(load_persona(), action="pre_rollback", source="rollback",
-                              why=f"即将回滚到 v{version}")
-    except Exception:
-        pass
     p = target["persona"]
-    save_persona(p)
+    # ★ 快照 + 覆写必须��**同一把锁内**（审计 persona.py:457）：
+    #   原来 `load_persona()`（读当前值做"回滚前快照"）在锁外，`save_persona(p)`
+    #   内部才有锁——两步之间的窗口里若有 update_persona / 面板保存写进来，
+    #   紧接着的整份覆写会把那次写入静默抹掉（回滚本身就是全量覆盖，最容易吃掉并发写）。
+    #   `_locked` 可重入，所以内层 save_persona 再取一次同一把锁是安全的。
+    with _locked(HOME / "persona.json"):
+        # 先存一份"回滚前"的快照，这样用户回滚错了还能再回回来
+        try:
+            save_persona_snapshot(load_persona(), action="pre_rollback", source="rollback",
+                                  why=f"即将回滚到 v{version}")
+        except Exception:
+            pass
+        save_persona(p)
     return p
 
 

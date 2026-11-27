@@ -1,24 +1,24 @@
 {
-  "version": "5.29",
+  "version": "5.30",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "6138cc6cca766c22c59053da84977e34702a2d8f110931c0a65518c4ba24b5b3",
-      "size": 369254
+      "sha256": "38799bd39f4b7257e02ed11307e8e53f341995f25d25038ba642231e0412c7ca",
+      "size": 374317
     },
     "README.md": {
-      "sha256": "3eac1efd444243ecf1cde3e5bb81775ef3e9edf4b3f6656cec1179da65239df3",
+      "sha256": "da34dcf8b8f9601b6367ddc3f8837d5ea5ded7b3e44180a948607069da9e0563",
       "size": 112859
     },
     "SKILL-lite.md": {
-      "sha256": "77e81b41f6695dc00af63a8e30cffe5ada8bb8138de577936f2a6c18418513fd",
+      "sha256": "298c90366af514309d8e56e8af2b8c71d1e1d74f51b086917f3dabc1972ac8ca",
       "size": 4440
     },
     "SKILL-tiny.md": {
-      "sha256": "46bbb443f45ab73bf15647a0fc3f766fdc14a81f87fb665699a994ae8c2e8b9b",
+      "sha256": "a7ebea585335e63a6efe5b85621efc3d212853d31f228de6c0d4ca8aa4ae349c",
       "size": 1913
     },
     "SKILL.md": {
-      "sha256": "7a8a71ec5d864d19ab43ed0c4b5e91ae71e82a818655f45213c02e79d0050315",
+      "sha256": "55ee0bcd948bd7ab0085facd5e731d93be6f80d5ba0ecea5e1272ad70703d77b",
       "size": 39250
     },
     "assets/lingshu-icon-preview.png": {
@@ -34,8 +34,8 @@
       "size": 53917
     },
     "assets/panel.html": {
-      "sha256": "9dae1aa8852eb18286e94a81e26a232a6c904ce9f7e3d8edd5b3ebd7983b896a",
-      "size": 330885
+      "sha256": "b63401782f10fc7ca65e680e1f0ed7bfab20e523bb66cee34a1b57f85c4420ff",
+      "size": 333947
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
@@ -114,7 +114,7 @@
       "size": 5588
     },
     "package.json": {
-      "sha256": "978f7913fd644751ed4f90d143115681c11788549f3a63769662bd5d4a8b4e43",
+      "sha256": "cbeeecb3e74821a3f0e37012f79310f38a6f87bd44569ab123c7990a989d589f",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -170,8 +170,8 @@
       "size": 7726
     },
     "scripts/dream.py": {
-      "sha256": "49e944d218143ad3796acd6479e7961d73f54c176880c631a8731800b828f394",
-      "size": 56678
+      "sha256": "c2e906b0f887e76eb05c83135f5f035e6df66941fcff067c341042d25c175647",
+      "size": 57442
     },
     "scripts/emotion.py": {
       "sha256": "b56f2516a47ed5adecfe913e7e24957e5f4975fc8379f4097d5fa73dbd5c97d0",
@@ -242,8 +242,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "a2298c0146f011709230a314f2127c6ae33b1063c70f4fe353a1254e798036f6",
-      "size": 269887
+      "sha256": "242f69dec0b94790038dd2370d5010eb08ace86c692b0b69086daebd558b621f",
+      "size": 277607
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",
@@ -266,8 +266,8 @@
       "size": 7708
     },
     "scripts/panel_server.py": {
-      "sha256": "2ec2f09ba960a739aa11c80f3a12dbd94f44ada8175e66435d08a2a72a6f38fd",
-      "size": 141063
+      "sha256": "bf0635add9a98cb1ebe6aeeba60e4905c89bbad91bdb483758825534168a57b7",
+      "size": 142512
     },
     "scripts/panel_settings.py": {
       "sha256": "49714ad058b1fe0cdd495a2e7eeadc3b4554346c92150b1381cdc39f44012b6e",
@@ -282,8 +282,8 @@
       "size": 27136
     },
     "scripts/persona.py": {
-      "sha256": "f3e12472ed33aaea01c1694247ba9838126e2c432ce5edac194c621ddadc9a1b",
-      "size": 109020
+      "sha256": "9ade4353fa31f2e486f9fe23ccc3dd7dc6617c930f716a04f1fb6ad3114ae9c9",
+      "size": 109602
     },
     "scripts/release.py": {
       "sha256": "42496434d9edc232931df3aad44e75d5d9aaddb6b5663019374473aeb6246b68",
@@ -302,8 +302,8 @@
       "size": 15947
     },
     "scripts/safety_net.py": {
-      "sha256": "4066da364082ebe5ec0bbccb9b516f3b1583516b4a2c5e1d410f8ba7c5819c0b",
-      "size": 14027
+      "sha256": "39894fbea411ecc0e69a6cba08ec48b28aa735000e61f93ec798a587be369028",
+      "size": 14797
     },
     "scripts/session_import.py": {
       "sha256": "914181d3cb8eebe6a41a253f40b76bc57a5ebf0bbe274ed0d1102dd43cddc5a5",

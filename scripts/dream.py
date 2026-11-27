@@ -237,9 +237,14 @@ def cluster_memories(records: list, max_clusters: int = 6, include_ids: set | No
 def _dream_snapshot() -> str:
     """做梦改库前的自动快照（借鉴 sage-mem：整理前强制建回滚点）。
 
-    只打包记忆相关的核心文件（hippocampus/assoc/archive 等），比全库 backup
-    轻量得多；存在 ~/.brain-memory/dream-snapshots/ 下，保留最近 10 份。
+    存 ~/.brain-memory/dream-snapshots/ 下，保留最近 10 份。
     失败返回 "" 并记事件日志；调用方（dream）fail-closed：拿不到快照就拒绝整理。
+
+    **core_files 必须覆盖 `save_all` 真正会写的全部文件**。`save_all` 写的是
+    ("hippocampus.jsonl", "cortex.jsonl", "dust.jsonl")，而 dream 恰好会 promote 到
+    cortex、淡忘到 dust——早期版本只备份 hippocampus 一层，于是 restore 之后
+    cortex/dust 保持新状态、hippocampus 回到旧状态，同一条记忆同时出现在两处，
+    库处于半新半旧状态，而报告却写着"可用 restore 还原"（审计 dream.py:253）。
     """
     snap_dir = HOME / "dream-snapshots"
     try:
@@ -250,19 +255,23 @@ def _dream_snapshot() -> str:
         while path.exists():
             k += 1
             path = snap_dir / f"dream-snap_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{k}.zip"
-        core_files = ["hippocampus.jsonl", "archive.jsonl", "assoc.jsonl",
+        # 三层记忆全都要（hippo/cortex/dust 是 save_all 的写入目标，缺一层回滚点就是残的）
+        core_files = ["hippocampus.jsonl", "cortex.jsonl", "dust.jsonl",
+                      "archive.jsonl", "assoc.jsonl",
                       "knowledge.jsonl", "persona.json", "dream_state.json"]
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             for name in core_files:
                 f = HOME / name
                 if f.is_file():
                     zf.write(f, name)
-        # 保留最近 10 份，旧的删掉
+        # 保留最近 10 份；旧的移入 .pruned/ 而不是删除（用户规矩：要删的进垃圾桶/归档）
+        pruned = snap_dir / ".pruned"
         snaps = sorted(snap_dir.glob("dream-snap_*.zip"))
         for p in snaps[:-10]:
             try:
-                p.unlink()
-            except OSError:
+                pruned.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(p), str(pruned / p.name))
+            except (OSError, shutil.Error):
                 pass
         return str(path)
     except Exception as exc:
