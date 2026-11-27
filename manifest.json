@@ -1,24 +1,24 @@
 {
-  "version": "5.28",
+  "version": "5.29",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "47c8d59df673699e3bd6b49fcc2aa9e308b86f2b698a3258fc9b5da18402a171",
-      "size": 366379
+      "sha256": "6138cc6cca766c22c59053da84977e34702a2d8f110931c0a65518c4ba24b5b3",
+      "size": 369254
     },
     "README.md": {
-      "sha256": "403af64c93f30b271bec6df7f17a814c2272ddd4527354b873584b0414f1e9ca",
+      "sha256": "3eac1efd444243ecf1cde3e5bb81775ef3e9edf4b3f6656cec1179da65239df3",
       "size": 112859
     },
     "SKILL-lite.md": {
-      "sha256": "cd1001c814666f6e1e2e85a688a89d721b7a9e653627f9b222e0326ff8131658",
+      "sha256": "77e81b41f6695dc00af63a8e30cffe5ada8bb8138de577936f2a6c18418513fd",
       "size": 4440
     },
     "SKILL-tiny.md": {
-      "sha256": "cca7b2c60a03ed9afed2f91797c523b6dc0180b35853746290825193cc5d81b7",
+      "sha256": "46bbb443f45ab73bf15647a0fc3f766fdc14a81f87fb665699a994ae8c2e8b9b",
       "size": 1913
     },
     "SKILL.md": {
-      "sha256": "b02c82c2eade58a795faaa62e22cd9e09b0a9bb2d89e05a936259605abb7e7e8",
+      "sha256": "7a8a71ec5d864d19ab43ed0c4b5e91ae71e82a818655f45213c02e79d0050315",
       "size": 39250
     },
     "assets/lingshu-icon-preview.png": {
@@ -114,7 +114,7 @@
       "size": 5588
     },
     "package.json": {
-      "sha256": "54883261cd0ac270047b84ba5327e7dfd3691b84e1cffc0805aaf26af53c6ae5",
+      "sha256": "978f7913fd644751ed4f90d143115681c11788549f3a63769662bd5d4a8b4e43",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -150,8 +150,8 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "51ffd19d441bd0c9efebb13ff8cf13fd72ab102ab50047c600752d6fd389a664",
-      "size": 310941
+      "sha256": "6ed5aab83661cf39945e334be084cc4915100b5c9373166b01e042c3d803a868",
+      "size": 311369
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
@@ -170,8 +170,8 @@
       "size": 7726
     },
     "scripts/dream.py": {
-      "sha256": "c1ba3de2958fb045db7b6962a6dd0fcf70f225bfb4d372dd9c3e8584e4f759ce",
-      "size": 55675
+      "sha256": "49e944d218143ad3796acd6479e7961d73f54c176880c631a8731800b828f394",
+      "size": 56678
     },
     "scripts/emotion.py": {
       "sha256": "b56f2516a47ed5adecfe913e7e24957e5f4975fc8379f4097d5fa73dbd5c97d0",

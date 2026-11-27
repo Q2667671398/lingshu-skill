@@ -697,14 +697,23 @@ def cmd_relink(limit: int = 0, min_score: float = 1.0, max_links: int = 5) -> in
     """全库联想建链：给历史记忆按词面相似度补挂 links（双向）。
 
     与 cold/archive 分层无关——建链是给"还在热查询集里的记忆"补关联网。
-    整体一把写锁、一次快照内完成（全库也只是一次 load + 一次 save，
-    与 dream 的整库遍历同量级，分批反而要反复读盘）。
+
+    **必须持写锁**：load_all → 改 links → save_all 是整库快照回写，锁外做会被
+    remember / dream / 面板的并发写整片覆盖。本函数早期版本漏了锁，docstring 却
+    写着"整体一把写锁"——注释骗过了历次审计（实测 61 行里 0 处 `_locked`）。
     """
     import memory as _mem
     if READONLY:
         print("[只读] 记忆库当前不可写，relink 需要写盘。", file=sys.stderr)
         return 1
     ensure_home()
+    with _locked(HOME / "hippocampus.jsonl"):
+        return _relink_locked(limit, min_score, max_links)
+
+
+def _relink_locked(limit: int, min_score: float, max_links: int) -> int:
+    """真正的遍历。**调用方必须已持有 hippocampus 写锁。**"""
+    import memory as _mem
     # 记忆上万后全库 jaccard 两两比对是 O(n²)，但与 recall/dream 现有全量扫描
     # 同量级；先按创建时间倒序截 limit，保证"最近的最先补到"。
     rows = _mem.load_all()

@@ -1,5 +1,57 @@
 # 更新日志
 
+## v5.29（2026-11-27）
+
+> 主题：**全量代码审计的第一批修复**（34 条发现里唯一 high + 一条必现死循环）。
+
+### 修：`cmd_relink` 整库覆写没有锁（唯一 high）
+
+`cli.py` 的 `cmd_relink` 会 `load_all()` → 改 `links` → `save_all(rows)`，
+**整库快照回写**，但 61 行里**一处 `_locked` 都没有**——而它的 docstring 却明写
+「整体一把写锁、一次快照内完成」。注释骗过了历次审计。
+
+后果：它是 O(n²) 的长操作，锁外窗口最大。与 remember / dream / 面板并发时，
+后写者用旧快照把对方刚写入的记忆整片覆盖——真丢数据，且丢得无声无息。
+
+修法：拆成两层——`cmd_relink` 负责只读检查 + 持锁，`_relink_locked` 负责遍历。
+```
+with _locked(HOME / "hippocampus.jsonl"):
+    return _relink_locked(limit, min_score, max_links)
+```
+验证：另一线程持锁 1.2s 时，`relink` 实测等了 **1.13s**（修复前会立刻跑）。
+
+### 修：`dream` 沿用旧任务时覆盖 pending，导致自动做梦**必然失败**
+
+`dream()` 里 `new_pending` 在 L709 用**新** `task_id` 构造；随后进入
+「已有未消费的 pending」分支时把 `task_id` 改写成旧的（L739），但 `new_pending`
+没有跟着改；最后 L754 **无条件**把它写盘。于是：
+
+- 盘上 `pending.json` 的 `task_id` 是新的，`report["task_id"]` 是旧的 → 两者错位；
+- `dream --auto`（面板一键做梦 / daily 第 3 步 / cron 天级任务全走它）拿
+  `report["task_id"]` 去 apply，盘上却是另一个 id → **稳定报"任务对不上"**；
+- 同时旧任务真正的簇被本次新簇顶掉，旧簇静默丢失。
+
+这不是偶发，而是「上一次没 apply → 下一次必失败」的死循环。
+
+修法：加 `keep_old` 闸——
+- 沿用旧任务时**完全不写盘**（保留旧 pending 原样）；
+- 真要写盘时，显式把 `task_id` 同步进 `new_pending` 与 `apply_schema`，
+  不再依赖"构造顺序恰好正确"。
+
+验证：两条分支各有测试（`tests/test_p39_dream_pending_relink.py` 4/4）。
+
+### 记录：不属于灵枢的问题已归档
+
+`docs/审核改进待办.md` 新增 §0「已结案 · 不是灵枢的问题」，收三条本会话查清的环境级问题：
+1. 回复里出现 `<analysis>` / `<summary>` 骨架 → **laneai 中转站**把思考塞进 `content`，
+   由 `dsh-thinking-proxy` 插件修（把 thinking 标签搬到 `reasoning_content`）；
+2. 插件市场显示旧版本 → 缓存位置是 `.dsh-market/discovery-*.json.journal`，不是 package.json；
+3. Windows CI 只有裸退出码 → cp1252 编不了中文（v5.26~v5.28 分三层修完）。
+
+写在文档最前面，是为了下次出现同样症状**别再从头查一遍**。
+
+验证：94/94 测试通过（新增 4 条），`sync --check` / `checksums --check` 一致。
+
 ## v5.28（2026-11-27）
 
 > 主题：**UTF-8 防护补到测试文件**。这是同一个根因的第三次出现——

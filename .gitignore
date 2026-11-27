@@ -67,3 +67,13 @@ docs/tgz-*.md
 docs/发布自动化.md
 docs/审核改进待办.md
 docs/npm-发布说明.md
+
+# 行为基线回归：本地工具测试，不进上游（用户指示）
+# 它锁的是 scripts/behavior_baseline.py 的确定性（连续采集必须逐字相同），
+# CI 不依赖它；本地照常 `python tests/test_behavior_baseline.py` 跑。
+tests/test_behavior_baseline.py
+tests/behavior-baseline.json
+tests/bench-baseline.json
+
+# 本地临时产物（子代理/调试脚本的副产物，永远不进库）
+help_all.txt

@@ -732,6 +732,7 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
             # 新任务也可能被晾着（借鉴 Mnemosyne 幂等键防重复情节、租约验证）。
             # 未超时 → 沿用旧任务；超时太久（孤儿）→ 归档后接新任务。
             old = load_dream_pending()
+            keep_old = False
             if old and old.get("task_id"):
                 age = now - _num(old.get("created"), now)
                 if age < _DREAM_ORPHAN_TTL:
@@ -739,6 +740,7 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
                     task_id = old["task_id"]
                     report["task_id"] = task_id
                     report["pending_kept"] = True
+                    keep_old = True
                     log_event("dream", f"已有未整理的梦（task_id={old['task_id']}，"
                               f"{age / 3600:.1f}h 前触发），本次不重复生成新任务", level="warn")
                 else:
@@ -751,7 +753,18 @@ def dream(trigger: str = "manual", dry_run: bool = False) -> dict:
                               f"悬置 {age / 3600:.1f}h > {_DREAM_ORPHAN_TTL / 3600:.0f}h），"
                               "生成新任务", level="warn")
                     report["orphaned_task_id"] = old["task_id"]
-            atomic_json(HOME / "dreams" / "pending.json", new_pending)
+            # ⚠ 两处必须一起改（原先只改了一半，实测导致自动做梦必然失败）：
+            #   ① 沿用旧任务时**绝不能写盘**——new_pending 装的是本次的新簇，
+            #      写下去等于用新簇顶掉旧 task_id 的任务，旧簇静默丢失；
+            #   ② 真写盘时，pending 里的 task_id 必须是**最终** task_id。
+            #      new_pending 在 L709 用新 id 构造，若期间 task_id 被改写（孤儿归档
+            #      分支不会改，但任何未来的改写都会），两者就会错位——
+            #      而 `dream --auto` 拿 report["task_id"] 去 apply，盘上却是另一个 id
+            #      → 稳定报"任务对不上"。这里显式同步，不依赖构造顺序。
+            if not keep_old:
+                new_pending["task_id"] = task_id
+                new_pending["apply_schema"]["task_id"] = task_id
+                atomic_json(HOME / "dreams" / "pending.json", new_pending)
         # 没有可整理的碎片就不写 pending.json，免得让 AI 对着一份空任务空转
         write_dream_report(report)
         st = load_dream_state()
