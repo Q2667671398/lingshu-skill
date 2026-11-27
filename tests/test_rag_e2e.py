@@ -196,7 +196,30 @@ def test_service_stopped_falls_back_local_and_records_failure():
         assert url.startswith("http://127.0.0.1:"), hits[0]
 
 
+def _ensure_utf8_stdout() -> None:
+    """stdout/stderr 切 UTF-8——Windows CI 是 cp1252，print 中文会直接崩。"""
+    for _name in ("stdout", "stderr"):
+        _s = getattr(sys, _name, None)
+        _fn = getattr(_s, "reconfigure", None)
+        if callable(_fn):
+            try:
+                _fn(encoding="utf-8", errors="replace")
+                continue
+            except (OSError, ValueError, AttributeError):
+                pass
+        try:
+            import io
+            _buf = getattr(_s, "buffer", None)
+            if _buf is not None:
+                setattr(sys, _name,
+                        io.TextIOWrapper(_buf, encoding="utf-8", errors="replace",
+                                         line_buffering=True))
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
+    _ensure_utf8_stdout()
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
     for fn in fns:

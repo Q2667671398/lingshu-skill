@@ -1,5 +1,50 @@
 # 更新日志
 
+## v5.28（2026-11-27）
+
+> 主题：**UTF-8 防护补到测试文件**。这是同一个根因的第三次出现——
+> 说明我前两轮的修法（按报错逐个补）方式就错了。
+
+### 为什么还会有第三次
+
+v5.27 把 `scripts/**` 全扫了一遍，Windows CI 顺利越过了 `生成 engine 副本`、
+`checksums --check`，然后停在 `tests`：
+
+```
+File "...\tests\test_check_tag.py", line 40, in check
+    print(("PASS " if ok else "FAIL ") + name + ...)
+File "...\Lib\encodings\cp1252.py", line 19, in encode
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 5-6
+```
+
+测试里的 `name` 是中文（`"没有 tag → 拒绝"`），print 出来同样崩。
+**同一个根因，只是换了个目录。**
+
+### 改了什么
+
+把扫描范围从 `scripts/**` 扩到 `tests/**`，凡是"有 `__main__` + print 中文/中文字符串"的
+都补 `_ensure_utf8_stdout()`。共有 **89 个测试文件**符合条件，全部补上。
+
+顺带修了两个漏网的：`scripts/make_icon.py` 与它 `engine/` 副本——它们没有
+`import sys`，所以上一轮被跳过；这次先补 import 再加防护。
+
+### 一个必须说清的发现
+
+**`tests/` 下有 44 个文件是 git 跟踪的**（`git ls-files tests/` 数出来的），
+不是我之前以为的"测试全不入库"。`test_check_tag.py` 就在其中——所以 CI 会跑它，
+所以它必须修。本地那 50 多个 `test_p*.py` 才是纯本地、不入库的。
+
+这个区分以前没写清楚，导致我改测试时默认"不用管"。
+
+### 教训（第三次记同一条，说明前面没记住）
+
+**不要在报错的地方打补丁，要按"缺陷的性质"扫全。**
+cp1252 是平台属性，凡是 `print` 中文的地方都会崩——正确做法是一次扫完
+`scripts/` + `tests/` + `cordis-plugin/`，而不是等 CI 一轮轮告诉我。
+
+验证：`test_check_tag.py` 在模拟 cp1252 环境下退出码 0（修复前正是它崩）；
+全套 93/93 通过。
+
 ## v5.27（2026-11-27）
 
 > 主题：**把 UTF-8 输出防护铺全**。v5.26 只补了 6 个脚本，CI 立刻在下一个
