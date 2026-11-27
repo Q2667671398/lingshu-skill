@@ -1,25 +1,25 @@
 {
-  "version": "5.24",
+  "version": "5.25",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "c42f2c7ad46211a569b2d97e3429fe5e1fd4cfed4278212a1fcaba58dd938c7c",
-      "size": 358080
+      "sha256": "cba644df2d4d4026d8af82f7e2ed35ba987fd0d2c67ff3d33ba01c018572bd5e",
+      "size": 360034
     },
     "README.md": {
-      "sha256": "61ad5b2eec1911681aa29304055904189a89e0ead64707d262f87a94c7ad81c1",
+      "sha256": "ca116dd0efe631bd9ff8f2cb097c23c224f358593bbfcb4bd7d5fc760ae6bee3",
       "size": 112859
     },
     "SKILL-lite.md": {
-      "sha256": "423f97d64042233a5a1678384fba307a91a62ab0ed2e8d01f89e44a926d6e83d",
-      "size": 4439
+      "sha256": "5dcbdc1c4a3a52dbf0f83b0f139ff98f43721de366da5c9a78e3b4790bfabc05",
+      "size": 4440
     },
     "SKILL-tiny.md": {
-      "sha256": "aff71d79e6384c14e8895405bbf178d2b57f679540b12a6afaeba6e39b15116b",
-      "size": 1912
+      "sha256": "d7ce96d706c00d0508e9cf7a6ce7581533a5947a4bab56b19c9f73b1c7e023c3",
+      "size": 1913
     },
     "SKILL.md": {
-      "sha256": "4f952c5b1f244c78c5208149b2d87454d771350d87e015afee996cc5c0a8b73d",
-      "size": 39026
+      "sha256": "bfadc0d26c184f4999b3bc9c256cf48de69f56c9d197cd7fd529d7f15bb4d530",
+      "size": 39250
     },
     "assets/lingshu-icon-preview.png": {
       "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
@@ -101,10 +101,6 @@
       "sha256": "596bc1a3414f2de5569dcb41a0c494acae7daa534efd5a91dbcc3c4cb308d695",
       "size": 4624
     },
-    "docs/npm-发布说明.md": {
-      "sha256": "b05e9f9510605bf7f5fff69cf8f351794367655ba65390d1091e597794439934",
-      "size": 3463
-    },
     "docs/panel-api.md": {
       "sha256": "d57f793c7504c50272a16d99f7d6bcd3fd6a246bad8f049199920ff0f0f00f00",
       "size": 14905
@@ -113,24 +109,12 @@
       "sha256": "2e9443d8416048c72ebe5cbec03a437fb833e41f4cd6cc4b3c8ee14ea73a0e8e",
       "size": 4146
     },
-    "docs/tgz-安装说明.md": {
-      "sha256": "ed0b8b64ad46ebb63b5000b1aaf053e623e43196c93dfd578aa7dba7f5a3bc5b",
-      "size": 2074
-    },
-    "docs/发布自动化.md": {
-      "sha256": "dd1b9631cb88596561bf40317a8a7a2322f57ac121d925d0c27daa39c88401aa",
-      "size": 2632
-    },
-    "docs/审核改进待办.md": {
-      "sha256": "bfd99d61f20c4a7f02ced7b763167b87ab49d39061cb568fb9d6da212cd9e6b4",
-      "size": 11978
-    },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "f25660c252447c0f3963645bc2ab36fac93064b756724cccc5b4662597e07537",
+      "sha256": "ca8fd8f3214177e2c2d194b45ae9c60d3f96bc0e80e1fa5aa28f3680ef734e8c",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -158,24 +142,28 @@
       "size": 9011
     },
     "scripts/check_version.py": {
-      "sha256": "91c48c84f2c296c3461f4aa92132e3570dd268534b50b41048f06816b46a8544",
-      "size": 11687
+      "sha256": "22a52a6f8ad8903a6ecc738a5b544ed7ed9a35109d8a7fe7d58bcdeaee1c4c24",
+      "size": 12562
     },
     "scripts/checkpoint.py": {
       "sha256": "3a9292121042692dc872a865b6ee1c1e5f14c054791887e0791f19ccdb9638fb",
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "3b9e3f664b01776dbc8843a2ebc7172fe0b3f0c5c2b55adac87c2ed834d10d88",
-      "size": 308361
+      "sha256": "51ffd19d441bd0c9efebb13ff8cf13fd72ab102ab50047c600752d6fd389a664",
+      "size": 310941
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
       "size": 9928
     },
     "scripts/core.py": {
-      "sha256": "8304a370fae7f7acac7a749ac85768d4384b413cdaa7ac3b451c7b4d05238092",
-      "size": 108924
+      "sha256": "ab964997802e792add6fef95cd470e1f2d62aeb1048f46431626584242940072",
+      "size": 111873
+    },
+    "scripts/coverage_report.py": {
+      "sha256": "0b166b11af72f2184dcadd7b5cced42395fe95ec31bbc8d7448e2b03e07aa867",
+      "size": 6871
     },
     "scripts/desktop_shortcut.py": {
       "sha256": "77ea248bfaaf28e1e4299979d0c0d8c80a055642dde9a40f5e297b2008474091",
@@ -234,8 +222,8 @@
       "size": 3278
     },
     "scripts/mem_dialogue.py": {
-      "sha256": "825de9096245a45f115ab4fdb15eb5b13fc47edb952529b948764b6dafe979b2",
-      "size": 10236
+      "sha256": "3ea39782e930626e979b3a14718e643b107f959570efd2053216da220e3ec376",
+      "size": 10426
     },
     "scripts/mem_embed.py": {
       "sha256": "b98478243237221a5bce491a5cbf4ca2753de29285086abfb0a855e3473c27a8",
@@ -254,8 +242,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "a02394b2ee3d75ab2ef4f2db9af5596b51cb75b7e9d8095ae27a0417957e52d6",
-      "size": 269416
+      "sha256": "a2298c0146f011709230a314f2127c6ae33b1063c70f4fe353a1254e798036f6",
+      "size": 269887
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",
@@ -290,16 +278,16 @@
       "size": 4776
     },
     "scripts/panels.py": {
-      "sha256": "87dfce47693340af7c9bc6010a593256331e32c2e8504a0ac0745cf2ef992fd6",
-      "size": 26593
+      "sha256": "9db94038c2c11fc5da0f2f7c3292d01053acfaf1b74f1517a1f1c4402895fef4",
+      "size": 27136
     },
     "scripts/persona.py": {
       "sha256": "f3e12472ed33aaea01c1694247ba9838126e2c432ce5edac194c621ddadc9a1b",
       "size": 109020
     },
     "scripts/release.py": {
-      "sha256": "ed2e81308458e5292e0a22c8c2214301304e08e0869b6babe3a4fd718c78d73a",
-      "size": 10014
+      "sha256": "b59cfa472acc0e62b3720c9dc6eac2b2a016def0a3d0605abd3b9bad465cc4ed",
+      "size": 10690
     },
     "scripts/retriever.py": {
       "sha256": "85a35f8f660767cff1c068e722b51e3b5623c4dffe4822527eee96f9220240d3",
@@ -310,12 +298,12 @@
       "size": 5406
     },
     "scripts/safety.py": {
-      "sha256": "7586d8d4a627eec67a4891b758665289a33e07a45fd27d526d45c70d1178cd53",
-      "size": 14530
+      "sha256": "01ff42b7dac0eeac45c4a1e8cee97a21d8f0de55067213a61efbb95073186638",
+      "size": 15947
     },
     "scripts/safety_net.py": {
-      "sha256": "df4c0e25280a13cbea1b36103dcc622427c7919de567f2e301465837d00f9792",
-      "size": 13347
+      "sha256": "4066da364082ebe5ec0bbccb9b516f3b1583516b4a2c5e1d410f8ba7c5819c0b",
+      "size": 14027
     },
     "scripts/session_import.py": {
       "sha256": "31c68069800e6ca8c91aad7869e7e174adc0b1e027ac0a4f7361a2c3a5363b3f",

@@ -61,3 +61,9 @@ scripts/recreate_push.ps1
 # AI 待删区（用户自己清空，不进版本库）
 垃圾桶/
 _ui_probe/
+
+# 内部开发文档：这些只本地维护，绝不推到上游（用户指示）
+docs/tgz-*.md
+docs/发布自动化.md
+docs/审核改进待办.md
+docs/npm-发布说明.md
