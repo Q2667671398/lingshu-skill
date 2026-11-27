@@ -324,10 +324,33 @@ def is_interactive() -> bool:
         return False
 
 
+def require_token(action: str, given: str, expected: str, *, hint: str = "") -> None:
+    """破坏性操作的一次性确认码校验（与 confirm_destructive 同属 safety 的一套原语）。
+
+    为什么不并进 y/N：这类操作要能被**程序 / AI 调用时强制显式写下指纹**，
+    而那种场合 stdin 不是终端，交互提示根本不会出现。
+    这样说清分工，比"两套逻辑各写各的"更难出错：
+      · confirm_destructive —— 有终端时的人机确认（--yes 或 y）
+      · require_token       —— 任何场合都必须匹配的指纹
+
+    不匹配抛 ValueError（调用方负责转成退出码）。
+    """
+    if not expected:
+        raise ValueError(f"[{action}] 缺少确认码基准（内部错误）")
+    if not given or str(given) != str(expected):
+        msg = (f"[{action}] 需显式确认：确认码不匹配"
+               f"（应为目标 id 的前 {len(str(expected))} 位）")
+        if hint:
+            msg += f"。{hint}"
+        raise ValueError(msg)
+
+
 def confirm_destructive(action: str, impact: str | list[str], *,
                         assume_yes: bool = False,
                         hint: str = "",
-                        stream=None) -> bool:
+                        stream=None,
+                        token: str = "",
+                        expect_token: str = "") -> bool:
     """破坏性操作的统一确认。返回 True＝可以继续，False＝调用方应中止（或被取消）。
 
     参数：
@@ -342,6 +365,11 @@ def confirm_destructive(action: str, impact: str | list[str], *,
     print(f"[{action}] 影响面：", file=out)
     for line in lines:
         print(f"  - {line}", file=out)
+
+    # 指纹校验放在最前：设了 expect_token 就必须匹配，--yes 也绕不过。
+    # 这样"确认码"与"影响面提示"是同一处代码，不会出现某个入口忘了校验。
+    if expect_token:
+        require_token(action, token, expect_token, hint=hint)
 
     if assume_yes:
         print(f"[{action}] 已通过 --yes 确认。", file=out)

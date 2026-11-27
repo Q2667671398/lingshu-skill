@@ -253,7 +253,17 @@ def delete(name: str, source: str) -> None:
         raise ValueError(f"面板不存在：{name}")
     if source == "installed" and _active_name() == name:
         raise ValueError("该面板正在使用中，请先切换回默认面板再删除")
-    shutil.rmtree(d, ignore_errors=False)
+    # 只移不删：面板目录整棵移进程序目录的「垃圾桶」，带时间戳，用户自己清。
+    # （原先是 shutil.rmtree —— 违反「只移不删」的规矩，删了无法捞回。）
+    trash_root = _panel_trash_dir()
+    dst = trash_root / f"{time.strftime('%Y%m%d-%H%M%S')}_{d.name}"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(d), str(dst))
+
+
+def _panel_trash_dir() -> Path:
+    """垃圾桶根目录：程序目录下的「垃圾桶/panels」。"""
+    return Path(__file__).resolve().parent.parent / "垃圾桶" / "panels"
 
 
 def upload(name: str) -> dict:

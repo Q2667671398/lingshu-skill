@@ -136,6 +136,22 @@ def check(staged: bool = False, base: str = "HEAD") -> int:
                       f"（{m_first.strip()}），与 SKILL.md version（{new_ver}）不一致。"
                       f"先在 CHANGELOG 顶部补 v{new_ver} 小节。", file=sys.stderr)
                 return 1
+    # SKILL-lite / SKILL-tiny 的 version 是"文档对得上哪个引擎"的标记。
+    # 它们**不**触发"改了就必须升版"，但一旦写了 version 就必须与 SKILL.md 一致，
+    # 否则读者会拿一份标着 5.4 的裁剪文档去操作 5.24 的引擎（实测漂了 20 个小版本）。
+    for _rel in ("SKILL-lite.md", "SKILL-tiny.md"):
+        _p = ROOT / _rel
+        if not _p.is_file():
+            continue
+        _m = re.search(r"^version:\s*([\d.]+)", _p.read_text(encoding="utf-8-sig"), re.M)
+        if not _m:
+            continue
+        if _m.group(1) != new_ver:
+            print(f"[version] 拒绝：{_rel} version（{_m.group(1)}）与 SKILL.md "
+                  f"version（{new_ver}）不一致。跑 release.py bump 会自动同步，"
+                  f"或手动改成 {new_ver}。", file=sys.stderr)
+            return 1
+
     # manifest.json 存在时：其 version 必须与 SKILL.md 完全一致
     mf_path = ROOT / "manifest.json"
     if mf_path.exists():

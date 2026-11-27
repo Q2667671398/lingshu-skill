@@ -571,6 +571,80 @@ def redact(text: str) -> str:
         return text
 
 
+# ---------------------------------------------------------------- 被吞异常计数
+# 为什么需要它：代码里有大量 `except ...: pass`（审计数出 188 处，多为
+# `except OSError: pass` 的可选操作，属正常取舍）。问题是"取舍"和"真出故障"
+# 长得一模一样，所以故障可以被静默吞掉很久没人知道。
+# 日志靠不住（1MB 轮转 + 最旧文件丢弃，实测只剩 26 条），所以单独计数。
+SWALLOW_FILE = HOME / "swallowed.json"
+SWALLOW_KEEP_DAYS = 30
+
+
+def swallow(kind: str, exc: BaseException | None = None, *, where: str = "") -> None:
+    """记一次"被吞掉的异常"。绝不抛、不阻塞、不做重活。
+
+    只在**关键路径**上调用（写盘/迁移/恢复/召回降级），不要给每个
+    `except OSError: pass` 都加——那样计数器本身就成了噪音。
+    """
+    if READONLY:
+        return
+    try:
+        day = time.strftime("%Y-%m-%d", time.localtime())
+        key = f"{day}|{kind}"
+        data = {}
+        try:
+            if SWALLOW_FILE.is_file():
+                data = json.loads(SWALLOW_FILE.read_text(encoding="utf-8-sig"))
+                if not isinstance(data, dict):
+                    data = {}
+        except Exception:  # noqa: BLE001
+            data = {}
+        rec = data.get(key)
+        if not isinstance(rec, dict):
+            rec = {"n": 0, "last": "", "where": ""}
+        rec["n"] = int(rec.get("n") or 0) + 1
+        rec["last"] = str(exc)[:160] if exc else ""
+        if where:
+            rec["where"] = where[:80]
+        data[key] = rec
+        # 只留最近 SWALLOW_KEEP_DAYS 天
+        cutoff = time.strftime("%Y-%m-%d",
+                               time.localtime(time.time() - SWALLOW_KEEP_DAYS * DAY))
+        data = {k: v for k, v in data.items() if k.split("|")[0] >= cutoff}
+        atomic_json(SWALLOW_FILE, data)
+    except Exception:  # noqa: BLE001
+        pass   # 计数器自己绝不能再抛
+
+
+def swallow_report(days: int = 7) -> dict:
+    """近 N 天被吞异常的汇总：{total, by_kind: {kind: n}, days}。"""
+    out = {"total": 0, "by_kind": {}, "days": days}
+    try:
+        if not SWALLOW_FILE.is_file():
+            return out
+        data = json.loads(SWALLOW_FILE.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            return out
+        cutoff = time.strftime("%Y-%m-%d",
+                               time.localtime(time.time() - max(1, days) * DAY))
+        by = {}
+        for key, rec in data.items():
+            try:
+                day, kind = str(key).split("|", 1)
+            except ValueError:
+                continue
+            if day < cutoff:
+                continue
+            n = int((rec or {}).get("n") or 0)
+            if n > 0:
+                by[kind] = by.get(kind, 0) + n
+        out["by_kind"] = by
+        out["total"] = sum(by.values())
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def log_event(kind: str, message: str, level: str = "info", **extra) -> None:
     """轻量运行日志（lingshu.log）：锁冲突、内部异常、解析报错等留痕，面板「日志」页可看。
 

@@ -2733,9 +2733,16 @@ def purge(memory_id: str, confirm_token: str) -> dict:
     """
     if READONLY:
         raise PermissionError("记忆库当前只读，无法物理删除。")
-    if not confirm_token or confirm_token != memory_id[:8]:
-        raise ValueError(
-            f"物理删除需显式确认：--confirm {memory_id[:8]}（传入的确认码不匹配）")
+    # 统一走 safety 的确认原语（原先这里自己写了一段比对，文案与 safety 那套不一致，
+    # 也让"破坏性确认"散落在两个模块里）。
+    try:
+        import safety as _safety
+        _safety.require_token("物理删除记忆", confirm_token, memory_id[:8],
+                             hint=f"--confirm {memory_id[:8]}")
+    except ImportError:  # safety 未部署时退回原判据，别把删除功能整体搞挂
+        if not confirm_token or confirm_token != memory_id[:8]:
+            raise ValueError(
+                f"物理删除需显式确认：--confirm {memory_id[:8]}（传入的确认码不匹配）")
     cutoff = now_ts() - _PURGE_COOLDOWN_DAYS * DAY
     with _locked(HOME / "hippocampus.jsonl"):
         records = load_all()

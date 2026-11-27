@@ -75,6 +75,10 @@ def _sanitize_config_json(data: bytes) -> bytes:
         if isinstance(cloud, dict):
             cloud.pop("gitee_token", None)
             cloud.pop("github_token", None)
+        # 顶层 token 也要清：growth._remote_token 读的是 config.json **顶层**的
+        # gitee_token / github_token，不清会把"能推/能删仓库"的凭据明文带进备份 zip
+        for k in ("gitee_token", "github_token", "token", "api_key"):
+            cfg.pop(k, None)
         return json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")
     except Exception:
         return b""  # 解析失败宁可跳过也不把可能含密的原文写进备份
@@ -4159,6 +4163,21 @@ def _main(argv=None) -> int:
 
             pinned = bool(_re.search(r"^github:.*#[0-9a-f]{7,}", spec))
             behind = bool(installed and src and installed != src)
+            # 声明里的 X.Y（`^5.18` / `^5.18.0` / `~5.18` / `5.18.x` 都认）。
+            # semver 范围在语义上"兼容"新版，但**商店/依赖视图读的是这个字符串**，
+            # 声明停在 5.18 就一直显示 5.18.0（实测漂了 6 个版本没人发现）。
+            m_decl = _re.search(r"(\d+)\.(\d+)", spec or "")
+            decl_xy = f"{m_decl.group(1)}.{m_decl.group(2)}" if m_decl else ""
+            src_xy = ""
+            m_src = _re.match(r"(\d+)\.(\d+)", src or "")
+            if m_src:
+                src_xy = f"{m_src.group(1)}.{m_src.group(2)}"
+            if decl_xy and src_xy and decl_xy != src_xy:
+                return ("app-pin", "WARN",
+                        f"APP 依赖声明是 \"{spec}\"（显示 v{decl_xy}），源码已 v{src_xy}——"
+                        f"商店/依赖视图会一直显示旧版本。"
+                        f"修：把 profile 的 package.json 改成 \"^{src}.0\"，"
+                        f"再在该目录跑 pnpm install --no-frozen-lockfile")
             if pinned and behind:
                 sha = spec.rsplit("#", 1)[-1][:8]
                 return ("app-pin", "WARN",
@@ -4254,6 +4273,24 @@ def _main(argv=None) -> int:
                 parts.append("排查：看 `logs` 与 `status`，必要时重跑 update_dsh_copy.ps1 后重启插件")
                 return ("runtime-liveness", "WARN", "；".join(parts))
             return ("runtime-liveness", "PASS", "；".join(parts))
+
+        def _doctor_swallowed() -> tuple:
+            """近 7 天被吞掉的异常（写盘/摄取/回滚等关键路径）。"""
+            try:
+                import core as _c
+                r = _c.swallow_report(7)
+            except Exception as exc:  # noqa: BLE001
+                return ("swallowed", "PASS", f"计数器不可用（跳过）：{exc}")
+            total = int(r.get("total") or 0)
+            by = r.get("by_kind") or {}
+            if not total:
+                return ("swallowed", "PASS", "近 7 天没有关键路径吞异常")
+            top = "、".join(f"{k}×{v}" for k, v in
+                            sorted(by.items(), key=lambda kv: -kv[1])[:3])
+            # 阈值：单类 >10 或总量 >30 才算"有东西长期在静默失败"
+            worst = max(by.values()) if by else 0
+            level = "WARN" if (worst > 10 or total > 30) else "PASS"
+            return ("swallowed", level, f"近 7 天吞了 {total} 次（{top}）")
 
         def _doctor_skill_evolve() -> tuple:
             """P2-2：技能贴士文件是否存在（有经验被回灌过）。只读，无贴士不算错误。"""
@@ -4533,6 +4570,12 @@ def _main(argv=None) -> int:
             checks.append(_doctor_runtime_liveness())
         except Exception as e:
             checks.append(("runtime-liveness", "WARN", f"自检失败：{e}"))
+
+        # 13c. 关键路径被吞异常计数（让"最近七天吞了多少次"可见）
+        try:
+            checks.append(_doctor_swallowed())
+        except Exception as e:
+            checks.append(("swallowed", "WARN", f"自检失败：{e}"))
 
         # 13b. P2-2：技能贴士（自我进化的落点）
         try:

@@ -339,6 +339,13 @@ def guarded_write(reason: str, writer, names=None, allow_shrink=()) -> dict:
                 report["error"] = f"写入异常已回滚：{err}"
             except Exception as rexc:  # noqa: BLE001
                 report["error"] = f"写入异常且回滚失败：{err} / {rexc}"
+                # 最危险的一档：写入出了问题、回滚也没成功 ⇒ 数据处于脏状态，
+                # 却只体现在返回值里。计一次数，让 doctor 的 swallowed 项能看见。
+                try:
+                    import core as _c
+                    _c.swallow("safety.rollback", rexc, where="safety_net.guarded_write")
+                except Exception:  # noqa: BLE001
+                    pass
         return report
     if _verify_enabled():
         v = verify(names, allow_shrink=allow_shrink)
@@ -352,4 +359,9 @@ def guarded_write(reason: str, writer, names=None, allow_shrink=()) -> dict:
                     report["ok"] = True   # 已回滚，数据一致
                 except Exception as rexc:  # noqa: BLE001
                     report["issues"].append(f"回滚失败：{rexc}")
+                    try:
+                        import core as _c
+                        _c.swallow("safety.rollback", rexc, where="safety_net.guarded_write")
+                    except Exception:  # noqa: BLE001
+                        pass
     return report

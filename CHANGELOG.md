@@ -1,5 +1,49 @@
 # 更新日志
 
+## v5.25（2026-11-27）
+
+> 主题：**三个真问题** + 中转站 compat 修复。
+
+### 修：面板删除不再 rmtree（只移不删）
+
+`panels.py` 删除已安装面板原来用 `shutil.rmtree(d)` —— 直接整棵删掉，无法捞回，
+违反本项目「只移不删」的规矩。现改为把面板目录整棵 `shutil.move` 进
+程序目录的 `垃圾桶/panels/<时间戳>_<面板名>/`，由用户自己清空。
+
+### 修：备份脱敏补上顶层 token
+
+`_sanitize_config_json` 原来只清 `panel.cloud` 里的 gitee/github_token，
+而 `growth._remote_token` 读的是 config.json **顶层**的同名键 ——
+不清会把"能推/能删仓库"的凭据明文带进备份 zip（备份默认不加密）。
+现在顶层也一并清掉（`gitee_token`/`github_token`/`token`/`api_key`）。
+
+### 修：coverage_report 的注入调用
+
+`context_injection` 这个函数名不存在，实际是 `build_injection`（memory.py:4430）。
+修正后覆盖率工具的 25 步冒烟全部可用。
+
+### 中转站 compat（laneai1）
+
+`~/.dsh/profiles/desktop/cordis.patch.yml` 里 `laneai1`（按次）原来没有
+`compat` 块，带 `system` 消息的请求会报 `400 upstream_error`（请求参数有误）。
+已补上与 `laneai` 相同的：
+
+```yaml
+compat:
+  supportsDeveloperRole: false
+  maxTokensField: max_tokens
+```
+
+### 记录：内部脚手架泄漏已结案（非灵枢问题）
+
+结论已写进 `docs/审核改进待办.md` §1.2 与灵枢记忆：泄漏来自模型/harness 的
+上下文压缩输出，不是灵枢模板问题，也不是可就地修补的 DSH UI 代码
+（DSH 的 app.asar 是 209MB 打包归档）。此前在 `SKILL.md` 写禁用标记清单、
+写 `output_lint.py` 检测器，两次都拦不住，已撤/已移入垃圾桶。
+仍然有效的是**短回复纪律**（桌面端会截断长消息）。
+
+验证：全量测试通过；三项修复各自冒烟 OK（build_injection / trash dir / 脱敏）。
+
 ## v5.24（2026-11-26）
 
 > 主题：**记忆写入脱敏**——对话里的密钥不再明文落盘。

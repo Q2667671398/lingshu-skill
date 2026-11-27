@@ -121,6 +121,20 @@ def do_bump(new_ver: str, title: str) -> int:
             print(f"[release] {rel} 没找到版本标记 {o!r}，拒绝继续", file=sys.stderr)
             return 1
         p.write_bytes(b.replace(o, n, 1))
+    # 1b) SKILL-lite / SKILL-tiny 的 version 跟着走。
+    # 它们不触发"必须升版"（裁剪文档，正文可能长期不动），但头部的 version 若十年不动，
+    # 会让人误判"这份文档对得上引擎"。用字节级正则改，保 BOM 与原换行。
+    for rel in ("SKILL-lite.md", "SKILL-tiny.md"):
+        lp = ROOT / rel
+        if not lp.is_file():
+            continue
+        b = lp.read_bytes()
+        nb, cnt = re.subn(rb"^version:\s*[\d.]+",
+                          f"version: {new_ver}".encode(), b, count=1, flags=re.M)
+        if cnt:
+            lp.write_bytes(nb)
+            print(f"[release] {rel} version → {new_ver}")
+
     # CHANGELOG 首节改写为新版本（占位，正文留空由维护者补）
     cl = ROOT / "CHANGELOG.md"
     t = cl.read_text(encoding="utf-8")

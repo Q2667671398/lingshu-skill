@@ -220,6 +220,8 @@ def ingest_dialogues(paths=None, limit: int | None = None, dry_run: bool = False
                                  channel=f"dialogue:{f.stem}")
                     except Exception as exc:
                         core.log_event("dialogue", f"对话摄取写入失败（{f.name}）：{exc}", level="warn")
+                        # 这条吞掉等于"对话没进记忆"——用户以为记下了，其实没有
+                        core.swallow("dialogue.ingest", exc, where="mem_dialogue")
                         continue
                 known.add(digest)
                 file_hashes.append(digest)
