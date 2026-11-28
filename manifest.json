@@ -1,25 +1,25 @@
 {
-  "version": "5.32",
+  "version": "5.33",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "dd9a2d44135beb92c13cdad61b4b7190a1506246a1ea80040410114d29d0c64a",
-      "size": 382536
+      "sha256": "482c889535edaf2a499d03792f3a763e64284fc4a24fd3ab1527935275ee34db",
+      "size": 385180
     },
     "README.md": {
-      "sha256": "90dfd4c056fb50c1690f750c30b24d50d5ca2efff1526300187b7e2670d24d54",
+      "sha256": "4f5d3aea0c99277fee13d42a7527a04cc677a9e0ec4eeb59f7cae21027cf78c3",
       "size": 112859
     },
     "SKILL-lite.md": {
-      "sha256": "b6b25a4ebafb495e3f87cdadf5aa19499525cd03bc2212d54a38800283aaaaac",
+      "sha256": "a11e4ffe9408e1ac2d91c304ac164dfe5fb1537995e675369a5e3f9e84594385",
       "size": 4440
     },
     "SKILL-tiny.md": {
-      "sha256": "caf0d028fc5597a01c4cc02dbe76f49a804f7b7efc2ceaa4dc80e53dae1746ee",
+      "sha256": "34bd9ba8aa6fd6f839bc07dc691d5b69f54fcf853d9debd4e24c4d73d6f548ab",
       "size": 1913
     },
     "SKILL.md": {
-      "sha256": "66717790ab9d2cbfa176ce71912cd0aba6fcc30d6990be2323b5d947cd9282bd",
-      "size": 22938
+      "sha256": "4b376bd706094f62170a9fb578beb109fdd369fa3eb1b64c1da0c0f6c41cc382",
+      "size": 23610
     },
     "assets/lingshu-icon-preview.png": {
       "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
@@ -118,7 +118,7 @@
       "size": 5588
     },
     "package.json": {
-      "sha256": "6efd141a78d5127e11a570260a7f37d19982d448f3ee6ae0d83773dd36c15f08",
+      "sha256": "ebd37d2abaca6c830ae3b55bbc51a178e3f361d400ee2ae2a48638c48634f868",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -154,8 +154,8 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "c27029b7000a6693f59f6e00d29632e79b685b5056d09e1d02ef2a336015394d",
-      "size": 313668
+      "sha256": "71074d6158b2131255668e3edb4cb24f068b6acc8e6095b954cface9a1fd1d3e",
+      "size": 314894
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",

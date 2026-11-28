@@ -1,7 +1,7 @@
 ---
 name: lingshu
 title: 灵枢
-version: 5.32
+version: 5.33
 description: 类脑持久记忆/人格/成长。跨会话记住事情、长出人格、上下文将满时做梦整理。用户提记忆/记住/上次/人格/设定/性格/知识库/笔记/日志/成长/自我进化/工作记忆，或新会话需恢复关系上下文时用。纯本地零依赖。
 ---
 
@@ -122,7 +122,20 @@ python scripts/brain.py startup --query "<用户这句或本次主题>" [--budge
 
 勿等被动截断，按序主动交接：
 
-1. **先落盘再压缩**。下一步要用的硬信息(路径+行号/命令/报错原文/用户纠正原话)压缩必失真→先写交接笔记：当前状态·未完成任务(按序)·环境注意·验证命令。压缩只处理过程叙述。
+1. **先落盘再压缩**。下一步要用的硬信息(路径+行号/命令/报错原文/用户纠正原话)压缩必失真→先写交接笔记。
+   一条命令搞定(四段式，**别交互输入**，宿主里 input() 可能 EOF)：
+
+   ```bash
+   python scripts/brain.py check-context --handoff \
+     --section "状态=做到哪了" \
+     --section "目标=这轮要交付什么" \
+     --section "死路及原因=试过什么不行、为什么" \
+     --section "下一步=下个会话第一件事"
+   ```
+
+   它会同时写两处：`notes`(kind=log，可 recall)与 `handoffs/`(**下次 startup 注入**)。
+   查看最近一次交接：`python scripts/brain.py memory show` 不便时，直接读
+   `~/.brain-memory/handoffs/handoff_*.json`(最新一个文件名时间戳最大)。
 2. **边写边沉淀**：有价值的工作流/教训写进 `SKILL.md` 或 `docs`——写下来才算拥有。一次性状态写笔记，勿污染技能文档。
 3. **带摘要重开**：`new_context` 携摘要。结构：①用户意图与纠正(原话保关键)→②关键结论/路径/命令→③已完成→④未完成(按序)→⑤下一步第一动作。新窗口**先读笔记再动手**。
 4. **双向保险**：交接前 `remember`／`work add` 写未完成任务——笔记没读到 `recall` 也能补。
@@ -254,6 +267,7 @@ python scripts/brain.py remember "内容" --kind fact --importance 7 [--project 
 python scripts/brain.py recall "关键词" --k 6 [--project 项目名]  # 同项目 +0.25(不硬过滤)
 python scripts/brain.py capture "原文" --tag 逃生
 python scripts/brain.py check-context --used 68                # 60清点/75做梦/90封存
+python scripts/brain.py check-context --handoff --section "状态=…" --section "下一步=…"  # 交接(压缩前必写)
 python scripts/brain.py status --json --exit-code              # 水位唯一数据源(0/1=60%/2=75%/3=90%)
 python scripts/brain.py dream --auto | dream --verify [--done] # 做梦/合并抽检
 python scripts/brain.py doctor [--json]                        # 17 项体检

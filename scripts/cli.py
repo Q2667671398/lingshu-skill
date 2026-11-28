@@ -5075,10 +5075,27 @@ def _main(argv=None) -> int:
                 print("（没输入任何内容，未写交接笔记）")
                 return 0
             body = "\n".join(f"【{k}】{v}" for k, v in sections.items())
-            tags = "、".join(["交接", "handoff"])
             rec, _ = growth.write_note("log", "交接笔记 · " + time.strftime("%m-%d %H:%M"), body,
                                        tags=["交接", "handoff"])
-            print(f"交接笔记已落盘：{rec.get('id', '')}（notes 里 kind=log，startup 会带出来）")
+            print(f"交接笔记已落盘：{rec.get('id', '')}（notes 里 kind=log）")
+            # ★ 同时落 handoffs/（v5.32 打通）：startup 注入读的是 dream.latest_handoff()，
+            #   只写 notes 的话这份手工交接**永远进不了注入**——AI 在水位高时辛苦写的
+            #   「状态/死路/下一步」下个会话看不到，而注入的是 dream 那套自动摘要（可能过时）。
+            try:
+                import dream as _dm
+                _pts = [v for k, v in sections.items() if k in ("目标", "死路及原因")]
+                _dm.save_handoff({
+                    "at": _dm.now_ts(),
+                    "mode": "manual",
+                    "replayed": 0,
+                    "状态": sections.get("状态") or f"手工交接（{len(sections)} 段）",
+                    "要点": _pts[:6],
+                    "未决": [sections["下一步"]] if sections.get("下一步") else [],
+                    "下一步": sections.get("下一步") or "先读 notes 里这条交接笔记，再从「状态」继续",
+                })
+                print("          同时写入 handoffs/：下次 startup 的注入包里会带出这份交接。")
+            except Exception as _e:  # noqa: BLE001
+                print(f"[警告] 写 handoffs/ 失败（notes 已存，不影响）：{_e}", file=sys.stderr)
             return 0
         cfg = load_config()
         # v3.86：--used 缺省时按优先级取真实水位——
