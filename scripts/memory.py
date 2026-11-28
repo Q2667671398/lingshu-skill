@@ -5819,8 +5819,33 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
                              "budget_frac": round(t / budget, 4) if budget else 0.0})
             total_chars += c
             total_tokens += t
-        # 自检：各段 chars 求和必须严格等于最终文本长度，否则账单不可信。
-        assert total_chars == len(_result), (total_chars, len(_result))
+        # 自检：各段 chars 求和应等于最终文本长度。
+        # ⚠ 不能用 assert（v5.31 实测修）：
+        #   1) 上方对 _result 做过指针标记替换，长度会变，按未替换的 out 累加必然不等；
+        #   2) 生产代码用 assert 校验数据，`python -O` 下会被整体跳过；
+        #   3) 它把观测工具变成崩溃源——`context-stats` 会因为这里直接退出。
+        # 改为：按真实长度把差额归到 other 段（保证 Σ段 == 总长、账单可信），
+        # 同时记 warn，真实装配 bug 仍然看得见。
+        if total_chars != len(_result):
+            _delta = len(_result) - total_chars
+            for _s in sections:
+                if _s["name"] == "other":
+                    _s["chars"] += _delta
+                    _s["tokens"] = int(math.ceil(_s["chars"] / ratio)) if _s["chars"] > 0 else 0
+                    _s["budget_frac"] = round(_s["tokens"] / budget, 4) if budget else 0.0
+                    break
+            else:
+                sections.append({"name": "other", "chars": _delta,
+                                 "tokens": int(math.ceil(max(0, _delta) / ratio)),
+                                 "budget_frac": 0.0})
+            total_chars = len(_result)
+            total_tokens = sum(_s["tokens"] for _s in sections)
+            try:
+                log_event("inject",
+                          f"注入账单字符数与实际不符（已按实际校正 {_delta:+d}）："
+                          "通常是指针标记替换改变了长度", level="warn")
+            except Exception:  # noqa: BLE001
+                pass
         report.update({"sections": sections, "total_chars": total_chars,
                        "total_tokens": total_tokens, "budget": budget,
                        "chars_per_token": ratio})

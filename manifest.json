@@ -1,25 +1,25 @@
 {
-  "version": "5.31",
+  "version": "5.32",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "948915a7568c1bd087a838c784c4e872a327470566ab18cbb8d894db9426fb68",
-      "size": 380745
+      "sha256": "dd9a2d44135beb92c13cdad61b4b7190a1506246a1ea80040410114d29d0c64a",
+      "size": 382536
     },
     "README.md": {
-      "sha256": "af118e93800c308de869eca4fbc6363d277f9abf2fe8e6d5154b2f2843f8d680",
+      "sha256": "90dfd4c056fb50c1690f750c30b24d50d5ca2efff1526300187b7e2670d24d54",
       "size": 112859
     },
     "SKILL-lite.md": {
-      "sha256": "e9147de39af645cf3b79c389285de70545a77e23fe1ef9039a2c50562585584c",
+      "sha256": "b6b25a4ebafb495e3f87cdadf5aa19499525cd03bc2212d54a38800283aaaaac",
       "size": 4440
     },
     "SKILL-tiny.md": {
-      "sha256": "321e193370dc16f0f9600f59c18e5882c192c70098591fb2961f92a08482e8d0",
+      "sha256": "caf0d028fc5597a01c4cc02dbe76f49a804f7b7efc2ceaa4dc80e53dae1746ee",
       "size": 1913
     },
     "SKILL.md": {
-      "sha256": "fc0753c72eaa3f3562f805a01bf42b4af9be1c7d6404796e7e047d73e92c027a",
-      "size": 24806
+      "sha256": "66717790ab9d2cbfa176ce71912cd0aba6fcc30d6990be2323b5d947cd9282bd",
+      "size": 22938
     },
     "assets/lingshu-icon-preview.png": {
       "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
@@ -118,7 +118,7 @@
       "size": 5588
     },
     "package.json": {
-      "sha256": "8251a60c7233112c2ffe79537ea373af1271fc5506d6902b8049cd343ee98737",
+      "sha256": "6efd141a78d5127e11a570260a7f37d19982d448f3ee6ae0d83773dd36c15f08",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -246,8 +246,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "5cecfe368af057c145c940799fe0447490ea8b4c7180a3c41411519450786b74",
-      "size": 300410
+      "sha256": "cd564cb22e5414701d97d61051ddca4686c25a19df13871ab442859e8ba42a77",
+      "size": 301891
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",
