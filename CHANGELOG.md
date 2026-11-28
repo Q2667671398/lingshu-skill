@@ -1,5 +1,84 @@
 # 更新日志
 
+## v5.31（2026-11-28）
+
+> 主题：**水位显示 14% 而实际 67% 的根治** + 观测层全修 + 常加载文档瘦身。
+
+### 治：水位为什么长期只有真值的四分之一
+
+用户反复看到「上下文估算约 14%」而实际已 67%。查下来是**三个 bug 叠加**，
+而且第一个让「准确水位」这个能力**从上线起就是死的**：
+
+| # | 根因 | 后果 |
+|---|---|---|
+| W1 | `core.py` 里 6 处调用 `_num()`，**全库没有 `def _num`** | `token_context_pressure()` 每次抛 `NameError`，被 `except: return None` 吞掉 → **灵枢从来没读到过 APP tokenMeter 的真值**。`DETAIL_CONSOLIDATE` 的 lambda 同样炸（做梦淡化规则静默失效） |
+| W2 | `read_pressure` 里插件的字符估算无条件下压过 tokenMeter | APP 实测的 66% 被估算的 14% 盖住 |
+| W3 | 插件 `contextLimit` 写死 `131072`，实际 APP 是 **1000000** | 分母差 7.6 倍，光这一项就压掉一个数量级 |
+| W4 | 插件只统计 content 块的**顶层 `c.text`** | 工具结果正文在 `c.content`（字符串/嵌套数组）、`tool_use` 参数在 `input` → 整块漏计，旧实现只数到真值的 **2.3%** |
+| W5 | 一律按「2 字符 = 1 token」折算 | DeepSeek 官方口径是中文 0.6 token/字、英文 0.3 token/字 → 中文低估 17%、英文高估 67% |
+
+**修法**：
+- 补 `core._num()`（安全取数，排除 NaN/inf/bool）
+- `read_pressure`：估算类 source（`chars`/`floor`/`cron`）在有 tokenMeter 时**让位**；人工值（`manual`/`check-context`）仍优先
+- 插件 `estimateWater` 开头先读 `.context-pressure.json`（APP tokenMeter 的实时快照），拿到真值直接返回；估算只做兜底，且兜底用表内真实 `context_window`
+- 兜底路径：递归收集全部文本（`text`/`content`/`parts`/`data`/`input`）+ 按语言分别按官方系数折算
+- `_pressure.json` 落盘估算依据（`chars`/`tokens`/`limit`），下次不准能一眼看出是数漏还是系数错
+
+**实测**：`read_pressure()` 从 `{"pct":14.0,"source":"chars"}` → `{"pct":64.8,"source":"token-meter"}`。
+`_ui_probe/test_collect_chars.js` 证明旧收集器只数到新实现的 2.3%。
+
+### 修：P1 观测层在撒谎（5 条）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 10 | doctor 人格项读 `issues`/`problems`，而 `persona_check()` 只返回 `fails/warns/info` → **永远 PASS** | 按真实键读：fails→FAIL、warns→WARN、都空→PASS |
+| 11 | doctor 每跑一次写**两条**台账、字段名不同 | 统一为 `{kind, pass, warn, fail, checks}`，与 `growth.record_doctor_run` 同口径 |
+| 12 | 面板按 `passes/warns/fails` 求和，写方用 `pass/warn/fail` → 图表恒平；健康度另有一套公式 | 求和兼容两种字段名；健康度改为委托 `growth.health_score()` |
+| 13 | `subprocess.run()` 返回的 `CompletedProcess` **没有 `.pid`** → 必抛 AttributeError 被吞 → 占用者探测永远查不到 | 改 `Popen` + `communicate(timeout)`，`.pid` 才真实存在 |
+| 14 | 裸 `logger` 不存在（只有 `ctx.logger`）→ 唯一的数据丢失告警永不出现 | 改 `ctx.logger?.warn?.` |
+
+### 修：P2 静默失效 / 口径不一致（8 条）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 15 | `dream.capacity_cap` 读平铺键，而 `_set_cfg_path` 写嵌套 → 配置永不生效 | 改读 `cfg["dream"]["capacity_cap"]`，兼容旧平铺键 |
+| 16 | 导出知识读 `content`/`text`，实际字段是 `body` → 导出内容恒空 | 优先读 `body` |
+| 17 | GFS 分层保留被 hourly 一票否决 → `backup_keep_daily/weekly` 完全失效 | 改「保留集」：**显式 keep>0 是硬上限**，keep<=0 才走三层并集 |
+| 18 | 版本号比较未补零，`5.11 < 5.11.0` → 合法更新被误判「倒退」拒绝 | 补零到三段再比 |
+| 19 | 注入缓存读键带压力档位、写键不带 → 压力期**永不命中** | 写侧也传 `_p_tier` |
+| 20 | 标签门控用被截断到 6 条的 `active` 计数 → 满 6 条后「变多」永不成立，标签卡死 | 新增 `active_total` 未截断计数供门控，展示仍用 `active[:6]` |
+| 21 | 从记忆读不存在的 `confidence`，默认 1.0 → `limitations` 永不积累（死代码） | 默认值改 0.0 |
+| 22 | `forget` 不看 `pinned` → 置顶记忆可被一条命令移入淡忘区 | 抛 ValueError，与 `discard`/`apply_dream` 同口径 |
+
+### 修：P3 资源 / 违反项目规矩（6 条）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 23 | 小时级任务失败后不写 `state.hours` → 每回合重拉子进程 | 失败满 1 次即写时间戳 |
+| 24 | `todayStr` 用 `toISOString()`（UTC）→ 与 Python 本地日期差一天 | 改本地日期 |
+| 25 | 8 个 agent 级 Map 只增不删，`dispose` 只刷盘不清表 | `agent/dispose` 除刷盘外清表 |
+| 26 | `evolution.jsonl` 只追加无上限 | 超 5000 裁到 4000，与 `audit.jsonl` 同口径 |
+| 27 | 人格快照被 `unlink`（违反「只移不删」） | 改移入 `.pruned/` |
+| 28 | `allow_shrink` 是死参数（docstring 承诺、函数体从未使用） | 真正生效：`guarded_write` 采 baseline 行数，`verify` 比对 |
+| 29 | 超长单行文件静默 `continue`，永不摄取且无提示 | 记一次 warn 日志（同文件去重） |
+| 30 | `if decay_hours` 把 0 当「没给」 | 改 `is not None` |
+
+### 文档：常加载文件瘦身 + 用户版拆分
+
+- **`SKILL.md` 405 行 / 21939 字 → 341 行 / 14381 字（压掉 34.5%）**。
+  手段是散文改表格、命令族合并、细节下推 `docs/`（渐进式披露），**18 个章节一条规则没删**。
+  同时修正三处与代码不符的旧数据：45→**48** 个情绪名、13→**17** 项体检、`status --json` 需显式 `--exit-code`。
+- 新增 **`docs/使用指南.md`**（面向用户，大白话）——与 `SKILL.md`（面向 AI，压缩格式）分工明确。
+- 新增待办模板与状态口径（✅/🚧/⬜/🔍/❌，**没有证据不能标 ✅**）。
+
+### 教训（写进记忆）
+
+**`except Exception: return None` 会把 `NameError` 一起吞掉。**
+一个从未定义的函数名，让「准确水位」这个能力从上线起就是死的，而代码看起来完全正常。
+判据：except 分支必须记日志或用 `swallow()` 计数——静默吞异常等于把能力做成死的却看不出来。
+
+验证：94/94 测试通过；`sync --check` / `checksums --check` / `panel_build --check` 一致。
+
 ## v5.30（2026-11-27）
 
 > 主题：**代码审计 P0 九条全部修完**——全是"会静默丢数据"的 bug，一条 high。

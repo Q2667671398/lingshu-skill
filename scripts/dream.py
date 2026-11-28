@@ -504,8 +504,14 @@ def _bounded_growth(records: list, now: int) -> list:
     软上限可用 config `dream.capacity_cap` 覆盖。返回本次被归档的记录列表。
     保护名单与 _is_archivable 一致：pinned / verbatim / identity / correction / pending。
     """
+    # ⚠ `config set dream.capacity_cap N` 经 _set_cfg_path 写的是**嵌套**
+    # cfg["dream"]["capacity_cap"]；这里原来读平铺键 "dream.capacity_cap"，
+    # 永远取不到 → 软上限恒为 3000，用户配置形同虚设（审计 dream.py:499）。
     try:
-        cap = int(_num(load_config().get("dream.capacity_cap"), 3000))
+        _cfg = load_config()
+        _drm = _cfg.get("dream") if isinstance(_cfg.get("dream"), dict) else {}
+        _raw_cap = _drm.get("capacity_cap", _cfg.get("dream.capacity_cap"))
+        cap = int(_num(_raw_cap, 3000))
     except Exception:
         cap = 3000
     cap = max(cap, 100)  # 防呆：设得太小也不至于清空热层

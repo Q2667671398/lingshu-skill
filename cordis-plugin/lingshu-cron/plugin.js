@@ -226,7 +226,15 @@ function saveState(path, state) {
   } catch {}
 }
 
-const todayStr = () => new Date().toISOString().slice(0, 10)
+// ⚠ 必须用**本地**日期，不能用 toISOString()（那是 UTC）。
+// Python 侧 daily / fmt_date / doctor 的 date.today() 全是本地日期；
+// 东八区 00:00-08:00 之间两者差一天 → days 型任务（daily/conflicts/drift/
+// autoarchive）早上会多跑一遍，doctor 的"最落后 N 天"也算错（审计 plugin.js:229）。
+const todayStr = () => {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
 
 /** agent 的稳定标识（用于状态落盘）：拿不到稳定 id 就返回 null（仅内存计数）。 */
 function agentKey(agent) {
@@ -384,7 +392,7 @@ const pressureWritten = new Map()
  * 把水位写进 `HOME/_pressure.json`（注入侧读它降档）。
  * 只在"跨 5 个百分点"或"跨档"时真写，减少磁盘写；失败静默返回 false。
  */
-export function writePressure(pct, source, prevMax) {
+export function writePressure(pct, source, prevMax, extra = null) {
   try {
     if (pct == null || !Number.isFinite(Number(pct))) return false
     const p = Math.round(Number(pct))
@@ -396,7 +404,15 @@ export function writePressure(pct, source, prevMax) {
     pressureWritten.set('last', { pct: p, tier: key })
     const file = join(memoryHome(), '_pressure.json')
     const tmp = `${file}.${randomUUID()}.tmp`
-    writeFileSync(tmp, JSON.stringify({ pct: p, at: Math.floor(Date.now() / 1000), source: String(source || '') }), 'utf8')
+    // extra 落盘估算依据（chars / tokens / limit）：水位报错时能直接看出是"数漏了"
+    // 还是"系数不对"，不用再猜。注入侧只读 pct，多出的字段不影响它。
+    const payload = { pct: p, at: Math.floor(Date.now() / 1000), source: String(source || '') }
+    if (extra && typeof extra === 'object') {
+      for (const k of ['chars', 'tokens', 'limit']) {
+        if (Number.isFinite(Number(extra[k]))) payload[k] = Number(extra[k])
+      }
+    }
+    writeFileSync(tmp, JSON.stringify(payload), 'utf8')
     try { rmSync(file, { force: true }) } catch {}
     renameSync(tmp, file)
     return true
@@ -514,7 +530,8 @@ export function apply(ctx, config) {
   // 主动搭话待注入队列：turn-stopping 里决定要说的话，留到下一轮 pre-step 注入
   // （turn-stopping 阶段已经改不了本轮上下文了）。
   const pendingNotice = new Map()
-  const waterState = new Map() // agent -> { max } 水位守卫已提醒的最高档（60/75/90 各提醒一次）
+  let _waterDebugAt = 0   // 水位诊断转储的节流时间戳（v5.32）
+const waterState = new Map() // agent -> { max } 水位守卫已提醒的最高档（60/75/90 各提醒一次）
   // v3.57：review 提醒已发过的 agent（每会话一次，不再每轮催）
   const reviewNoticeAt = new Map()
   const waterAutoState = new Map() // agent -> { max } 水位自动执行已处理到的最高档（75/90 各动作一次）
@@ -637,6 +654,12 @@ export function apply(ctx, config) {
               `小时级任务失败（补跑第 ${r.count} 次）；`
               + `命令: brain.py ${(task.argv || []).join(' ')}；`
               + '可能是超时(timeoutMs)或非零退出，先手动跑一次确认')
+            // ⚠ 必须与天级分支同样封顶（审计 plugin.js:628）：
+            // 原来失败时不写 state.hours，dueByHours 因 last=0 恒为真 →
+            // 备份持续失败时**每个回合**都新拉一个子进程（最坏 120s）并刷一条
+            // 错误日志，注释承诺的"防备份风暴"根本没实现。
+            // 补跑满 1 次就先记一次时间戳，让下一个小时周期再试，别每回合重来。
+            if (r.count >= 1) state.hours[task.id] = Date.now()
           }
           stateSaver.flushNow()
         }
@@ -755,7 +778,11 @@ export function apply(ctx, config) {
         if (ok) convo.set(agent, { text: '', seen: buf?.seen }) // 清空缓冲，但保留游标（防止重复攒旧消息）
         else if (text.length > 200_000) {
           // 兜底防爆内存：截断保留头部 100k 而非全丢，并至少告警一次（#64）
-          try { logger.warn(`[lingshu-cron] extract 失败且缓冲超 200k，截断保留前 100k 字符（已丢失 ${(text.length - 100_000)} 字符）`) } catch {}
+          // ★ 必须用 ctx.logger（审计 plugin.js:766）：模块作用域里没有裸 `logger`
+          // （只有 ctx.logger 和本地 warn()，而后者是 once-only——这里丢的是数据，
+          // 每次都要报，不能被 once 吞掉）。原来写裸 logger 必抛 ReferenceError，
+          // 又被同一个 catch {} 吞掉 →「截断丢了多少字符」这条唯一告警永远不出现。
+          try { ctx.logger?.warn?.(`[lingshu-cron] extract 失败且缓冲超 200k，截断保留前 100k 字符（已丢失 ${(text.length - 100_000)} 字符）`) } catch {}
           convo.set(agent, { text: text.slice(0, 100_000), seen: buf?.seen })
         }
         running.delete('extract')
@@ -956,29 +983,136 @@ export function apply(ctx, config) {
   // v3.23 修：旧版只数 messages 的 text 字符，system prompt 与工具 schema 完全不计，
   // 而本 profile 光这两项就上万 token —— 真实 65% 时估算只有 20%，阈值永远不触发。
   // 返回 {pct, source}；拿不到任何依据返回 null。
+  /**
+   * 水位诊断转储（v5.32）：把"插件实际看到的 messages 形态"写盘，30 秒最多一次。
+   * 起因：递归收集修好后 chars 仍只有 915，而真实会话约需 10 万字符——
+   * 必须确认是"拿不到历史"还是"字段名不对"，不能再靠猜。
+   */
+  function _dumpWaterDebug(msgs, acc) {
+    try {
+      const now = Date.now()
+      if (now - _waterDebugAt < 30000) return
+      _waterDebugAt = now
+      const kinds = {}
+      let withUsage = 0
+      let sample = null
+      for (const m of msgs) {
+        const c = m?.content
+        const kind = Array.isArray(c) ? 'array' : (c === undefined ? 'undefined' : typeof c)
+        kinds[kind] = (kinds[kind] || 0) + 1
+        const u = m?.metadata?.usage || m?.usage || m?.modelUsage
+        if (u && typeof u === 'object') withUsage += 1
+        if (!sample && m) {
+          sample = {
+            role: m.role ?? null,
+            srcName: m?.source?.name ?? null,
+            contentKind: kind,
+            contentLen: Array.isArray(c) ? c.length
+              : (typeof c === 'string' ? c.length : null),
+            blockTypes: Array.isArray(c)
+              ? c.slice(0, 6).map((b) => b?.type ?? typeof b) : null,
+            topKeys: Object.keys(m || {}).slice(0, 14),
+          }
+        }
+      }
+      writeFileSync(join(memoryHome(), '_pressure_debug.json'), JSON.stringify({
+        at: Math.floor(now / 1000),
+        msgCount: msgs.length,
+        contentKinds: kinds,
+        msgsWithUsage: withUsage,
+        countedCjk: acc.cjk,
+        countedOther: acc.other,
+        sampleFirstMsg: sample,
+      }, null, 2), 'utf8')
+    } catch {
+      /* 诊断失败绝不影响主流程 */
+    }
+  }
+
+  /**
+   * 读 APP tokenMeter 的准确上下文压力快照（v3.86 起由 startup 插件写）。
+   * 这是**唯一能拿到真实上下文用量**的来源：pre-step 的 messages 只有本轮几条，
+   * 靠它算字符永远是猜。返回 {pct, tokens, window} 或 null（不可用/过期）。
+   */
+  function _readTokenMeter(ttlSec = 300) {
+    try {
+      const raw = JSON.parse(
+        readFileSync(join(memoryHome(), '.context-pressure.json'), 'utf8'))
+      if (!raw || raw.available !== true) return null
+      const pct = Number(raw.pct)
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) return null
+      const ts = Number(raw.ts)
+      if (Number.isFinite(ts) && Date.now() / 1000 - ts > ttlSec) return null
+      return {
+        pct: Math.min(100, Math.round(pct)),
+        tokens: Number(raw.pressure_tokens) || null,
+        window: Number(raw.context_window) || null,
+      }
+    } catch {
+      return null
+    }
+  }
+
   function estimateWater(agent, decision) {
     try {
+      // ★ 真值优先：APP tokenMeter 给的 pct 是它自己按真实 token 计量的，
+      //   比"数本轮消息字符"准得多（实测 65.7% vs 估算 14%）。
+      //   拿到就直接用，估算只做兜底（审计：水位长期被判低 4 倍以上）。
+      const _tm = _readTokenMeter()
+      if (_tm) {
+        return { pct: _tm.pct, source: 'token-meter',
+                 chars: null, tokens: _tm.tokens,
+                 limit: _tm.window || cfg.contextLimit }
+      }
       const msgs = Array.isArray(decision?.messages) ? decision.messages : []
       const num = (x) => (Number.isFinite(x) ? x : 0)
       // 先把"真实对话字符数"算出来：既给下面的 chars 分支用，也给盈不足标定
       // 提供自变量（宿主给真值 token 时才成对记录）。
-      let chars = 0
-      let lingshuChars = 0   // 灵枢注入虽不算"对话"，但真的占上下文（v3.59 只排除没加回）
+      // 按语言分开统计字符：中文与英文的 token 换算率差一倍（见下方官方口径）
+      let dialogCjk = 0, dialogOther = 0      // 纯对话
+      let lingshuCjk = 0, lingshuOther = 0    // 灵枢注入（不算"对话"，但真的占上下文）
+      // ★ 递归收集一条消息占用的全部文本，并**按语言分开计数**（v5.32）。
+      //   为什么必须递归：APP 的 content 块里，工具结果的正文**不在 c.text**，
+      //   而在 c.content（可能是字符串、数组、或再嵌套一层 {type:'text',text}）。
+      //   原来只看顶层 c.text → 工具结果整块漏计。而实测这类块占上下文绝大部分
+      //   （读文件、跑命令、grep 结果），漏掉会把水位低估数倍——本会话就是
+      //   报 14% 而实际 50%。
+      //   为什么分语言：DeepSeek 官方口径是「1 中文字符 ≈ 0.6 token，
+      //   1 英文字符 ≈ 0.3 token」。原来一律按「2 字符 = 1 token」折算，
+      //   等于中文按 0.5 算（低估 17%）、英文按 0.5 算（高估 67%）。
+      //   tool_use 的 input（JSON 参数）同样占位，一并计入（按英算）。
+      const CJK = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/
+      const collectChars = (node, acc) => {
+        if (node == null) return acc
+        if (typeof node === 'string') {
+          for (const ch of node) {
+            if (CJK.test(ch)) acc.cjk += 1
+            else acc.other += 1
+          }
+          return acc
+        }
+        if (Array.isArray(node)) { for (const x of node) collectChars(x, acc); return acc }
+        if (typeof node !== 'object') return acc
+        if (typeof node.text === 'string') collectChars(node.text, acc)
+        if (typeof node.content === 'string') collectChars(node.content, acc)
+        else if (node.content !== undefined) collectChars(node.content, acc)
+        for (const k of ('parts', 'data')) {
+          if (node[k] !== undefined) collectChars(node[k], acc)
+        }
+        if (node.input !== undefined) {
+          try { collectChars(JSON.stringify(node.input), acc) } catch { /* 循环引用等，跳过 */ }
+        }
+        return acc
+      }
       for (const m of msgs) {
         const isLingshu = LINGSHU_SOURCES.has(m?.source?.name)
-        for (const c of (Array.isArray(m?.content) ? m.content : [])) {
-          if (typeof c?.text !== 'string') continue
-          // text 与 tool_result 都算（v3.59 只看 text，工具结果整块漏计——那才是大头）
-          const n = c.text.length
-          if (n <= 0) continue
-          if (isLingshu) lingshuChars += n
-          else chars += n
-        }
+        const acc = { cjk: 0, other: 0 }
+        collectChars(m?.content, acc)
+        const n = acc.cjk + acc.other
+        if (n <= 0) continue
+        if (isLingshu) { lingshuCjk += acc.cjk; lingshuOther += acc.other }
+        else { dialogCjk += acc.cjk; dialogOther += acc.other }
       }
-      // 灵枢注入要加回：它占上下文空间，只是不属于"对话"
-      // （v3.59 只排除没加回 = 灵枢注入整块漏计，实测水位被低估 4 倍多）
-      const dialogChars = chars          // 纯对话字符：标定样本要用它
-      chars += lingshuChars              // 含注入的总字符：水位分母要用它
       for (let i = msgs.length - 1; i >= 0; i--) {
         const u = msgs[i]?.metadata?.usage || msgs[i]?.usage || msgs[i]?.modelUsage
           || msgs[i]?.metadata?.modelUsage
@@ -989,26 +1123,44 @@ export function apply(ctx, config) {
         const used = total > 0 ? total : prompt
         if (used > 0) {
           // 盈不足：拿到真值时顺手记一组 (字符数, 真实 token)，交给 _recordCalib 拟合。
-          // 用 dialogChars 而不是 chars：灵枢注入的体积每次都变，掺进拟合会把斜率带偏。
-          _recordCalib(dialogChars, used)
-          return { pct: Math.min(100, Math.round(used / cfg.contextLimit * 100)), source: 'usage' }
+          // 用纯对话字符而不是含注入的总量：灵枢注入的体积每次都变，掺进拟合会把斜率带偏。
+          _recordCalib(dialogCjk + dialogOther, used)
+          return { pct: Math.min(100, Math.round(used / cfg.contextLimit * 100)),
+                   source: 'usage', chars: dialogCjk + dialogOther,
+                   tokens: used, limit: cfg.contextLimit }
         }
       }
+      _dumpWaterDebug(msgs, { cjk: dialogCjk + lingshuCjk,
+                             other: dialogOther + lingshuOther })
+      // 含注入的**总**字符/词元：水位分母要用它（注入真的占上下文空间）
+      const chars = dialogCjk + dialogOther + lingshuCjk + lingshuOther
       if (!chars) {
         // v3.57（保护 C）：原来这里直接 return null，守卫就此静默跳过——「以为没到水位，
         // 其实已经快满」正是要防的情况。现在至少按 system/工具固定开销给一个下限
         // （拿不到正文时它也是真实存在的成本），并标明来源，让提醒口径说实话。
         const floor = Number(cfg.systemOverheadTokens) || 0
         if (!floor) return null
-        return { pct: Math.min(100, Math.round(floor / cfg.contextLimit * 100)), source: 'floor' }
+        return { pct: Math.min(100, Math.round(floor / cfg.contextLimit * 100)),
+                 source: 'floor', chars: 0, tokens: floor, limit: cfg.contextLimit }
       }
-      // 拟合值优先（盈不足标定过就用实测参数），没有则退回配置默认值。
+      // 词元折算：**官方口径优先**——中文 0.6 token/字、其他 0.3 token/字。
+      // （DeepSeek 文档：1 Chinese character ≈ 0.6 token，1 English character ≈ 0.3 token）
+      // 拟合值（盈不足标定过）仍可用，但只作为"整体偏差修正系数"乘在官方口径上，
+      // 不再用那个一刀切的 charsPerToken=2——它对中文低估、对英文高估。
       const _fit = _readCalibFit()
-      const _ratio = (_fit && _fit.charsPerToken > 0) ? _fit.charsPerToken : cfg.charsPerToken
       const _over = _fit ? _fit.systemOverheadTokens : (cfg.systemOverheadTokens || 0)
-      const tokens = chars / _ratio + _over
+      const cjkTokens = (dialogCjk + lingshuCjk) * 0.6
+      const otherTokens = (dialogOther + lingshuOther) * 0.3
+      let body = cjkTokens + otherTokens
+      if (_fit && _fit.charsPerToken > 0) {
+        // 标定得到的是"每 token 多少字符"，换算成对官方口径的缩放比
+        const officialRatio = chars / Math.max(1, body)
+        body *= Math.max(0.5, Math.min(2.0, officialRatio / _fit.charsPerToken)) || 1
+      }
+      const tokens = body + _over
       return { pct: Math.min(100, Math.round(tokens / cfg.contextLimit * 100)),
-               source: _fit ? 'chars+calib' : 'chars' }
+               source: _fit ? 'chars+calib' : 'chars',
+               chars, tokens: Math.round(tokens), limit: cfg.contextLimit }
     } catch { return null }
   }
 
@@ -1158,7 +1310,7 @@ export function apply(ctx, config) {
           // v3.57（保护 A 的写入端）：把真实水位落成 HOME/_pressure.json，注入侧
           // （memory.build_injection 读 core.read_pressure）据此整体降档。
           // 每跨 5 个百分点或跨档时写一次，避免每步都写盘；失败静默（不能拖住 pre-step）。
-          writePressure(pct, est?.source || 'unknown', st.max || 0)
+          writePressure(pct, est?.source || 'unknown', st.max || 0, est)
 
           // v3.57（保护 B）：95 / 98 两个硬档。90 仍是"建议"（用户可能还想继续干活），
           // 95 改命令式，98 起自动做**无破坏性**自救（auto-archive 只打归档标记、
@@ -1246,6 +1398,20 @@ export function apply(ctx, config) {
 
   // 插件卸载/进程退出前把脏状态刷盘，避免节流窗口内的轮数/任务标记丢失
   const flushOnExit = () => { try { stateSaver.flushNow() } catch {} }
-  ctx.on('agent/dispose', flushOnExit)
+  // ★ #25：agent 结束时除了刷盘，还要**清掉该 agent 的运行时表**。
+  //   原来只 flushNow() 不清表 → 8 个以 agent 为键的 Map
+  //   （turns/convo/lastReply/lastUser/pendingNotice/waterState/
+  //     reviewNoticeAt/waterAutoState）只增不删，长驻进程里会话越开越多，
+  //   内存只涨不落；其中 convo 单条最多留 200KB 文本（审计 plugin.js:511）。
+  //   注意：清表不影响已落盘的 state，只丢弃"这个 agent 的进程内缓存"。
+  ctx.on('agent/dispose', (payload) => {
+    flushOnExit()
+    const a = payload?.agent
+    if (!a) return
+    for (const m of [turns, convo, lastReply, lastUser, pendingNotice,
+                     waterState, reviewNoticeAt, waterAutoState]) {
+      try { m.delete(a) } catch {}
+    }
+  })
   try { process.on('exit', flushOnExit) } catch {}
 }

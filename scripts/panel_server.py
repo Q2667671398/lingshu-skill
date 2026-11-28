@@ -65,6 +65,10 @@ _WRITE_ENDPOINTS = {
     "/api/extensions/ollama/enable", "/api/extensions/ollama/setup",
     # 数据目录迁移：写指针文件 + 复制数据（迁移目标在数据目录之外，单独放行只读门控）
     "/api/home/migrate",
+    # 面板快捷方式的全局热键：写桌面 .lnk 的 Hotkey 字段（在数据目录之外，单独放行）
+    "/api/panel-shortcut",
+    # 自定义快捷方式图标：生成 .ico + 写 .lnk 的 IconLocation（同样在数据目录之外）
+    "/api/panel-icon",
 }
 
 # 本机随机 token：页面加载时注入，之后每个 API 请求都要带上。
@@ -270,9 +274,13 @@ def _doctor_history(days: int = 30) -> list:
         date_str = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%m-%d")
         if date_str not in by_day:
             by_day[date_str] = {"date": date_str, "passes": 0, "warns": 0, "fails": 0}
-        by_day[date_str]["passes"] += row.get("passes", 0)
-        by_day[date_str]["warns"] += row.get("warns", 0)
-        by_day[date_str]["fails"] += row.get("fails", 0)
+        # 字段名以 doctor-history 写入端为准（pass/warn/fail）；旧记录用
+        # passes/warns/fails，两者都认，避免历史数据整段消失。
+        # 原来只读 passes/warns/fails，而 growth.record_doctor_run 写的是
+        # pass/warn/fail → 那一半记录恒贡献 0，折线图永远平。
+        by_day[date_str]["passes"] += row.get("pass", row.get("passes", 0)) or 0
+        by_day[date_str]["warns"] += row.get("warn", row.get("warns", 0)) or 0
+        by_day[date_str]["fails"] += row.get("fail", row.get("fails", 0)) or 0
     out = []
     for d in sorted(by_day):
         r = by_day[d]
@@ -282,46 +290,33 @@ def _doctor_history(days: int = 30) -> list:
 
 
 def _health_score() -> int:
-    """灵枢健康度：0-100，按最近 7 天 doctor FAIL/WARN + failures.jsonl 条数加权扣分。
 
-    扣分规则：
-    - 最近 7 天 doctor FAIL 总数 × 10（一次 FAIL 扣 10）
-    - 最近 7 天 doctor WARN 总数 × 3（一次 WARN 扣 3）
-    - 最近 7 天 failures.jsonl 条数 × 1（一条被吞异常扣 1）
-    从 100 往下扣，下限 0。无历史 → 100。
+    """灵枢健康度：0-100。**委托给 growth.health_score()，不在这里另算一套。**
+
+
+
+    原来这里有自己的公式（100 - fails*10 - warns*3 - fbcnt），而 growth.health_score
+
+    用的是 100 - fail*10 - warn*3 - failures_7d//5 → 面板 footer 与 stage/doctor 对
+
+    同一份数据给出两个不同分数，被吞异常越多差得越大。同一指标只能有一个口径。
+
+
+
+    历史记录字段名也一并由 growth 侧统一（pass/warn/fail），它自己会取最近一次体检。
+
     """
-    import time as _t
-    from datetime import datetime, timezone, timedelta
-    cutoff = _t.time() - 7 * 86400
-    fails = warns = 0
-    dh = brain.HOME / "doctor-history.jsonl"
-    if dh.exists():
-        for line in dh.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if row.get("ts", 0) < cutoff:
-                continue
-            fails += row.get("fails", 0)
-            warns += row.get("warns", 0)
-    # failures.jsonl 条数
-    fb = brain.HOME / "failures.jsonl"
-    fbcnt = 0
-    if fb.exists():
-        for line in fb.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if row.get("ts", 0) >= cutoff:
-                fbcnt += 1
-    score = max(0, 100 - fails * 10 - warns * 3 - fbcnt)
-    return score
+
+    try:
+
+        import growth as _growth
+
+        return int(_growth.health_score().get("score", 100))
+
+    except Exception:
+
+        return 100
+
 
 
 def _created_key(m: dict):
@@ -951,6 +946,43 @@ class Handler(BaseHTTPRequestHandler):
             # 数据目录信息：当前位置、是否指针生效、默认位置、当前库体积（面板设置卡片用）
             self._json(_home_info())
             return
+        if path == "/api/panel-icon":
+            # 图标状态：当前 IconLocation、是否自定义、预览（PNG data URL）
+            try:
+                import panel_icon, panel_shortcut
+                sc = panel_shortcut.read_shortcut()
+                cur = str(sc.get("icon") or "")
+                icon_path = cur.rsplit(",", 1)[0] if cur else ""
+                dflt = panel_icon.default_icon()
+                using_custom = False
+                if icon_path:
+                    try:
+                        using_custom = Path(icon_path).resolve() != dflt.resolve()
+                    except OSError:
+                        using_custom = icon_path != str(dflt)
+                self._json({
+                    "ok": True,
+                    "icon": cur,
+                    "icon_path": icon_path,
+                    "using_custom": using_custom,
+                    "preview": panel_icon.preview_data_url(icon_path) if icon_path else "",
+                    "default_preview": panel_icon.preview_data_url(dflt),
+                    "pillow": panel_icon.pillow_available(),
+                    "custom_path": str(panel_icon.custom_icon()),
+                    "intact": sc.get("intact", False),
+                })
+            except Exception as exc:  # noqa: BLE001
+                self._json({"ok": False,
+                            "error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+        if path == "/api/panel-shortcut":
+            # 桌面快捷方式的全局热键（GET 读当前值；写入走 POST）
+            try:
+                import panel_shortcut
+                self._json(panel_shortcut.read_shortcut())
+            except Exception as exc:  # noqa: BLE001
+                self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            return
         if path == "/api/assoc":
             mid = (parse_qs(url.query).get("id") or [""])[0]
             self._json({"id": mid, "neighbors": brain.assoc_of(mid)})
@@ -1177,6 +1209,96 @@ class Handler(BaseHTTPRequestHandler):
 
 # POST 分发表：路由 -> Handler 处理方法（参数统一为 handler(self, path, data)）。
 # 定义在所有 _api_* 处理函数之后（模块级查表发生在运行时，不在导入期）。
+
+
+def _api_panel_icon(self, path, data):
+    """自定义快捷方式图标：选图 → 转多尺寸 ico → 写 .lnk 的 IconLocation。"""
+    try:
+        import panel_icon, panel_shortcut
+    except Exception as exc:  # noqa: BLE001
+        self._json({"ok": False, "error": f"加载图标模块失败：{exc}"}, 500)
+        return
+    action = str(data.get("action") or "").strip()
+    try:
+        if action == "pick":
+            # 服务端弹原生文件框（浏览器拿不到真实路径）。可能等用户选很久，
+            # 前端为此把超时放宽到 200 秒。
+            chosen = panel_icon.pick_image_file()
+            if not chosen:
+                self._json({"ok": False, "cancelled": True,
+                            "error": "没有选择文件"})
+                return
+            ico = panel_icon.to_ico(chosen)
+            res = panel_shortcut.set_icon_location(f"{ico},0")
+            res.update({"ok": True, "source": chosen,
+                        "sizes": panel_icon.ico_info(ico).get("sizes", []),
+                        "preview": panel_icon.preview_data_url(ico)})
+            brain.log_event("panel", f"快捷方式图标已更换：{chosen}")
+            self._json(res)
+            return
+        if action == "set":
+            src = str(data.get("path") or "").strip()
+            if not src:
+                self._json({"ok": False, "error": "缺少 path"}, 400)
+                return
+            ico = panel_icon.to_ico(src)
+            res = panel_shortcut.set_icon_location(f"{ico},0")
+            res.update({"ok": True, "source": src,
+                        "sizes": panel_icon.ico_info(ico).get("sizes", []),
+                        "preview": panel_icon.preview_data_url(ico)})
+            brain.log_event("panel", f"快捷方式图标已更换：{src}")
+            self._json(res)
+            return
+        if action == "reset":
+            dflt = panel_icon.default_icon()
+            if not dflt.is_file():
+                self._json({"ok": False,
+                            "error": f"默认图标不存在：{dflt}"}, 404)
+                return
+            res = panel_shortcut.set_icon_location(f"{dflt},0")
+            res.update({"ok": True, "preview": panel_icon.preview_data_url(dflt)})
+            brain.log_event("panel", "快捷方式图标已恢复默认")
+            self._json(res)
+            return
+        self._json({"ok": False, "error": "未知 action（pick / set / reset）"}, 400)
+    except (panel_icon.IconError, panel_shortcut.ShortcutError) as exc:
+        self._json({"ok": False, "error": str(exc)}, 400)
+    except Exception as exc:  # noqa: BLE001
+        self._log_write_failure("设置快捷方式图标", exc, 500)
+        self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
+
+
+def _api_panel_shortcut(self, path, data):
+    """设置桌面快捷方式的全局快捷键（写 .lnk 的 Hotkey 字段）。
+
+    为什么放面板里而不是让用户自己去属性里改：Windows 快捷方式的"快捷键"输入框
+    不接受回车确认、也不校验组合是否合法，很容易设成抢普通打字的状态。
+    这里做格式校验 + 写后回读校验，只动 Hotkey，不碰 TargetPath/Arguments。
+    """
+    try:
+        import panel_shortcut
+    except Exception as exc:  # noqa: BLE001
+        self._json({"ok": False, "error": f"加载 panel_shortcut 失败：{exc}"}, 500)
+        return
+    hotkey = str(data.get("hotkey") or "")
+    action = str(data.get("action") or "").strip()
+    try:
+        if action == "repair":
+            # 把被写坏的 .lnk 按灵枢标准值重建（目标/参数/图标/窗口样式）
+            res = panel_shortcut.repair_shortcut()
+            brain.log_event("panel", f"修复桌面快捷方式：intact={res.get('intact')}")
+            self._json(res)
+            return
+        res = panel_shortcut.set_hotkey(hotkey)
+    except panel_shortcut.ShortcutError as exc:
+        self._json({"ok": False, "error": str(exc)}, 400)
+        return
+    except Exception as exc:  # noqa: BLE001
+        self._log_write_failure("设置面板快捷键", exc, 500)
+        self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
+        return
+    brain.log_event("panel", f"面板快捷键 -> {res.get('applied') or '（清除）'}")
+    self._json(res)
 
 
 def _api_home_migrate(self, path, data):
@@ -2915,6 +3037,8 @@ def _api_ollama_install(self, path, data):
 _POST_ROUTES = {
         # 首页与记忆写入
         "/api/home/migrate": _api_home_migrate,
+        "/api/panel-shortcut": _api_panel_shortcut,
+        "/api/panel-icon": _api_panel_icon,
         "/api/remember": _api_remember,
         # 数据页
         "/api/data/backup": _api_data_backup,

@@ -203,6 +203,21 @@ def ingest_dialogues(paths=None, limit: int | None = None, dry_run: bool = False
             if blob and not blob.endswith(b"\n"):
                 cut = blob.rfind(b"\n")
                 if cut < 0:
+                    # #29：整块没有换行 = 这个文件被压成了一行（或单行超长）。
+                    # 原来的裸 continue 不写日志、不推进 offset → 每次读 8MB、
+                    # 每次跳过，永远不摄取且无任何提示。这里记一次日志
+                    # （同一文件只报一次，避免每轮刷屏），让用户知道该换格式。
+                    try:
+                        _warned = globals().setdefault("_LONGLINE_WARNED", set())
+                        if str(f) not in _warned:
+                            _warned.add(str(f))
+                            core.log_event(
+                                "dialogue",
+                                f"跳过 {f.name}：单块 {len(blob)} 字节内没有换行，"
+                                "疑似被压成一行的导出文件——请改用逐行 JSONL",
+                                level="warn")
+                    except Exception:  # noqa: BLE001
+                        pass
                     continue
                 blob = blob[:cut + 1]
             text = _dialogue_decode(blob, f.name)

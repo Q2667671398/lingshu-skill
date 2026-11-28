@@ -174,12 +174,17 @@ def _counts_of(targets) -> dict:
     return out
 
 
-def verify(names=None, allow_shrink=()) -> dict:
+def verify(names=None, allow_shrink=(), baseline=None) -> dict:
     """写后校验：文件在、每行可解析、没被截断、哈希链字段齐。
 
     返回 {"ok": bool, "issues": [...], "counts": {...}}。
-    `allow_shrink` 里列出的文件名允许行数减少（删除类操作显式声明）。
+
+    `baseline`：写入**前**的行数 {文件名: 行数}。给了它才做"行数减少"检查；
+    `allow_shrink` 里列出的文件名允许减少（删除类操作显式声明）。
+    **注意**：`allow_shrink` 原来是死参数——docstring 承诺了这个能力，函数体
+    从未引用它（审计 safety_net.py:177）。现在由 guarded_write 传 baseline 生效。
     """
+    allow_shrink = set(allow_shrink or ())
     targets = _resolve(names or PROTECTED)
     issues = []
     counts = {}
@@ -191,6 +196,14 @@ def verify(names=None, allow_shrink=()) -> dict:
             continue
         lines = [ln for ln in raw.splitlines() if ln.strip()]
         counts[p.name] = len(lines)
+        # 行数减少检查（只在给了 baseline 时做）：
+        # 没声明 allow_shrink 的文件少行 = 大概率丢数据，必须报出来。
+        if baseline and p.name in baseline and p.name not in allow_shrink:
+            _before = int(baseline.get(p.name) or 0)
+            if _before > 0 and len(lines) < _before:
+                issues.append(
+                    f"{p.name} 行数从 {_before} 减到 {len(lines)}"
+                    "——疑似丢记录（删除类写入请显式声明 allow_shrink）")
         if raw and not raw.endswith("\n"):
             issues.append(f"{p.name} 末行没有换行——可能被截断")
         if p.name.endswith(".jsonl"):
@@ -331,6 +344,19 @@ def guarded_write(reason: str, writer, names=None, allow_shrink=()) -> dict:
     但调用方应当把 ok 当回事（记日志/提示用户）。
     """
     names = names or PROTECTED
+    # 写入前记录行数，供 verify 做"行数减少"检查（#28 的实现前提）
+    _baseline = {}
+    try:
+        for _p in _resolve(names):
+            try:
+                _baseline[_p.name] = len([
+                    ln for ln in _p.read_text(encoding="utf-8",
+                                               errors="replace").splitlines()
+                    if ln.strip()])
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        _baseline = {}
     snap = snapshot(reason, names)
     err = None
     try:
@@ -358,7 +384,7 @@ def guarded_write(reason: str, writer, names=None, allow_shrink=()) -> dict:
                     pass
         return report
     if _verify_enabled():
-        v = verify(names, allow_shrink=allow_shrink)
+        v = verify(names, allow_shrink=allow_shrink, baseline=_baseline)
         report["verified"] = v["counts"]
         if not v["ok"]:
             report["ok"] = False

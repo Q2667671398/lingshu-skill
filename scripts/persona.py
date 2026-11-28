@@ -448,7 +448,7 @@ def rollback_persona_snapshot(version: int) -> dict | None:
     if not target or not isinstance(target.get("persona"), dict):
         return None
     p = target["persona"]
-    # ★ 快照 + 覆写必须��**同一把锁内**（审计 persona.py:457）：
+    # ★ 快照 + 覆写必须在**同一把锁内**（审计 persona.py:457）：
     #   原来 `load_persona()`（读当前值做"回滚前快照"）在锁外，`save_persona(p)`
     #   内部才有锁——两步之间的窗口里若有 update_persona / 面板保存写进来，
     #   紧接着的整份覆写会把那次写入静默抹掉（回滚本身就是全量覆盖，最容易吃掉并发写）。
@@ -942,12 +942,22 @@ PERSONA_SNAP_KEEP = 40  # 快照保留上限，防止无限增长
 
 
 def _prune_snapshots(keep: int = PERSONA_SNAP_KEEP) -> None:
-    """只保留最近 keep 张快照，多余的删掉（不会删到刚拍的这张）。"""
+    """只保留最近 keep 张快照，多余的**移入 .pruned/**（不会动刚拍的这张）。
+
+    ⚠ 原实现直接 `unlink()`——违反项目自己的"只移不删"规矩
+    （safety_net 快照、cmd_backup 修剪都已改成移入 .pruned/）。
+    人格快照被硬删意味着回滚链被截断且不可找回：用户想回滚某次人格改动时，
+    可能发现那份已经被悄悄删掉了（审计 persona.py:944）。
+    """
+    import shutil as _sh
     rows = persona_snapshots(10000)
+    pruned_dir = PERSONA_SNAP_DIR / ".pruned"
     for r in rows[keep:]:
+        src = PERSONA_SNAP_DIR / f"{r['name']}.json"
         try:
-            (PERSONA_SNAP_DIR / f"{r['name']}.json").unlink()
-        except OSError:
+            pruned_dir.mkdir(parents=True, exist_ok=True)
+            _sh.move(str(src), str(pruned_dir / src.name))
+        except (OSError, _sh.Error):
             pass
 
 
@@ -2264,7 +2274,11 @@ def self_model_autosink() -> dict:
             for r in _mem.load_all():
                 if not isinstance(r, dict) or not r.get("correction"):
                     continue
-                if _num(r.get("confidence"), 1.0) >= 0.5:
+                # 记忆记录没有 confidence 字段（只有教训库有）。默认值写成 1.0
+                # 会让每条都被 continue 掉 → self_model.limitations 永不积累，
+                # 这条来源等于死代码（审计 persona.py:2264）。
+                # 改成默认 0.0：没标置信度就当"低置信"，照常纳入短板。
+                if _num(r.get("confidence"), 0.0) >= 0.5:
                     continue
                 t = str(r.get("text") or r.get("summary") or "").strip()
                 if t:

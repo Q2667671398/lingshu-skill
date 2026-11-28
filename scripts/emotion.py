@@ -410,8 +410,11 @@ def feel(name: str, intensity: float = 0.6, why: str = "",
         "ts": ts_now, "emotion": name, "valence": v, "arousal": a,
         "intensity": round(eff, 3),
         "why": _why, "about": _about,
+        # ⚠ 用 `is not None` 判"给没给"，不能用真值判断（审计 emotion.py:413）：
+        # `if decay_hours` 把 0 当假 → `--decay-hours 0` 不落到钳制下限 0.5，
+        # 而是回落默认 6 小时，用户显式传 0 却被无视。
         "decay_hours": (max(0.5, min(720.0, float(decay_hours)))
-                        if decay_hours else EMOTION_HALF_LIFE / HOUR),
+                        if decay_hours is not None else EMOTION_HALF_LIFE / HOUR),
         "genesis": bool(genesis),
     }
     if resonance != "none":
@@ -529,7 +532,8 @@ def _save_gate(st: dict) -> None:
         pass
 
 
-def _apply_label_gate(v: float, a: float, active, base_label: str) -> str:
+def _apply_label_gate(v: float, a: float, active, base_label: str,
+                      n_ev_total: int | None = None) -> str:
     """跃迁阈值 + 2 轮确认：标签不能单轮跳变。
 
     规则：候选标签与当前对外标签不同时，若 |Δv| ≥ 阈值 → 记为待定并计数；
@@ -582,9 +586,12 @@ def _apply_label_gate(v: float, a: float, active, base_label: str) -> str:
         _save_gate(st)
         return cur
     # 幅度够：看是否有**新的情绪事件**支撑同一候选（单条事件不许独自翻转标签）
+    # 用**截断前**的事件总数：active 在 _mood_snapshot 里已被截成 active[:6]
+    # 供注入展示用，拿它当"事件数"会在满 6 条后恒不再增长，
+    # `n_ev > prev_n` 永不成立 → 标签卡死不切换（审计 emotion.py:591）。
     try:
-        n_ev = len(active or [])
-    except TypeError:
+        n_ev = int(n_ev_total) if n_ev_total is not None else len(active or [])
+    except (TypeError, ValueError):
         n_ev = 0
     prev_pending = str(st.get("pending") or "")
     prev_n = int(st.get("pending_events") or 0)
@@ -624,7 +631,7 @@ def _finalize_mood(m: dict) -> dict:
             return out
         out["label"] = _apply_label_gate(
             _num(out.get("valence"), 0.0), _num(out.get("arousal"), 0.0),
-            out.get("active"), _lbl)
+            out.get("active"), _lbl, out.get("active_total"))
         return out
     except Exception:  # noqa: BLE001
         return m
@@ -707,7 +714,8 @@ def mood_now(at: float | None = None) -> dict:
             "raw_label": _base_label,
             "category": groups[0]["group"] if groups else "静",
             "intensity": round(min(1.0, sw), 3),
-            "active": active[:6], "groups": groups,
+            # active 截断只影响展示；active_total 供门控用（见 _apply_label_gate）
+            "active": active[:6], "active_total": len(active), "groups": groups,
             "complex": complex_flag, "storm": a >= STORM_AROUSAL,
             "note": "悲喜交加" if complex_flag else ""}
     # 跃迁阈值 + 2 轮确认：**必须在 EMA 之后**——`_mood_ema` 自己会重算 label，

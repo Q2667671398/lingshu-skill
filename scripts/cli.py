@@ -397,10 +397,21 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
         keep_h = int(cfg.get("backup_keep_hourly") or 0)
         keep_d = int(cfg.get("backup_keep_daily") or 0)
         keep_w = int(cfg.get("backup_keep_weekly") or 0)
-        drop: set = set()
-        if keep_h > 0:
-            drop.update(existing[keep_h:])
-        if keep_d > 0:
+        # ★ 各层各算"要保留哪些"，最后取**并集**（审计 cli.py:402）。
+        #   原实现把 drop 当并集用：hourly 先 `drop.update(existing[keep_h:])`
+        #   把第 keep_h 个之后全标废弃，daily/weekly 只能继续往 drop 里加、
+        #   救不回来 → backup_keep_daily/weekly 完全失效，3 天前那份按天该留的
+        #   备份照样被移进 .pruned。分层保留必须"任一层想留就留"。
+        keep_set: set = set()
+        # 语义分层（改错过一次，务必看清）：
+        #   · **显式 keep>0 = 硬上限**：只保留最近 keep 个，GFS 三层不参与。
+        #   · **keep<=0 = 交给 GFS**：三层各算保留集取并集，任一层想留就留。
+        _explicit_keep = bool(keep and keep > 0)
+        if _explicit_keep:
+            keep_set.update(existing[:keep])
+        elif keep_h > 0:
+            keep_set.update(existing[:keep_h])          # 最近 N 个
+        if not _explicit_keep and keep_d > 0:
             seen_days, kept_d = set(), 0
             for p in existing:
                 day = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y%m%d")
@@ -408,9 +419,9 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
                     continue
                 seen_days.add(day)
                 kept_d += 1
-                if kept_d > keep_d:
-                    drop.add(p)
-        if keep_w > 0:
+                if kept_d <= keep_d:
+                    keep_set.add(p)                     # 每天的第一个
+        if not _explicit_keep and keep_w > 0:
             seen_weeks, kept_w = set(), 0
             for p in existing:
                 wk = datetime.fromtimestamp(p.stat().st_mtime).strftime("%G%V")
@@ -418,11 +429,11 @@ def cmd_backup(target: str | None = None, keep: int = 20, password: str | None =
                     continue
                 seen_weeks.add(wk)
                 kept_w += 1
-                if kept_w > keep_w:
-                    drop.add(p)
-        if keep and keep > 0:
-            drop.update(existing[keep:])
+                if kept_w <= keep_w:
+                    keep_set.add(p)                     # 每周的第一个
         # 最新那份永不删（否则备份完立刻把自己删了）
+        keep_set.add(existing[0])
+        drop = set(existing) - keep_set
         drop.discard(existing[0])
         # 修剪 = **移到 .pruned/**，不是删除（待办 L718 #2 + 用户"只移不删"规矩）。
         # 理由：备份策略误配（keep 设太小）时，被"修剪"的好备份还能从这里捞回来；
@@ -4384,9 +4395,18 @@ def _main(argv=None) -> int:
         try:
             import persona as _persona
             pr = _persona.persona_check()
-            issues = pr.get("issues") or pr.get("problems") or []
-            checks.append(("persona", "PASS" if not issues else "WARN",
-                           "; ".join(map(str, issues)) or "人格完整"))
+            # ⚠ 必须按 persona_check() 真实返回的键读（它返回 fails/warns/info）：
+            # 原来读 issues/problems，这两个键从不出现 → issues 恒空 → 无论
+            # NaN traits、evidence 非数组、数值越界，永远输出"人格完整"。
+            # 这条检查的意义就是让故障暴露，结果自己静默失效。
+            issues = list(pr.get("fails") or [])
+            warns = list(pr.get("warns") or [])
+            st = "FAIL" if issues else ("WARN" if warns else "PASS")
+            detail = ("; ".join(map(str, issues)) or "; ".join(map(str, warns))
+                      or "人格完整")
+            if issues:
+                detail += f"（{len(issues)} 处必须修）"
+            checks.append(("persona", st, detail))
         except Exception as e:
             checks.append(("persona", "FAIL", str(e)))
         # 3. memory diagnose
@@ -4600,12 +4620,17 @@ def _main(argv=None) -> int:
 
         # v5.12：把本次体检结果追加到 doctor-history.jsonl——灵枢自己的成长账本，
         # 面板"体检历史"页签和未来的健康度分数用它。append-only，单条 try/except 吞掉。
+        # ⚠ 字段名必须与 growth.record_doctor_run() 一致（{kind,pass,warn,fail}）：
+        # 原来这里写成 {fails,warns,passes}，同一个文件里两套字段名 → 面板按
+        # passes/fails 求和时，由 record_doctor_run 写的那一半永远贡献 0，
+        # 折线图恒平、成长阶段按双倍计数晋级。
         try:
             _dr = {
                 "ts": int(time.time()),
-                "fails": sum(1 for _, s, _ in checks if s == "FAIL"),
-                "warns": sum(1 for _, s, _ in checks if s == "WARN"),
-                "passes": sum(1 for _, s, _ in checks if s == "PASS"),
+                "kind": "doctor",
+                "pass": sum(1 for _, s, _ in checks if s == "PASS"),
+                "warn": sum(1 for _, s, _ in checks if s == "WARN"),
+                "fail": sum(1 for _, s, _ in checks if s == "FAIL"),
                 "checks": {n: s for n, s, _ in checks},
             }
             _dh_path = (globals().get("brain") or sys.modules.get("brain")).HOME / "doctor-history.jsonl"
@@ -4746,7 +4771,11 @@ def _main(argv=None) -> int:
             out_lines.append(f"## 知识库（{len(kb)} 条）")
             out_lines.append("")
             for k in kb[:200]:
-                body = str(k.get("content") or k.get("text") or "").replace("\n", " ")
+                # 知识条目的正文字段是 body（见 growth 的 _new_knowledge）；
+                # 原来读 content/text，两个键都不存在 → 恒空串 →
+                # export 的"知识库"节每条只剩一个 "- "（审计 cli.py:4763）。
+                body = str(k.get("body") or k.get("content") or k.get("text")
+                           or "").replace("\n", " ")
                 if len(body) > 200:
                     body = body[:200] + "…"
                 out_lines.append(f"- {body}")

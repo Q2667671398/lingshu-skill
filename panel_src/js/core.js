@@ -545,12 +545,19 @@ function renderDailyCards(){
 const GRAPH = { data: null, pos: [], yaw: 0.6, pitch: -0.35, dist: 360,
                 focus: {x: 0, y: 0, z: 0}, target: {x: 0, y: 0, z: 0}, targetDist: 360,
                 selected: null, hover: null, loaded: false, nbrs: null, anim: null,
-                pathEdges: null, hideIsolated: true, stats: null, deg: null };
+                pathEdges: null, hideIsolated: false, stats: null, deg: null,
+                colorBy: "importance", communityHue: null, communities: null,
+                layout: "force", timePct: 100, timeMin: 0, timeMax: 0, hoverEdge: null };
 const LAYER_COLOR = { cortex: "#d9a441", hippo: "#5fa8a0", dust: "#5d646e", archive: "#8f92b8" };
 // 颜色 = 重要程度（与图例一致）：红=很重要 / 金=较重要 / 青=一般 / 灰=不重要；人格星核专属暖金
 // 主题跟随：取 --node-* RGB 三元组（浅色主题在 enhance.css 里覆盖为深色版本）
 function nodeColor(n, P){
   if (n.layer === "persona" || n.kind === "persona") return "rgb(" + P.persona + ")";
+  // 按主题簇上色：同一社区同色，一眼看出"我的记忆分成哪几块"
+  if (GRAPH.colorBy === "community" && n.community && GRAPH.communityHue){
+    const hue = GRAPH.communityHue.get(n.community);
+    if (hue != null) return `hsl(${hue},58%,62%)`;
+  }
   const imp = n.importance == null ? 0.5 : n.importance;
   if (imp >= 0.8) return "rgb(" + P.high + ")";
   if (imp >= 0.6) return "rgb(" + P.mid + ")";
@@ -593,6 +600,51 @@ function stopGraphAnim(){
 
 // 持续物理模拟：斥力 + 弹簧 + 微弱噪声漂浮 + 阻尼。
 // 总动能低于阈值自动休眠（省电省 CPU），autoWake() 唤醒——借鉴 Obsidian graph 的做法。
+// 时间轴布局：关掉物理，按「写下时间」横排、按主题簇分带。
+// 为什么不用力导向排时间轴：力导向追求"边长一致"，会把时间顺序碾平；
+// 时间轴要的是**可读的顺序**，位置必须由时间决定，不能被弹簧拉动。
+function applyTimelineLayout(){
+  const nodes = GRAPH.data.nodes;
+  const t0 = GRAPH.timeMin || 0;
+  const t1 = (GRAPH.timeMax && GRAPH.timeMax > t0) ? GRAPH.timeMax : t0 + 1;
+  stopPhysics();
+  // 每条横带 = 一个主题簇。带太少时补随机散开，避免全挤一条线上
+  const cids = [...new Set(nodes.map(n => n.community).filter(Boolean))];
+  const bandOf = new Map(cids.map((c, i) => [c, i]));
+  const bands = Math.max(1, cids.length);
+  const spreadX = 560;
+  const spreadY = Math.min(460, Math.max(120, bands * 30));
+  GRAPH.pos = nodes.map(n => {
+    if (n.layer === "persona" || n.kind === "persona") return { x: 0, y: 0, z: 0 };
+    const t = n.created || t0;
+    const fx = (t - t0) / Math.max(1, t1 - t0);       // 0..1 时间位置
+    const bi = bandOf.get(n.community);
+    const y = bi == null
+      ? (hashStr(n.id) - 0.5) * spreadY                // 无簇：按 hash 散开
+      : ((bands === 1 ? 0.5 : bi / (bands - 1)) - 0.5) * spreadY;
+    return { x: (fx - 0.5) * spreadX, y, z: (hashStr(n.id + "z") - 0.5) * 50 };
+  });
+  GRAPH.vel = nodes.map(() => ({ x: 0, y: 0, z: 0 }));
+}
+
+// 边上命中：点到线段的距离 < 5px 就算贴上。用 renderGraph 缓存的屏幕坐标，
+// 不重投影——600 节点时每次 mousemove 重投影会明显掉帧。
+function edgeHit(mx, my){
+  const segs = GRAPH.edgeSegs;
+  if (!segs || !segs.length) return null;
+  let best = null, bestD = 5 * 5;
+  for (const s of segs){
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((mx - s.x1) * dx + (my - s.y1) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const px = s.x1 + t * dx, py = s.y1 + t * dy;
+    const d = (mx - px) * (mx - px) + (my - py) * (my - py);
+    if (d < bestD){ bestD = d; best = s; }
+  }
+  return best;
+}
+
 function startPhysics(){
   stopPhysics();
   let idle = 0;
@@ -664,8 +716,16 @@ function startPhysics(){
       vel[i].y = (vel[i].y + p.y * f) * 0.9;
       vel[i].z = (vel[i].z + p.z * f) * 0.9;
     }
+    // 人格星核**钉死在原点**：它是全图的根，一旦自己也受力漂移，
+    // 整个图会缓慢平移、旋转中心跟着跑，看起来就是"一团在晃"。
+    // 它仍然对别人施加斥力/弹簧（位置固定即可），只是自己不动。
+    if (nodes.length && (nodes[0].layer === "persona" || nodes[0].kind === "persona")){
+      pos[0].x = 0; pos[0].y = 0; pos[0].z = 0;
+      vel[0].x = 0; vel[0].y = 0; vel[0].z = 0;
+    }
     // 位置推进遍历全部节点（不能只推前 n 个，否则尾部节点被冻结在初始位置）
     for (let i = 0; i < nodes.length; i++){
+      if (i === 0 && (nodes[0].layer === "persona" || nodes[0].kind === "persona")) continue;  // 星核不动
       pos[i].x += vel[i].x; pos[i].y += vel[i].y; pos[i].z += vel[i].z;
       if (i < n) energy += vel[i].x*vel[i].x + vel[i].y*vel[i].y + vel[i].z*vel[i].z;
     }
@@ -720,9 +780,20 @@ async function loadGraph(limit){
     GRAPH.data = await api("/api/graph?limit=" + (limit || 300)
       + (GRAPH.hideIsolated ? "&hide_isolated=1" : "&hide_isolated=0"));
     GRAPH.stats = GRAPH.data.stats || null;
+    // 社区色表：id -> hue。按主题簇上色时用
+    GRAPH.communities = GRAPH.data.communities || [];
+    GRAPH.communityHue = new Map(GRAPH.communities.map(c => [c.id, c.hue]));
+    // 时间范围（时间轴视图 / 双时态过滤都靠它）
+    // 注意用 GRAPH.data.nodes 而不是后面的 const nodes —— 那行在下面才声明，
+    // 这里引用会踩 TDZ（ReferenceError 被 loadGraph 的 try 吞掉，整张图静默不加载）。
+    const ts = GRAPH.data.nodes.map(n => n.created || 0).filter(t => t > 0);
+    GRAPH.timeMin = ts.length ? Math.min(...ts) : 0;
+    GRAPH.timeMax = ts.length ? Math.max(...ts) : 0;
     // 节点从中心附近"绽放"散开（借鉴 Obsidian graph view 的加载动效）
     GRAPH.vel = GRAPH.data.nodes.map(() => ({ x: 0, y: 0, z: 0 }));
-    GRAPH.pos = GRAPH.data.nodes.map(n => {
+    GRAPH.pos = GRAPH.data.nodes.map((n, i) => {
+      // 人格星核从原点出发（它钉死在这里）；其余记忆从外壳向内绽放
+      if (n.layer === "persona" || n.kind === "persona") return { x: 0, y: 0, z: 0 };
       const a = hashStr(n.id) * Math.PI * 2, b = Math.acos(2 * hashStr(n.id + "#") - 1);
       const r0 = 10 + hashStr(n.id + "@") * 30;
       return { x: Math.sin(b) * Math.cos(a) * r0, y: Math.sin(b) * Math.sin(a) * r0, z: Math.cos(b) * r0 };
@@ -747,8 +818,20 @@ async function loadGraph(limit){
       if (b != null) GRAPH.deg[b]++;
     });
     GRAPH.loaded = true;
-    startPhysics();   // 持续物理模拟：节点像活物一样漂浮舒展
-    renderGraph();
+    if (GRAPH.layout === "timeline"){
+      applyTimelineLayout();      // 时间轴：位置由时间决定，不跑物理
+      renderGraph();
+    } else {
+      startPhysics();   // 持续物理模拟：节点像活物一样漂浮舒展
+      renderGraph();
+    }
+    // 时间滑杆的范围/文案跟着数据走（时间轴视图用）
+    const tr = $("graph-time-range");
+    if (tr){
+      tr.value = String(GRAPH.timePct);
+      tr.max = "100";
+    }
+    updateTimeLabel();
     // 库里没有可画的记忆时给明确的空态引导，别让一片空白被当成"加载失败"
     if (!nodes.length){
       if (loadTip){ loadTip.textContent = "还没有可联想的记忆节点"; loadTip.classList.remove("hidden"); }
@@ -764,9 +847,11 @@ async function loadGraph(limit){
       const gb = (s.generic_buckets || []).slice(0, 3)
         .map(b => `${b.name}(${b.count})`).join("、");
       const bits = [`${nodes.length} 条记忆`, `${edges.length} 条关联`];
-      if (s.auto_candidates != null) bits.push(`候选 ${s.auto_candidates} → 保留 ${s.auto_kept}`);
+      if (s.auto_candidates != null) bits.push(`真实关联 候选 ${s.auto_candidates} → 保留 ${s.auto_kept}`);
       if (gb) bits.push(`泛标签已忽略：${gb}${s.generic_bucket_count > 3 ? " 等" + s.generic_bucket_count + "个" : ""}`);
-      if (s.isolated_hidden) bits.push(`收起 ${s.isolated_hidden} 条无联想的记忆（可勾选显示）`);
+      if (s.boot_edges) bits.push(`自举 ${s.boot_orphans} 条孤立记忆（稀有词重叠接进网）`);
+      if (s.orphan_count) bits.push(`⚠ ${s.orphan_count} 条连不到人格`);
+      else bits.push("全部可追溯到人格（无断点）");
       $("graph-hint").textContent = bits.join(" · ") + " · 点节点：以它为中心 + 激活相邻记忆";
       $("graph-stat").textContent = `${nodes.length} 节点 · ${edges.length} 关联边 · 手动 ${edges.length - nAuto} / 自动 ${nAuto}`;
     }
@@ -808,7 +893,23 @@ function renderGraph(){
   const visSet = visible ? new Set(visible) : null;
   const proj = GRAPH.pos.map(project);
   const shown = new Set();
-  proj.forEach((p, i) => { if ((!visSet || visSet.has(i)) && p.z < GRAPH.dist * 0.9 && p.s > 0.12) shown.add(i); });
+  // 双时态时间闸：滑杆拖到 T，就只看"T 时刻已经存在、且还没失效"的记忆与关联。
+  // 判据用边的 t_from / t_to（后端按记忆 created、forgotten_at 推出来的生效窗口）。
+  const cut = (GRAPH.timePct >= 100 || !GRAPH.timeMax)
+    ? Infinity
+    : GRAPH.timeMin + (GRAPH.timeMax - GRAPH.timeMin) * (GRAPH.timePct / 100);
+  const inTimeNode = i => !isFinite(cut) || (nodes[i].created || 0) <= cut;
+  const inTimeEdge = e => {
+    if (!isFinite(cut)) return true;
+    if (e.t_from && e.t_from > cut) return false;     // 还没发生
+    if (e.t_to && e.t_to <= cut) return false;        // 已经失效
+    return true;
+  };
+  proj.forEach((p, i) => {
+    if (visSet && !visSet.has(i)) return;
+    if (!inTimeNode(i)) return;
+    if (p.z < GRAPH.dist * 0.9 && p.s > 0.12) shown.add(i);
+  });
 
   // 注意力焦点：选中的节点 + 它的直接邻居被"点亮"，其余压暗（激活扩散 / 侧抑制）
   const sel = GRAPH.selected;
@@ -821,10 +922,12 @@ function renderGraph(){
 
   // 边：粗细随权重（联系强弱），焦点相关边更亮，无关边压暗
   const idIdx = new Map(nodes.map((x, i) => [x.id, i]));
+  GRAPH.edgeSegs = [];   // 投影后的线段缓存：鼠标悬停时用来命中"最近的边"
   edges.forEach(e => {
     const ai = idIdx.get(e.src), bi = idIdx.get(e.dst);
     if (ai == null || bi == null) return;
     if (!shown.has(ai) || !shown.has(bi)) return;
+    if (!inTimeEdge(e)) return;                       // 双时态：还没生效/已失效的边不画
     const pa = proj[ai], pb = proj[bi];
     const touchSel = sel != null && (ai === sel || bi === sel);
     // hover 高亮：未选中节点时点亮与 hover 节点相连的边（选中态优先，hover 不覆盖）
@@ -833,18 +936,40 @@ function renderGraph(){
     const onPath = GRAPH.pathEdges != null && GRAPH.pathEdges.includes(e._ei);
     const edgeHot = sel == null || touchSel || (hot.has(ai) && hot.has(bi));
     const w = Math.min(1.8, 0.3 + e.weight * 0.35);
-    ctx.lineWidth = (touchSel || onPath) ? w + 1.4 : (w + 0.5) * (edgeHot || touchHover ? 1 : 0.55);
+    // 边分三类，视觉上要能一眼分开：
+    //   anchor（人格接入点，很少几条）  —— 实线偏亮，它是"根"
+    //   manual/auto（真实关联）        —— 实线/虚线，主体
+    //   boot（孤立自举，稀有词重叠）    —— 极淡虚线，只为连通，不抢注意力
+    const spoke = !!e.anchor;
+    const boot = !!e.boot;
+    const isHoverEdge = GRAPH.hoverEdge && GRAPH.hoverEdge.e === e;
+    ctx.lineWidth = (isHoverEdge || touchSel || onPath) ? w + 1.6 : (w + 0.5) * (edgeHot || touchHover ? 1 : 0.55);
+    if (isHoverEdge){
+      ctx.globalAlpha = 1;
+    } else if (boot && !touchSel && !onPath){
+      ctx.globalAlpha = sel != null && !hot.has(ai) && !hot.has(bi) ? 0.05 : 0.16;
+    } else {
+      ctx.globalAlpha = 1;
+    }
     // 路径边必须看清走向，用实线盖过自动联想的虚线
     ctx.setLineDash(e.auto && !onPath ? [3, 5] : []);
     ctx.strokeStyle = onPath
       ? "rgba(" + P.path + ",.9)"
-      : touchSel || touchHover
+      : isHoverEdge
+        ? "rgba(" + P.path + ",.95)"
+        : touchSel || touchHover
         ? "rgba(" + P.path + ",.85)"
         : e.auto
         ? "rgba(" + P.edge + "," + (edgeHot ? 0.04 + Math.min(0.28, e.weight * 0.07) : 0.025 + Math.min(0.12, e.weight * 0.03)) + ")"
         : "rgba(" + P.edge + "," + (edgeHot ? 0.05 + Math.min(0.4, e.weight * 0.1) : 0.03 + Math.min(0.18, e.weight * 0.04)) + ")";
     ctx.beginPath(); ctx.moveTo(cx + pa.x, cy + pa.y); ctx.lineTo(cx + pb.x, cy + pb.y); ctx.stroke();
     ctx.setLineDash([]);
+    ctx.globalAlpha = 1;   // 每轮复位：否则星形边的低透明度会漏到后面画的节点上
+    // 缓存线段供悬停命中（只存屏幕坐标，避免每次 mousemove 重投影）
+    GRAPH.edgeSegs.push({
+      x1: cx + pa.x, y1: cy + pa.y, x2: cx + pb.x, y2: cy + pb.y,
+      e, label: e.why || "",
+    });
   });
 
   // 节点（先画非焦点，再画焦点；近的压在上面）
@@ -887,11 +1012,47 @@ function renderGraph(){
   };
   order.forEach(i => { if (hot.size && !hot.has(i)) drawNode(i); });
   order.forEach(i => { if (!hot.size || hot.has(i)) drawNode(i); });
+
+  // ---- 簇标签（LOD）：缩远时在每簇重心写名字 ----
+  // 为什么需要：171 个点 + 231 条边，缩到全景时单个节点的标签全挤在一起没法读。
+  // 画在簇重心上，缩放越小越有用——这就是"语义缩放"（GraphRAG 的社区报告在
+  // 视觉上的对应物：不展开内容，先告诉你"这一块讲什么"）。
+  if (GRAPH.colorBy === "community" && GRAPH.communities && GRAPH.communities.length){
+    const acc = new Map();      // cid -> {x,y,n}
+    proj.forEach((p, i) => {
+      const cid = nodes[i].community;
+      if (!cid || !shown.has(i)) return;
+      const a = acc.get(cid) || { x: 0, y: 0, n: 0 };
+      a.x += p.x; a.y += p.y; a.n++;
+      acc.set(cid, a);
+    });
+    ctx.textAlign = "center";
+    GRAPH.communities.forEach(c => {
+      const a = acc.get(c.id);
+      if (!a || a.n < 3) return;          // 太小的簇不标注，免得满屏字
+      const x = cx + a.x / a.n, y = cy + a.y / a.n;
+      const label = `${c.label} · ${c.size}`;
+      ctx.font = "600 12px system-ui,sans-serif";
+      const w = ctx.measureText(label).width;
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "rgba(10,12,15,.72)";
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x - w / 2 - 6, y - 10, w + 12, 20, 6);
+      else ctx.rect(x - w / 2 - 6, y - 10, w + 12, 20);
+      ctx.fill();
+      ctx.fillStyle = `hsl(${c.hue},70%,72%)`;
+      ctx.fillText(label, x, y + 4);
+      ctx.globalAlpha = 1;
+    });
+    ctx.textAlign = "start";
+  }
   const t = $("graph-tip");
-  if (t) t.textContent = GRAPH.hover != null && nodes[GRAPH.hover]
-    ? docsOf(nodes[GRAPH.hover]) : (sel != null
-      ? "已聚焦 1 条记忆 + " + ((hot.size - 1) || 0) + " 条被激活的相邻记忆 · 按 Esc 或点「重置视角」回到全景"
-      : "总记忆 " + nodes.length + " · 拖动旋转");
+  if (t) t.textContent = GRAPH.hoverEdge
+    ? "边：" + (GRAPH.hoverEdge.e.why || "关联")
+    : (GRAPH.hover != null && nodes[GRAPH.hover]
+      ? docsOf(nodes[GRAPH.hover]) : (sel != null
+        ? "已聚焦 1 条记忆 + " + ((hot.size - 1) || 0) + " 条被激活的相邻记忆 · 按 Esc 或点「重置视角」回到全景"
+        : "总记忆 " + nodes.length + " · 拖动旋转"));
 }
 
 // 搜索定位：按 gist/id 找节点，选中并聚焦到它；回车循环看下一条
@@ -1092,8 +1253,18 @@ function initGraphInteractions(){
       scheduleGraph();
     } else {
       const rect = canvas.getBoundingClientRect();
-      GRAPH.hover = graphHit(e.clientX - rect.left, e.clientY - rect.top);
-      canvas.style.cursor = GRAPH.hover != null ? "pointer" : "grab";
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      GRAPH.hover = graphHit(mx, my);
+      // 没命中节点时，再看有没有贴着某条边——贴上了就把"为什么连"显示出来。
+      // 边证据是这张图最有价值的部分之一：不解释的话，用户只能看到一堆凭空的线。
+      GRAPH.hoverEdge = GRAPH.hover == null ? edgeHit(mx, my) : null;
+      if (GRAPH.hoverEdge){
+        canvas.style.cursor = "help";
+        const t = $("graph-tip");
+        if (t) t.textContent = "边：" + (GRAPH.hoverEdge.e.why || "关联");
+      } else {
+        canvas.style.cursor = GRAPH.hover != null ? "pointer" : "grab";
+      }
       scheduleGraph();
     }
   });
@@ -2090,7 +2261,7 @@ function switchTab(tab){
   if (tab === "logs") loadLogs();
   // 诊断页有两张随时间变化的卡：体检结果 + 数据目录位置，进页面时一起刷（以前只刷体检，
   // 数据目录卡靠一段 class 判断写错的 MutationObserver，永远停在「加载中…」）
-  if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); renderDoctorHistory(); }
+  if (tab === "diag") { loadDiagnostics(); loadHomeInfo(); renderDoctorHistory(); loadHotkey(); loadIcon(); }
   if (tab === "persona") { loadSnapshots(); loadPersonaSuggest(); }  // 切到人格页时顺手刷快照列表与画像归纳建议
   // 概览/心情/梦 三页的数据都在 overview 里（心情与六欲是按时间衰减的活数值）。
   // 以前只靠 30 秒轮询 + document.hidden 跳过，切过去可能看到最多 30 秒前的旧值。
@@ -2666,6 +2837,51 @@ $("graph-hide-isolated") && $("graph-hide-isolated").addEventListener("change", 
   GRAPH.hideIsolated = !!e.target.checked;
   loadGraph(Number($("graph-limit").value || 300));
 });
+// 上色依据：重要度 / 主题簇。只改渲染，不用重新拉数据
+$("graph-color") && $("graph-color").addEventListener("change", e => {
+  GRAPH.colorBy = e.target.value === "community" ? "community" : "importance";
+  renderGraph();
+});
+
+// 布局切换：力导向 ↔ 时间轴。时间轴把物理关掉，位置由 created 决定
+$("graph-layout") && $("graph-layout").addEventListener("change", e => {
+  GRAPH.layout = e.target.value === "timeline" ? "timeline" : "force";
+  const tb = $("graph-time");
+  if (tb) tb.classList.toggle("hidden", GRAPH.layout !== "timeline");
+  if (!GRAPH.loaded) return;
+  if (GRAPH.layout === "timeline"){
+    applyTimelineLayout();
+    renderGraph();
+  } else {
+    // 回力导向：位置打散后重新收敛，否则会从"时间横排"直接弹到力导向结果
+    GRAPH.pos = GRAPH.data.nodes.map(n => {
+      if (n.layer === "persona" || n.kind === "persona") return { x: 0, y: 0, z: 0 };
+      const a = hashStr(n.id) * Math.PI * 2, b = Math.acos(2 * hashStr(n.id + "#") - 1);
+      const r0 = 10 + hashStr(n.id + "@") * 30;
+      return { x: Math.sin(b) * Math.cos(a) * r0, y: Math.sin(b) * Math.sin(a) * r0, z: Math.cos(b) * r0 };
+    });
+    GRAPH.vel = GRAPH.data.nodes.map(() => ({ x: 0, y: 0, z: 0 }));
+    startPhysics();
+  }
+});
+
+// 时间滑杆：拖到某一刻 → 只看那一刻"已知且未失效"的记忆与关联（双时态）
+function updateTimeLabel(){
+  const lb = $("graph-time-label"), ct = $("graph-time-count");
+  if (!lb) return;
+  if (!GRAPH.timeMax){ lb.textContent = "—"; if (ct) ct.textContent = ""; return; }
+  const cut = GRAPH.timeMin + (GRAPH.timeMax - GRAPH.timeMin) * (GRAPH.timePct / 100);
+  lb.textContent = new Date(cut * 1000).toLocaleString("zh-CN", { hour12: false }).slice(0, 16);
+  if (ct && GRAPH.data){
+    const n = GRAPH.data.nodes.filter(x => (x.created || 0) <= cut).length;
+    ct.textContent = GRAPH.timePct >= 100 ? `全部 ${n} 条` : `当时 ${n} 条`;
+  }
+}
+$("graph-time-range") && $("graph-time-range").addEventListener("input", e => {
+  GRAPH.timePct = Number(e.target.value);
+  updateTimeLabel();
+  renderGraph();
+});
 // 图内搜索：输入即定位（300ms 防抖），回车看下一个命中
 let _gsTimer = null;
 $("graph-search").addEventListener("input", e => {
@@ -3048,6 +3264,149 @@ async function migrateHome(){
 }
 $("btn-home-refresh") && $("btn-home-refresh").addEventListener("click", loadHomeInfo);
 $("btn-home-migrate") && $("btn-home-migrate").addEventListener("click", migrateHome);
+
+// ---- 启动快捷键（桌面快捷方式的 Hotkey 字段）
+// 读一次就缓存：这一步要走 PowerShell COM，冷启动实测 4–30 秒。
+// 每次切到诊断页都重新读的话，卡片会长时间停在"读取中"，看起来像坏了。
+let _hotkeyCache = null;
+async function loadHotkey(force){
+  const box = $("hotkey-info"); if (!box) return;
+  if (_hotkeyCache && !force){
+    renderHotkey(_hotkeyCache);
+    return;
+  }
+  box.innerHTML = `<div class="sub">读取中…（首次要调用系统 COM，可能需要几秒）</div>`;
+  try {
+    const d = await api("/api/panel-shortcut");
+    if (d.error) throw new Error(d.error);
+    _hotkeyCache = d;
+    renderHotkey(d);
+  } catch (e) {
+    box.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+function renderHotkey(d){
+  const box = $("hotkey-info"); if (!box) return;
+  const cur = (d.hotkey || "").trim();
+  // intact=false 意味着 .lnk 被写坏了：桌面图标会变白、双击没反应。
+  // 这种状态必须显眼告警，并把「修复快捷方式」摆到眼前。
+  const broken = d.intact === false;
+  box.innerHTML =
+    (broken
+      ? `<div class="sub" style="color:var(--red)">⚠ 快捷方式不完整（目标/参数/图标有缺失）——桌面图标可能已变白、双击没反应。点「修复快捷方式」重建。</div>`
+      : "")
+    + `<div class="sub">快捷方式 <code>${esc(d.path || "")}</code> · 当前${
+      cur ? ` <span class="chip good">${esc(cur)}</span>` : ' <span class="chip">未设置</span>'}</div>`;
+  const inp = $("hotkey-input");
+  if (inp && !inp.value && cur) inp.value = cur;
+}
+async function saveHotkey(value){
+  const msg = $("hotkey-msg");
+  msg.innerHTML = `<span class="chip">正在写入快捷方式…</span>`;
+  try {
+    const r = await post("/api/panel-shortcut", {hotkey: value});
+    if (r.error) throw new Error(r.error);
+    if (r.verified === false)
+      msg.innerHTML = `<span class="chip bad">写入未生效（系统拒绝了这个组合），当前是「${esc(r.applied || "无")}」</span>`;
+    else
+      msg.innerHTML = `<span class="chip good">✔ ${r.applied ? "已设为 " + esc(r.applied) : "已清除快捷键"}</span>`;
+    _hotkeyCache = null;              // 写入后缓存失效，强制回读真实值
+    loadHotkey(true);
+  } catch (e) {
+    msg.innerHTML = `<span class="chip bad">✘ ${esc(e.message)}</span>`;
+  }
+}
+$("btn-hotkey-refresh") && $("btn-hotkey-refresh").addEventListener("click", () => {
+  loadHotkey(true);
+  loadIcon(true);
+});
+
+// ---- 自定义快捷方式图标
+// 选图由**服务端**弹 Windows 原生文件框（浏览器拿不到真实路径），
+// 用户可能慢慢挑，所以这一次请求要放宽超时（默认 15s 会先断）。
+let _iconCache = null;
+async function loadIcon(force){
+  const img = $("icon-preview"), st = $("icon-state");
+  if (!img) return;
+  if (_iconCache && !force){ renderIcon(_iconCache); return; }
+  st.textContent = "读取中…";
+  try {
+    const d = await api("/api/panel-icon");
+    if (!d.ok) throw new Error(d.error || "读取失败");
+    _iconCache = d;
+    renderIcon(d);
+  } catch (e) {
+    st.textContent = "";
+    $("icon-msg").innerHTML = `<span class="chip bad">${esc(e.message)}</span>`;
+  }
+}
+function renderIcon(d){
+  const img = $("icon-preview"), st = $("icon-state");
+  if (img && d.preview){ img.src = d.preview; img.style.visibility = "visible"; }
+  if (st) st.textContent = d.using_custom ? "自定义" : "默认";
+  if (!d.pillow){
+    $("icon-msg").innerHTML = `<span class="chip">没有 Pillow，只能选现成的 .ico 文件</span>`;
+  }
+}
+async function pickIcon(){
+  const msg = $("icon-msg");
+  msg.innerHTML = `<span class="chip">已弹出文件选择框——请在弹出的窗口里选图片（选完这里会更新）</span>`;
+  try {
+    // 200s：用户在原生对话框里可能挑很久
+    const r = await api("/api/panel-icon", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: "pick"}),
+      timeoutMs: 200000,
+    });
+    if (r.cancelled){ msg.innerHTML = `<span class="chip">已取消，图标未改动</span>`; return; }
+    if (!r.ok) throw new Error(r.error || "失败");
+    msg.innerHTML = `<span class="chip good">✔ 图标已更新（${(r.sizes || []).length} 档尺寸）</span>`;
+    _iconCache = null;
+    loadIcon(true);
+  } catch (e) {
+    msg.innerHTML = `<span class="chip bad">✘ ${esc(e.message)}</span>`;
+  }
+}
+async function resetIcon(){
+  const msg = $("icon-msg");
+  msg.innerHTML = `<span class="chip">正在恢复默认图标…</span>`;
+  try {
+    const r = await post("/api/panel-icon", {action: "reset"});
+    if (!r.ok) throw new Error(r.error || "失败");
+    msg.innerHTML = `<span class="chip good">✔ 已恢复默认图标</span>`;
+    _iconCache = null;
+    loadIcon(true);
+  } catch (e) {
+    msg.innerHTML = `<span class="chip bad">✘ ${esc(e.message)}</span>`;
+  }
+}
+$("btn-icon-pick") && $("btn-icon-pick").addEventListener("click", pickIcon);
+$("btn-icon-reset") && $("btn-icon-reset").addEventListener("click", resetIcon);
+$("btn-hotkey-save") && $("btn-hotkey-save").addEventListener("click", () => {
+  const v = ($("hotkey-input").value || "").trim();
+  if (!v) { $("hotkey-msg").innerHTML = `<span class="chip bad">先填一个组合，如 CTRL+ALT+L</span>`; return; }
+  saveHotkey(v);
+});
+$("btn-hotkey-clear") && $("btn-hotkey-clear").addEventListener("click", () => {
+  $("hotkey-input").value = "";
+  saveHotkey("");
+});
+// 修复快捷方式：桌面图标变白 / 双击没反应时用（.lnk 被写坏会自动出现这种情况）
+$("btn-hotkey-repair") && $("btn-hotkey-repair").addEventListener("click", async () => {
+  const msg = $("hotkey-msg");
+  msg.innerHTML = `<span class="chip">正在重建快捷方式…</span>`;
+  try {
+    const r = await post("/api/panel-shortcut", {action: "repair"});
+    if (r.error) throw new Error(r.error);
+    if (!r.ok) throw new Error("重建后仍不完整，请检查启动器 .vbs 是否存在");
+    msg.innerHTML = `<span class="chip good">✔ 快捷方式已重建（目标/参数/图标齐全）</span>`;
+    _hotkeyCache = null;
+    loadHotkey(true);
+  } catch (e) {
+    msg.innerHTML = `<span class="chip bad">✘ ${esc(e.message)}</span>`;
+  }
+});
 // 进诊断页由 switchTab 统一触发（以前这里观察的是 class "on"，而页签用的是 "active"，
 // 条件永远不成立 → 数据目录卡一直停在「加载中…」）
 

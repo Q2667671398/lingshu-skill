@@ -1,25 +1,25 @@
 {
-  "version": "5.30",
+  "version": "5.31",
   "files": {
     "CHANGELOG.md": {
-      "sha256": "38799bd39f4b7257e02ed11307e8e53f341995f25d25038ba642231e0412c7ca",
-      "size": 374317
+      "sha256": "948915a7568c1bd087a838c784c4e872a327470566ab18cbb8d894db9426fb68",
+      "size": 380745
     },
     "README.md": {
-      "sha256": "da34dcf8b8f9601b6367ddc3f8837d5ea5ded7b3e44180a948607069da9e0563",
+      "sha256": "af118e93800c308de869eca4fbc6363d277f9abf2fe8e6d5154b2f2843f8d680",
       "size": 112859
     },
     "SKILL-lite.md": {
-      "sha256": "298c90366af514309d8e56e8af2b8c71d1e1d74f51b086917f3dabc1972ac8ca",
+      "sha256": "e9147de39af645cf3b79c389285de70545a77e23fe1ef9039a2c50562585584c",
       "size": 4440
     },
     "SKILL-tiny.md": {
-      "sha256": "a7ebea585335e63a6efe5b85621efc3d212853d31f228de6c0d4ca8aa4ae349c",
+      "sha256": "321e193370dc16f0f9600f59c18e5882c192c70098591fb2961f92a08482e8d0",
       "size": 1913
     },
     "SKILL.md": {
-      "sha256": "55ee0bcd948bd7ab0085facd5e731d93be6f80d5ba0ecea5e1272ad70703d77b",
-      "size": 39250
+      "sha256": "fc0753c72eaa3f3562f805a01bf42b4af9be1c7d6404796e7e047d73e92c027a",
+      "size": 24806
     },
     "assets/lingshu-icon-preview.png": {
       "sha256": "ef36bb7f214647339a8139e1bb40513502f367bba8f9efe00e460b43ec37d12d",
@@ -34,8 +34,8 @@
       "size": 53917
     },
     "assets/panel.html": {
-      "sha256": "b63401782f10fc7ca65e680e1f0ed7bfab20e523bb66cee34a1b57f85c4420ff",
-      "size": 333947
+      "sha256": "0fcd68c914924babfa001770be9784204ce299f638ef92598529420883f9ab65",
+      "size": 355080
     },
     "cordis-plugin/lingshu-cron/cordis.patch.yml": {
       "sha256": "74fb1b914774754a985c15d01f60b64fa0c4dcbf24760de55b8bae76a015c2f7",
@@ -50,8 +50,8 @@
       "size": 2205
     },
     "cordis-plugin/lingshu-cron/plugin.js": {
-      "sha256": "011b5151bbb7e4efc47406405ed9dcb2e76fd5cb73ae15ca2372838aacbab5ad",
-      "size": 61394
+      "sha256": "68b83a423e8a13ccd2bba51b2e4970813101b8d6eb68defa46682c86c54fbca6",
+      "size": 70159
     },
     "cordis-plugin/lingshu-guard/plugin.js": {
       "sha256": "8c5432332cbb79aafe37f099b1e87f49dcabc7f925486adf112bd8f83629ac5b",
@@ -109,12 +109,16 @@
       "sha256": "2e9443d8416048c72ebe5cbec03a437fb833e41f4cd6cc4b3c8ee14ea73a0e8e",
       "size": 4146
     },
+    "docs/使用指南.md": {
+      "sha256": "9b97f78bea362cc681be2120503bb69e199e40cf4fe2398518e1e393082dfc6c",
+      "size": 7991
+    },
     "index.js": {
       "sha256": "1c0bdee99c372a37a3c4bf5b1308d96975ec8bbbb49317aeecb00a58b9c17ecb",
       "size": 5588
     },
     "package.json": {
-      "sha256": "cbeeecb3e74821a3f0e37012f79310f38a6f87bd44569ab123c7990a989d589f",
+      "sha256": "8251a60c7233112c2ffe79537ea373af1271fc5506d6902b8049cd343ee98737",
       "size": 1341
     },
     "scripts/assembler.py": {
@@ -150,16 +154,16 @@
       "size": 9013
     },
     "scripts/cli.py": {
-      "sha256": "6ed5aab83661cf39945e334be084cc4915100b5c9373166b01e042c3d803a868",
-      "size": 311369
+      "sha256": "c27029b7000a6693f59f6e00d29632e79b685b5056d09e1d02ef2a336015394d",
+      "size": 313668
     },
     "scripts/context_ab.py": {
       "sha256": "3d383f1fc16d328612825bbf731866fa427da0746490d027a0ddb719d210f1cb",
       "size": 9928
     },
     "scripts/core.py": {
-      "sha256": "ab964997802e792add6fef95cd470e1f2d62aeb1048f46431626584242940072",
-      "size": 111873
+      "sha256": "d988147d3b25631ba743b1ee0b68c3084dad09f9ac56cb2cc4cc5dfe839e965a",
+      "size": 113628
     },
     "scripts/coverage_report.py": {
       "sha256": "085fd3e9b4247718a2e90d489b15c582a3fdcb6a02aae79ddc82b962da1e94a5",
@@ -170,12 +174,12 @@
       "size": 7726
     },
     "scripts/dream.py": {
-      "sha256": "c2e906b0f887e76eb05c83135f5f035e6df66941fcff067c341042d25c175647",
-      "size": 57442
+      "sha256": "c6d1c8506ff5f3543f0480047d4efe7771d0fe0316d522440592f7cb69bffba0",
+      "size": 57866
     },
     "scripts/emotion.py": {
-      "sha256": "b56f2516a47ed5adecfe913e7e24957e5f4975fc8379f4097d5fa73dbd5c97d0",
-      "size": 67016
+      "sha256": "89875e5513005ea1e30425b91627185087ab747272cfdc87fa19bc9cba32a67f",
+      "size": 67828
     },
     "scripts/failures.py": {
       "sha256": "3a16234a1871f62e3ba7b7b743110b4044fb7b715b4d0e924b8ebf1cf0be50d0",
@@ -186,8 +190,8 @@
       "size": 4363
     },
     "scripts/growth.py": {
-      "sha256": "d302ed78142533cba877d64fca92326f536acde3c787b3db458e6e959c537122",
-      "size": 252705
+      "sha256": "8b462dbcea36f68e5b6c93ebf0538ff642d2a028bc218eeb8e0116457825d36e",
+      "size": 254040
     },
     "scripts/growth_parts.py": {
       "sha256": "d8f8d1808d4097630e7a0425d1ad9bc8f3826c11a64625304e25336f2a8aa592",
@@ -222,8 +226,8 @@
       "size": 4424
     },
     "scripts/mem_dialogue.py": {
-      "sha256": "3ea39782e930626e979b3a14718e643b107f959570efd2053216da220e3ec376",
-      "size": 10426
+      "sha256": "79831642b8962b93f91be2c03b274dcd2b723969801a970074ff24c8d52d1600",
+      "size": 11447
     },
     "scripts/mem_embed.py": {
       "sha256": "b98478243237221a5bce491a5cbf4ca2753de29285086abfb0a855e3473c27a8",
@@ -242,8 +246,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "242f69dec0b94790038dd2370d5010eb08ace86c692b0b69086daebd558b621f",
-      "size": 277607
+      "sha256": "5cecfe368af057c145c940799fe0447490ea8b4c7180a3c41411519450786b74",
+      "size": 300410
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",
@@ -261,17 +265,29 @@
       "sha256": "5788aaee9b4e56e73587c4d0474687cecaa40dd7e507f02c27dd07aa208ba237",
       "size": 7200
     },
+    "scripts/panel_icon.py": {
+      "sha256": "8b766740c547087c4d40ab7031a8b6845f3e0bdd3893079d2da22bb9c9694a9f",
+      "size": 7917
+    },
     "scripts/panel_launcher.py": {
-      "sha256": "d54dc3ab7b4a7301651cb797e4003f6b228c45f6842bc70deac91569289f6e83",
-      "size": 7708
+      "sha256": "c27c195acc126dace8b99f66906bbdb64ef4dcb4a66513907ebd4df159b97af1",
+      "size": 12360
     },
     "scripts/panel_server.py": {
-      "sha256": "bf0635add9a98cb1ebe6aeeba60e4905c89bbad91bdb483758825534168a57b7",
-      "size": 142512
+      "sha256": "78307a28a790b437db0cbd9a758179121fc6a33161723e74d73cc66e6f2d89e0",
+      "size": 148671
     },
     "scripts/panel_settings.py": {
       "sha256": "49714ad058b1fe0cdd495a2e7eeadc3b4554346c92150b1381cdc39f44012b6e",
       "size": 11998
+    },
+    "scripts/panel_shortcut.py": {
+      "sha256": "956374abe9d1e2b63618223e861f696070b6c0368a757f5a630f441c854ea1ea",
+      "size": 13653
+    },
+    "scripts/panel_splash.py": {
+      "sha256": "36cd59e593ce52557a180a8767bfa9cd9c803f0cccaa141e7da8babd5a35e925",
+      "size": 7062
     },
     "scripts/panel_update.py": {
       "sha256": "6ff1a0687c05e3ef4ae846058abea4dacf985a3fe6adcdbb4eef1b38e27139b5",
@@ -282,8 +298,8 @@
       "size": 27136
     },
     "scripts/persona.py": {
-      "sha256": "9ade4353fa31f2e486f9fe23ccc3dd7dc6617c930f716a04f1fb6ad3114ae9c9",
-      "size": 109602
+      "sha256": "ebb0a1fa3299ebb2545281a186049b55d4117311f37ab12a8efafe1ce7de8cee",
+      "size": 110519
     },
     "scripts/release.py": {
       "sha256": "42496434d9edc232931df3aad44e75d5d9aaddb6b5663019374473aeb6246b68",
@@ -302,8 +318,8 @@
       "size": 15947
     },
     "scripts/safety_net.py": {
-      "sha256": "39894fbea411ecc0e69a6cba08ec48b28aa735000e61f93ec798a587be369028",
-      "size": 14797
+      "sha256": "678d9286c83530e5196f4e46ef195d7e4686fe7f9bcbff0af57ff1b97827376e",
+      "size": 16206
     },
     "scripts/session_import.py": {
       "sha256": "914181d3cb8eebe6a41a253f40b76bc57a5ebf0bbe274ed0d1102dd43cddc5a5",

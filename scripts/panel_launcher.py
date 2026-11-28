@@ -140,20 +140,41 @@ def _port_occupied(port: int) -> bool:
             pass
 
 
+def _port_bindable(port: int) -> bool:
+    """端口现在能不能被我们 bind（瞬时判断，不发任何 HTTP 请求）。
+
+    为什么不用 `_ping` 来判断"有没有在跑"：本机实测——**连接一个没有监听的本地端口
+    不是立刻 ECONNREFUSED，而是一直挂到超时**（安全软件/防火墙丢 SYN）。
+    于是 `_ping` 每次都烧满 1.5s、`_looks_like_panel` 烧 2s，启动前那套
+    "先探测三轮再起服务"白白花掉 **7.1 秒**（实测 8.3s 里的大头）。
+    bind 探测是纯本地内核操作，几毫秒返回。
+
+    注意**不设 SO_REUSEADDR**：Windows 上设了它可以让两个 socket 绑同一端口，
+    那样探测就永远"成功"，等于没测。
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
 def main() -> int:
     port = _port()
     url = f"http://127.0.0.1:{port}"
 
-    info = _wait_for_app(port, tries=3, gap=0.2)
-    if info and info.get("app") == "lingshu-panel":
-        # 已经在跑：只把浏览器叫到前面来，不起第二个进程
-        _open_browser(url)
-        return 0
-    if _port_occupied(port):
-        # 竞态：连点时端口可能刚被**同伴**抢到，而我们第一轮探测太早没看到。
-        # 先多等一会儿再看——只有确认不是我们自己的面板，才报"被别的程序占用"。
-        again = _wait_for_app(port, tries=12, gap=0.3)
-        if again and again.get("app") == "lingshu-panel":
+    # 一次性、瞬时地判断端口状态；只有确实有人在听时，才去做（较贵的）HTTP 探测。
+    if not _port_bindable(port):
+        info = _wait_for_app(port, tries=8, gap=0.25)
+        if info and info.get("app") == "lingshu-panel":
+            # 已经在跑：只把浏览器叫到前面来，不起第二个进程
             _open_browser(url)
             return 0
         _msgbox(
@@ -167,6 +188,89 @@ def main() -> int:
     # 起服务（serve 内部带空闲自退 + 打开浏览器）
     # 竞态下 bind 失败是预期行为（另一个同伴刚抢到），让 serve 别往 stderr 吐假警报。
     os.environ["LINGSHU_QUIET_PORT"] = "1"
+
+    # ---------------------------------------------------------------- 立刻给反馈
+    # 从这里到浏览器出画面还有好几秒（进程创建 + 导入 + 绑端口 + 浏览器渲染），
+    # 全程没有可见输出 → 用户以为没点上。所以**秒开一枚启动光晕**，服务就绪即关。
+    # tkinter 跑在主线程，真正的服务启动放后台线程（Windows 上 tkinter 必须占主线程）。
+    splash = None
+    if os.environ.get("LINGSHU_NO_SPLASH", "").strip() not in ("1", "true", "yes"):
+        try:
+            import panel_splash
+            if panel_splash.available():
+                splash = panel_splash.Splash("正在唤醒记忆…")
+        except Exception:
+            splash = None                   # 拿不到就不装，退化成原来的静默启动
+
+    import threading
+    state = {"ready": False, "err": None, "serving": False}
+
+    def _boot():
+        """后台线程：起服务。成功后会一直阻塞在 serve_forever（预期行为）。"""
+        try:
+            import panel_server
+            panel_server.serve(port, open_browser=False)   # 浏览器由主线程开，顺序可控
+            state["serving"] = True
+        except (SystemExit, OSError) as exc:
+            state["err"] = exc
+        except Exception as exc:                            # noqa: BLE001
+            state["err"] = exc
+
+    if splash is not None:
+        th = threading.Thread(target=_boot, name="panel-boot", daemon=True)
+        th.start()
+
+        def _watch():
+            """轮询：服务通了就关光晕 + 开浏览器。"""
+            if state["err"] is not None:
+                splash.close()
+                return
+            info2 = _ping(port, timeout=0.6)
+            if info2 and info2.get("app") == "lingshu-panel":
+                splash.set_text("已就绪 · 正在打开面板…")
+                splash.close()
+                _open_browser(url)
+                return
+            if splash.root is not None and not splash._closed:
+                splash.root.after(140, _watch)
+
+        # 超时兜底：9 秒还没通就换文案，17 秒仍未通就关窗——不许永久挂在屏幕上
+        def _slow_note():
+            if not splash._closed:
+                splash.set_text("启动比预期慢，仍在尝试…")
+
+        def _hard_stop():
+            splash.close()
+
+        if splash.root is not None:
+            splash.root.after(9000, _slow_note)
+            splash.root.after(17000, _hard_stop)
+            splash.root.after(140, _watch)
+        splash.run()                    # 主线程跑界面直到 close()
+
+        # 光晕关掉后：服务线程若已失败，按原来的方式报错（不能静默退出）
+        if state["err"] is not None:
+            exc = state["err"]
+            again = _wait_for_app(port, tries=10, gap=0.35)
+            if again and again.get("app") == "lingshu-panel":
+                _open_browser(url)
+                return 0
+            if _port_occupied(port):
+                _msgbox(
+                    f"端口 {port} 已被别的程序占用，面板起不来。\n\n"
+                    f"两种办法：\n"
+                    f"  1) 关掉占用该端口的程序；\n"
+                    f"  2) 用 brain.py config set panel_port 8766 换个端口。",
+                    "灵枢面板 · 端口被占用")
+                return 1
+            _msgbox(f"面板启动失败：\n{type(exc).__name__}: {exc}", "灵枢面板 · 启动失败")
+            return int(getattr(exc, "code", 1) or 2)
+        # 正常路径：服务在后台线程里继续跑，主线程到此结束（daemon 线程随之结束前
+        # 需要保持进程活着——所以这里改为阻塞等待该线程）。
+        th.join()
+        return 0
+
+    # ---- 没有 tkinter：退回原来的同步启动（行为与旧版一致）----
     try:
         import panel_server
         panel_server.serve(port, open_browser=True)

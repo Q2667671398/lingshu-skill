@@ -475,9 +475,17 @@
               <option value="300" selected>300 节点</option>
               <option value="600">600 节点</option>
             </select>
+            <select id="graph-color" style="width:104px" title="上色依据：重要度 = 越重要越暖；主题簇 = 同色即同一主题（社区检测）">
+              <option value="importance" selected>按重要度</option>
+              <option value="community">按主题簇</option>
+            </select>
+            <select id="graph-layout" style="width:110px" title="空间布局：力导向 = 按关联聚拢；时间轴 = 按写下的时间排开（可回看某一时刻的记忆网）">
+              <option value="force" selected>力导向</option>
+              <option value="timeline">时间轴</option>
+            </select>
             <label class="sub" style="display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none"
-                   title="只画有真实联想关系的记忆。孤立记忆不贡献结构，还会用斥力把可见部分挤成一坨——这是「点开就是个球」的主因之一。取消勾选可看全部">
-              <input type="checkbox" id="graph-hide-isolated" checked>只看有联想的
+                   title="默认全部显示：每条记忆都有人格连线，图不会断。取消勾选可只看有真实关联的记忆（更稀疏，适合记忆很多时找结构）">
+              <input type="checkbox" id="graph-hide-isolated">只看有联想的
             </label>
             <button class="ghost" id="btn-graph-reset">重置视角</button>
             <button class="ghost" id="btn-graph-refresh">刷新</button>
@@ -490,6 +498,13 @@
         <div id="graph-tip" class="sub" style="position:absolute;left:14px;bottom:12px;pointer-events:none;font-size:11.5px;color:var(--faint)"></div>
         <div id="graph-loadtip" class="sub hidden" style="position:absolute;left:0;right:0;top:46%;text-align:center;pointer-events:none;font-size:13px;color:var(--faint)"></div>
         <div id="graph-detail" class="card hidden" style="position:absolute;right:14px;top:14px;width:280px;max-height:80%;overflow:auto;background:rgba(17,21,26,.94);backdrop-filter:blur(6px)"></div>
+        <!-- 时间轴滑杆：只在「时间轴」布局下显示，拖动即回看某一时刻 -->
+        <div id="graph-time" class="hidden" style="position:absolute;left:16px;right:16px;bottom:38px;display:flex;gap:10px;align-items:center;
+             background:rgba(10,12,15,.82);border:1px solid var(--line);border-radius:10px;padding:8px 12px;backdrop-filter:blur(6px)">
+          <span class="sub" style="white-space:nowrap" id="graph-time-label">—</span>
+          <input type="range" id="graph-time-range" min="0" max="100" value="100" style="flex:1;accent-color:var(--amber)">
+          <span class="sub" style="white-space:nowrap" id="graph-time-count"></span>
+        </div>
       </div>
       <div class="card" style="margin-top:14px">
         <div class="row"><h2 style="margin:0">关联明细</h2><span class="sub" id="graph-stat" style="margin-left:auto"></span></div>
@@ -673,6 +688,48 @@
           <button class="btn" id="btn-home-migrate">迁移到此处</button>
         </div>
         <div class="sub" id="home-msg" style="margin-top:8px"></div>
+      </div>
+
+      <!-- 启动快捷键（写桌面快捷方式的全局热键） -->
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">桌面快捷方式</h2>
+            <div class="sub">换图标 + 设全局热键。写的是 Windows 快捷方式自带字段，不需要额外常驻进程。</div>
+          </div>
+          <button class="ghost" id="btn-hotkey-refresh" style="margin-left:auto">刷新</button>
+        </div>
+
+        <div class="row" style="margin-top:14px;gap:14px;flex-wrap:wrap;align-items:flex-start">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+            <img id="icon-preview" alt="图标预览" width="64" height="64"
+                 style="width:64px;height:64px;border-radius:12px;border:1px solid var(--line);background:var(--surface2);object-fit:contain">
+            <span class="sub" id="icon-state" style="font-size:11px">—</span>
+          </div>
+          <div style="flex:1;min-width:220px">
+            <div class="sub" style="margin-bottom:8px">自定义图标：选一张图片（建议正方形、≥256×256），会自动生成 16/24/32/48/64/128/256 多尺寸 .ico。也可以直接选现成的 .ico。</div>
+            <div class="row" style="flex-wrap:wrap;gap:8px">
+              <button class="btn" id="btn-icon-pick">选择图片…</button>
+              <button class="ghost" id="btn-icon-reset">恢复默认图标</button>
+            </div>
+            <div class="sub" id="icon-msg" style="margin-top:8px"></div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:16px;flex-wrap:wrap">
+          <div>
+            <h2 style="margin-bottom:4px">启动快捷键</h2>
+            <div class="sub">在任何程序里按下都能唤起面板。至少要有 CTRL / ALT / SHIFT / WIN 之一。</div>
+          </div>
+        </div>
+        <div id="hotkey-info" style="margin-top:12px"><div class="empty">读取中…</div></div>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap">
+          <input type="text" id="hotkey-input" placeholder="例如 CTRL+ALT+L（至少一个修饰键）" style="flex:1;min-width:220px">
+          <button class="btn" id="btn-hotkey-save">设为快捷键</button>
+          <button class="ghost" id="btn-hotkey-clear">清除</button>
+          <button class="ghost" id="btn-hotkey-repair" title="如果桌面图标变白、双击没反应（快捷方式被写坏了），点这里按标准值重建">修复快捷方式</button>
+        </div>
+        <div class="sub" id="hotkey-msg" style="margin-top:8px"></div>
       </div>
     </section>
 

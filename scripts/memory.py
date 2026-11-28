@@ -2625,12 +2625,24 @@ def recent(k: int = 6, layers: tuple = ("hippo", "cortex")) -> list:
 
 
 def forget(memory_id: str) -> bool:
+    """把一条记忆移入淡忘层（dust）。
+
+    **置顶（pinned）记忆拒绝**：与 `set_memory_review(discard)`、
+    `apply_dream(forget)` 同一道防线——那两处都硬拒置顶记忆
+    （"用户置顶的不参与淡忘"），但 forget 原来不看 pinned，
+    于是置顶记忆可被一条命令/一次误点移入淡忘区（审计 memory.py:2602）。
+    口径不一致本身就是 bug：用户以为置顶锁住了，实际没锁。
+    """
     # 读-改-写整体加锁：forget 用的是 save_all 整库快照覆写，
     # 不加锁会把锁外并发写入的新记忆一起丢回旧状态。
     with _locked(HOME / "hippocampus.jsonl"):
         records = load_all()
         for m in records:
             if m.get("id") == memory_id and m.get("layer") != "dust":
+                if m.get("pinned"):
+                    raise ValueError(
+                        "这条记忆是用户置顶的，不能移入淡忘区。"
+                        "如确需淡忘，先取消置顶（或手动处理）。")
                 m["layer"] = "dust"
                 m["forgotten_at"] = now_ts()
                 m["detail"] = round(max(0.15, _num(m.get("detail"), 1.0) * 0.5), 2)
@@ -4254,7 +4266,7 @@ def assoc_graph(limit: int = 300, generic_ratio: float | None = None,
 
     n_nodes = max(1, len(nodes))
     generic_buckets = []      # 被判为元数据的标签/实体（附覆盖数，便于排错）
-    buckets = []              # (bucket_key, id_set)
+    buckets = []              # (显示名, id_set) —— 名字留着给"边证据"用
     for kind, table in (("标签", by_tag), ("实体", by_ent)):
         for name, bucket in table.items():
             if len(bucket) < 2:
@@ -4264,13 +4276,15 @@ def assoc_graph(limit: int = 300, generic_ratio: float | None = None,
                                         "count": len(bucket),
                                         "ratio": round(len(bucket) / n_nodes, 3)})
                 continue
-            buckets.append(bucket)
+            buckets.append((f"{kind}·{name}", bucket))
     generic_buckets.sort(key=lambda x: -x["count"])
 
     # 每条候选边的权重 = 两端共享的桶数（共享的标签/实体越多越相关）
+    # pair_names 记下**具体共享了哪些**——边证据可视化要用（"为什么连这一条"）
     pair_weight: dict[tuple, int] = {}
+    pair_names: dict[tuple, list] = {}
     owner: dict[str, set] = {}          # id -> 命中的桶下标集合（算共享数用）
-    for bi, bucket in enumerate(buckets):
+    for bi, (bname, bucket) in enumerate(buckets):
         bl = sorted(bucket)
         for i, a in enumerate(bl):
             owner.setdefault(a, set()).add(bi)
@@ -4280,6 +4294,9 @@ def assoc_graph(limit: int = 300, generic_ratio: float | None = None,
                 if key in seen_edges:
                     continue
                 pair_weight[key] = pair_weight.get(key, 0) + 1
+                names = pair_names.setdefault(key, [])
+                if len(names) < 4:
+                    names.append(bname)
 
     # 度数闸：优先保留"共享桶多（更相关）+ 两端总度数低（更稀缺）"的边，
     # 贪心填到每个节点 maxdeg 为止——避免大节点吃掉所有名额。
@@ -4295,7 +4312,8 @@ def assoc_graph(limit: int = 300, generic_ratio: float | None = None,
     for a, b, w in kept:
         edges.append({"src": a, "dst": b, "relation": "相关",
                       "weight": min(3.0, 0.8 * max(1, w)),
-                      "auto": True, "shared": w})
+                      "auto": True, "shared": w,
+                      "shared_names": pair_names.get((a, b), [])})
 
     # 人格中心节点：星核。**不连全部记忆**——那是另一条"必成毛球"的路：
     # 300 个节点各连一根，中心点的视觉权重会盖过一切，且弹簧把全图拽向一点。
@@ -4325,23 +4343,440 @@ def assoc_graph(limit: int = 300, generic_ratio: float | None = None,
     nodes.insert(0, {"id": persona_id, "gist": "人格 · " + (p.get("name") or "砚"),
                      "kind": "persona", "layer": "persona",
                      "importance": 1.0, "emotion": "", "recency": 1.0})
-    hub_cap = max(4, maxdeg * 2) if maxdeg else len(nodes)
-    hub_ids = {i for pair in kept for i in pair[:2]}
-    hub_targets = sorted(nodes[1:], key=lambda m: -_num(m.get("importance"), 0.5))
-    # 优先连"已经在联想网里"的高重要度记忆，补足到 hub_cap
-    hub_targets.sort(key=lambda m: (m["id"] not in hub_ids, -_num(m.get("importance"), 0.5)))
-    for m in hub_targets[:hub_cap]:
-        edges.append({"src": persona_id, "dst": m["id"], "relation": "自我",
-                      "weight": 0.4 + _num(m.get("importance"), 0.5), "auto": True})
+
+    # ---------------------------------------------------------------- 孤立自举
+    # v3.50：**不再用「人格连所有记忆」的星形假连通**。
+    # 星形能让每点都有边，但那些边不表达任何关系——记忆彼此之间仍然是散的，
+    # 用户看到的是"中间一个核 + 一圈互不相干的点"，不是记忆网络。
+    #
+    # 改成业界做法（参考 dsh-memory-nebula 的 orphan bootstrap）：
+    #   对「剪枝后度数仍为 0」的记忆，连一条**真实成立**的弱边——与它在
+    #   稀有词上重叠最多的那条记忆。这样连通性来自内容，不是来自中心。
+    # 细节三处（都是踩过的坑）：
+    #   ① 只用**稀有词**（df 低的词）判相似：高频词（"用户""记忆"）人人都重叠，
+    #      按它连边等于随机连；
+    #   ② 每个孤岛留 **2 条**候选：唯一邻居若在别处被过滤（stale/归档），
+    #      这条边等于白连；
+    #   ③ 自举边权重压 0.32，不参与主图排序，也不会盖住真实关联。
+    BOOT_WEIGHT = 0.32
+    BOOT_MAX = 80          # 自举边上限，防极端库把图撑爆
+    RARE_DF = 0.22         # 词频高于这个比例就不算"稀有词"
+    RARE_KEEP = 26         # 每节点保留最稀有的若干个词做签名
+    boot_edges = []
+    orphan_ids = []
+    anchors = []          # 人格接入点（真实度数最高的那几条记忆）
+    try:
+        import fallback_embed as _fe
+        n_all = max(1, len(nodes))
+        # 稀有词签名：每节点取 df 最低的若干个 token
+        sig = {}
+        df = {}
+        for m in nodes[1:]:
+            toks = set(_fe.tokenize(m.get("text") or m.get("gist") or ""))
+            sig[m["id"]] = toks
+            for t in toks:
+                df[t] = df.get(t, 0) + 1
+        rare_cut = max(2, int(n_all * RARE_DF))
+        sig_rare = {k: {t for t in v if df.get(t, 0) <= rare_cut}
+                    for k, v in sig.items()}
+        sig_rare = {k: v for k, v in sig_rare.items() if v}
+
+        # 现有度数（不含人格）
+        deg = {}
+        for e in edges:
+            if e["src"] == persona_id or e["dst"] == persona_id:
+                continue
+            deg[e["src"]] = deg.get(e["src"], 0) + 1
+            deg[e["dst"]] = deg.get(e["dst"], 0) + 1
+        orphan_ids = [m["id"] for m in nodes[1:] if not deg.get(m["id"])]
+
+        # 倒排：稀有词 -> 命中节点。只算"孤岛 × 已有邻居"这一小片，不做 N²
+        inv = {}
+        for mid, toks in sig_rare.items():
+            for t in toks:
+                inv.setdefault(t, []).append(mid)
+        for oid in orphan_ids:
+            if len(boot_edges) >= BOOT_MAX:
+                break
+            toks_o = sig_rare.get(oid) or set()
+            if not toks_o:
+                continue
+            hit = {}
+            for t in toks_o:
+                for other in inv.get(t, ()):
+                    if other != oid:
+                        hit[other] = hit.get(other, 0) + 1
+            if not hit:
+                continue
+            # 共享稀有词越多越优先；同分时偏好重要度高、非归档的邻居
+            scored = sorted(
+                hit.items(),
+                key=lambda kv: (-kv[1], -_num(
+                    next((m for m in nodes if m["id"] == kv[0]), {}).get("importance"), 0.5)),
+            )
+            for other, cnt in scored[:2]:          # 留 2 条候选
+                w = BOOT_WEIGHT if cnt >= 2 else BOOT_WEIGHT * 0.7
+                boot_edges.append({
+                    "src": oid if oid < other else other,
+                    "dst": other if oid < other else oid,
+                    "relation": "稀有词重叠",
+                    "weight": round(w, 3), "auto": True, "boot": True,
+                    "shared_rare": cnt,
+                })
+    except Exception as exc:  # noqa: BLE001 —— 自举失败不能拖垮整个图
+        brain.log_event("growth", f"联想图孤立自举失败：{exc}", level="warn")
+
+    edges.extend(boot_edges)
+
+    # 人格只连"最有资格当根"的那几条：真实关联度数最高的记忆（不是全部）。
+    # 这样人格稳在中心，但它是**接入**了记忆网络，而不是用放射线假装连通。
+    real_deg = {}
+    for e in edges:
+        if e["src"] == persona_id or e["dst"] == persona_id:
+            continue
+        real_deg[e["src"]] = real_deg.get(e["src"], 0) + 1
+        real_deg[e["dst"]] = real_deg.get(e["dst"], 0) + 1
+    anchors = sorted(real_deg.items(), key=lambda kv: -kv[1])[:max(3, min(8, len(real_deg)))]
+    for aid, _d in anchors:
+        edges.append({"src": persona_id, "dst": aid, "relation": "自我",
+                      "weight": 0.9, "auto": True, "anchor": True})
+    # 兜底：若整库一条边都没有（全新库），人格直连重要度最高的几条，
+    # 否则画面上只有一个人格孤点，会被当成"面板坏了"。
+    if not anchors:
+        for m in sorted(nodes[1:], key=lambda x: -_num(x.get("importance"), 0.5))[:5]:
+            edges.append({"src": persona_id, "dst": m["id"], "relation": "自我",
+                          "weight": 0.6, "auto": True, "anchor": True})
+
     kept_ids = {n["id"] for n in nodes}
     edges = [e for e in edges if e["src"] in kept_ids and e["dst"] in kept_ids]
+
+    # ---------------------------------------------------------------- 连通分量合并
+    # 自举只保证"每个孤岛至少有一条边"，但**两条孤岛互相连**仍是一块接不进主图的
+    # 小陆地块。用户要的是"最终肯定能连到人格"，所以再补一道：找出所有不含人格的
+    # 连通分量，把每个分量挂到主图上——优先挂给稀有词重叠最多的主图节点，
+    # 没有任何重叠时才退回人格（这条一定成立，是最后兜底）。
+    def _components():
+        parent = {}
+
+        def find(x):
+            parent.setdefault(x, x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for e in edges:
+            union(e["src"], e["dst"])
+        groups = {}
+        for m in nodes:
+            groups.setdefault(find(m["id"]), []).append(m["id"])
+        return list(groups.values())
+
+    merged = 0
+    try:
+        import fallback_embed as _fe2
+        for _ in range(4):                     # 最多四轮，正常一轮就收敛
+            comps = _components()
+            main = next((c for c in comps if persona_id in c), [persona_id])
+            main_set = set(main)
+            others = [c for c in comps if persona_id not in c]
+            if not others:
+                break
+            for comp in others:
+                # 分量里最该代表它的节点：重要度最高的
+                head = max(comp, key=lambda mid: _num(
+                    next((m for m in nodes if m["id"] == mid), {}).get("importance"), 0.5))
+                toks_head = set(_fe2.tokenize(
+                    next((m.get("text") or m.get("gist") or "" for m in nodes
+                          if m["id"] == head), "")))
+                best, best_cnt = None, 0
+                for mid in main_set:
+                    toks = set(_fe2.tokenize(
+                        next((m.get("text") or m.get("gist") or "" for m in nodes
+                              if m["id"] == mid), "")))
+                    cnt = len(toks_head & toks)
+                    if cnt > best_cnt:
+                        best, best_cnt = mid, cnt
+                target = best if (best and best_cnt >= 2) else persona_id
+                a, b = (head, target) if head < target else (target, head)
+                edges.append({
+                    "src": a, "dst": b,
+                    "relation": "稀有词重叠" if target != persona_id else "自我",
+                    "weight": 0.28 if target != persona_id else 0.5,
+                    "auto": True, "boot": True, "merge": True,
+                })
+                merged += 1
+                main_set.add(head)
+    except Exception as exc:  # noqa: BLE001
+        brain.log_event("growth", f"联想图连通分量合并失败：{exc}", level="warn")
+
+    # 连通性自检：从人格出发 BFS，任何不可达的记忆都要报出来（不静默）
+    adj = {}
+    for e in edges:
+        adj.setdefault(e["src"], set()).add(e["dst"])
+        adj.setdefault(e["dst"], set()).add(e["src"])
+    seen = {persona_id}
+    stack = [persona_id]
+    while stack:
+        u = stack.pop()
+        for v in adj.get(u, ()):
+            if v not in seen:
+                seen.add(v)
+                stack.append(v)
+    orphan = [n["id"] for n in nodes if n["id"] not in seen]
+
+    # ---------------------------------------------------------------- 主题簇
+    # 为什么要有：稀疏图（平均度 2.7）画出来是"一片散点 + 几根线"，看不出主题。
+    # 社区检测把"互相连得紧"的记忆分成簇，簇就能当**语义分区**：同色=同一主题，
+    # 缩放时聚成气泡，一眼看出"我的记忆分成哪几块"。
+    #
+    # 参考两种做法：
+    #   · Microsoft GraphRAG —— Leiden 分层社区 + 每簇生成报告（最完整，但要装 igraph，
+    #     且分层报告要调 LLM，对本地零依赖技能太重）；
+    #   · dsh-memory-nebula —— 对 w≥0.34 的**强边**做并查集，留 ≥3 成员的簇（O(E)、零依赖）。
+    # 这里取后者：171 条记忆 / 231 条边，并查集毫秒级，效果足够。
+    #
+    # 一个必须遵守的细节：**人格边不参与聚类**。它是全图根，若参与聚类会把所有簇
+    # 并成一坨（nebula 同样把 mentions 来源节点排除在簇外，是同一个道理）。
+    CLUSTER_MIN_W = 0.34      # 只有"强关联"才参与聚类
+    CLUSTER_MIN_SIZE = 3      # 小于 3 个成员不成簇（噪声）
+    communities = []
+    cluster_of = {}
+    try:
+        import hashlib as _hl
+
+        def _stable(s) -> int:
+            return int(_hl.md5(str(s).encode("utf-8", "ignore")).hexdigest()[:8], 16)
+
+        # ---- Louvain 单层（模块度最大化）----
+        # 为什么不用并查集：连通分量在"图本来就连通"时必然收敛成一个巨型簇，
+        # 实测把 132 条记忆并成一块、标签还退化成一个毫无信息量的词。模块度不同——
+        # 它衡量"簇内比随机更密"，所以能在连通图上切出真正的主题分区。
+        # 这也正是 GraphRAG 用 Leiden 而非连通分量的原因（Leiden = Louvain + 精修）。
+        adjw = {}
+        for e in edges:
+            if e["src"] == persona_id or e["dst"] == persona_id:
+                continue                      # 根不参与聚类
+            w = float(e.get("weight") or 0)
+            if w < CLUSTER_MIN_W:
+                continue
+            adjw.setdefault(e["src"], {})
+            adjw.setdefault(e["dst"], {})
+            adjw[e["src"]][e["dst"]] = adjw[e["src"]].get(e["dst"], 0.0) + w
+            adjw[e["dst"]][e["src"]] = adjw[e["dst"]].get(e["src"], 0.0) + w
+
+        ids = [m["id"] for m in nodes[1:]]
+        deg_w = {i: sum(adjw.get(i, {}).values()) for i in ids}
+        m2 = sum(deg_w.values()) or 1.0
+        comm = {i: i for i in ids}
+        tot = dict(deg_w)                     # 社区 -> 内部度数之和
+        # 按度数降序处理：高度节点先定型，结果更稳、也更快收敛
+        order_ids = sorted(ids, key=lambda x: -deg_w[x])
+        for _pass in range(15):
+            moved = 0
+            for i in order_ids:
+                if not adjw.get(i):
+                    continue
+                ci = comm[i]
+                tot[ci] = tot.get(ci, 0.0) - deg_w[i]
+                nb = {}
+                for j, w in adjw[i].items():
+                    cj = comm[j]
+                    nb[cj] = nb.get(cj, 0.0) + w
+                best_c, best_gain = ci, 1e-12
+                for c, w in nb.items():
+                    gain = w - tot.get(c, 0.0) * deg_w[i] / m2
+                    if gain > best_gain:
+                        best_c, best_gain = c, gain
+                comm[i] = best_c
+                tot[best_c] = tot.get(best_c, 0.0) + deg_w[i]
+                if best_c != ci:
+                    moved += 1
+            if not moved:
+                break
+
+        groups = {}
+        for mid in ids:
+            groups.setdefault(comm[mid], []).append(mid)
+        by_id = {m["id"]: m for m in nodes}
+        # 泛标签不参与命名（它们描述"怎么存的"，不是"关于什么"）
+        generic_names = {g["name"] for g in generic_buckets if g["kind"] == "标签"}
+        for root, members in groups.items():
+            if len(members) < CLUSTER_MIN_SIZE:
+                continue
+            # 簇名要有信息量。实测退化有三种：① `episode`/`fact` 这类 kind 兜底值
+            # （每条记忆都有，等于没名字）；② 纯数字标签（`3`、`77`）；③ 单字标签。
+            # 所以先只在"像人话"的标签里挑，挑不到就用**簇内最重要的那条记忆**的
+            # 摘要命名——那至少能让用户认出"这一簇讲的是什么"。
+            cnt = {}
+            for mid in members:
+                for t in (by_id[mid].get("tags") or []):
+                    t = str(t).strip()
+                    if t in generic_names:
+                        continue
+                    if len(t) < 2 or t.isdigit():
+                        continue
+                    cnt[t] = cnt.get(t, 0) + 1
+            label = ""
+            if cnt:
+                top = max(cnt.values())
+                # 同频时取更长的那个（信息量更大），再按字典序保证确定性
+                label = sorted([t for t, c in cnt.items() if c == top],
+                               key=lambda x: (-len(x), x))[0]
+            if not label:
+                head = max(members, key=lambda mid: _num(by_id[mid].get("importance"), 0.5))
+                gist = (by_id[head].get("gist") or "").strip()
+                # 会话摘要类记忆的 gist 常以 "user：" / "assistant：" 开头，
+                # 那是来源标记不是内容，当簇名很难看，先剥掉。
+                import re as _re2
+                gist = _re2.sub(r"^(user|assistant|system|工具)\s*[:：]\s*", "", gist,
+                                flags=_re2.IGNORECASE).strip()
+                label = (gist[:14] + "…") if len(gist) > 14 else (gist or "记忆簇")
+            cid = "c_" + format(_stable(label or root), "x")
+            communities.append({
+                "id": cid,
+                "label": label or "记忆簇",
+                "size": len(members),
+                "members": members,
+                "hue": _stable(label or root) % 360,
+            })
+            for mid in members:
+                cluster_of[mid] = cid
+        communities.sort(key=lambda c: -c["size"])
+    except Exception as exc:  # noqa: BLE001 —— 聚类失败降级为"没有簇"，不影响出图
+        brain.log_event("growth", f"联想图聚类失败：{exc}", level="warn")
+        communities, cluster_of = [], {}
+
+    # ---------------------------------------------------------------- 分层社区（第二层）
+    # 第一层（Louvain）切出 20+ 个细簇，数量太多、颜色用不过来。再对这些**簇**跑一次
+    # Louvain，得到 3~8 个"大类"——这就是语义缩放的骨架：
+    #   缩远 → 看大类（"记忆分几块"）；拉近 → 看细簇（"这块里分几组"）。
+    super_of = {}
+    try:
+        if len(communities) >= 3:
+            cids = [c["id"] for c in communities]
+            node2c = dict(cluster_of)
+            cw = {}
+            for e in edges:
+                if e["src"] == persona_id or e["dst"] == persona_id:
+                    continue
+                ca, cb = node2c.get(e["src"]), node2c.get(e["dst"])
+                if not ca or not cb or ca == cb:
+                    continue
+                w = float(e.get("weight") or 0)
+                if w < CLUSTER_MIN_W:
+                    continue
+                k = (ca, cb) if ca < cb else (cb, ca)
+                cw[k] = cw.get(k, 0.0) + w
+            cadj = {c: {} for c in cids}
+            for (a, b), w in cw.items():
+                cadj[a][b] = cadj[a].get(b, 0.0) + w
+                cadj[b][a] = cadj[b].get(a, 0.0) + w
+            cdeg = {c: sum(cadj[c].values()) for c in cids}
+            cm2 = sum(cdeg.values()) or 1.0
+            ccomm = {c: c for c in cids}
+            ctot = dict(cdeg)
+            for _p in range(10):
+                moved = 0
+                for a in sorted(cids, key=lambda x: -cdeg[x]):
+                    if not cadj.get(a):
+                        continue
+                    ca = ccomm[a]
+                    ctot[ca] = ctot.get(ca, 0.0) - cdeg[a]
+                    nb = {}
+                    for b, w in cadj[a].items():
+                        cb = ccomm[b]
+                        nb[cb] = nb.get(cb, 0.0) + w
+                    best, bg = ca, 1e-12
+                    for cb, w in nb.items():
+                        g = w - ctot.get(cb, 0.0) * cdeg[a] / cm2
+                        if g > bg:
+                            best, bg = cb, g
+                    ccomm[a] = best
+                    ctot[best] = ctot.get(best, 0.0) + cdeg[a]
+                    if best != ca:
+                        moved += 1
+                if not moved:
+                    break
+            l2_groups = {}
+            for c in cids:
+                l2_groups.setdefault(ccomm[c], []).append(c)
+            size_of = {c["id"]: c["size"] for c in communities}
+            cid2parent = {}
+            for root, members in l2_groups.items():
+                if len(members) < 2:
+                    continue          # 单独成不了大类
+                top = max(members, key=lambda c: size_of.get(c, 0))
+                pid = "g_" + format(_stable(top), "x")
+                for c in members:
+                    cid2parent[c] = pid
+            for c in communities:
+                if c["id"] in cid2parent:
+                    c["parent"] = cid2parent[c["id"]]
+            for mid, cid in node2c.items():
+                if cid in cid2parent:
+                    super_of[mid] = cid2parent[cid]
+    except Exception as exc:  # noqa: BLE001 —— 第二层失败就只保留第一层
+        brain.log_event("growth", f"联想图分层社区失败：{exc}", level="warn")
+        super_of = {}
+
+    # ---------------------------------------------------------------- 双时态 + 边证据
+    # 双时态（借 Zep / Graphiti 的 bi-temporal 模型）：一条关联不是"永远成立"的，
+    # 它有生效窗口。用记忆自己的时间戳推：
+    #   t_from = 两端 created 的较大者（两边都写下了，才可能"相关"）
+    #   t_to   = 任一端 forgotten_at（被淡忘即失效）；被取代（superseded_by）也算失效
+    # 时间轴视图按 t_from/t_to 过滤，就能回答"那个时间点我知道什么、它们怎么连的"。
+    by_id_full = {m["id"]: m for m in nodes}
+    for e in edges:
+        a = by_id_full.get(e["src"]) or {}
+        b = by_id_full.get(e["dst"]) or {}
+        ca = int(_num(a.get("created"), 0))
+        cb = int(_num(b.get("created"), 0))
+        e["t_from"] = max(ca, cb) or None
+        fa = int(_num(a.get("forgotten_at"), 0))
+        fb = int(_num(b.get("forgotten_at"), 0))
+        e["t_to"] = ((min(fa, fb) if (fa and fb) else (fa or fb)) or None)
+        e["superseded"] = bool(a.get("superseded_by") or b.get("superseded_by"))
+        # ---- 边证据：把"为什么连这一条"写成一句人话 ----
+        if e.get("anchor"):
+            e["why"] = "人格接入点：它是联想度最高的记忆之一"
+        elif e.get("merge"):
+            e["why"] = "连通合并：这一小簇与主图不连通，按稀有词最近邻接上"
+        elif e.get("boot"):
+            cnt = e.get("shared_rare")
+            e["why"] = (f"孤立自举：与它共享 {cnt} 个稀有词" if cnt
+                        else "孤立自举：按稀有词最近邻接上")
+        elif e.get("auto"):
+            names = e.get("shared_names") or []
+            e["why"] = (("共享 " + "、".join(names[:3]) + ("…" if len(names) > 3 else ""))
+                        if names else f"共享 {e.get('shared', 1)} 个标签/实体")
+        else:
+            e["why"] = f"手工连线（{e.get('relation') or '相关'}）"
+
     return {
         "nodes": [{"id": m["id"], "gist": m.get("gist") or heuristic_gist(m.get("text", "")),
                    "kind": m.get("kind", ""), "layer": m.get("layer", "hippo"),
                    "importance": _num(m.get("importance"), 0.5),
                    "emotion": m.get("emotion", ""),
-                   "recency": round(retention(m), 2)} for m in nodes],
+                   "recency": round(retention(m), 2),
+                   # 时间轴视图与双时态都用它：这条记忆"什么时候存在的"
+                   "created": int(_num(m.get("created"), 0)),
+                   "forgotten_at": int(_num(m.get("forgotten_at"), 0)) or None,
+                   "superseded": bool(m.get("superseded_by")),
+                   # 主题簇 id（不在任何簇里 = None）；前端据此上色 / 画簇标签
+                   "community": cluster_of.get(m["id"]),
+                   # 分层社区：一层是细簇，二层是它属于哪个大类
+                   "community_l1": cluster_of.get(m["id"]),
+                   "community_l2": super_of.get(m["id"])} for m in nodes],
         "edges": edges,
+        # 簇摘要：前端在簇中心画标签（LOD），点标签可只看该簇
+        "communities": [{"id": c["id"], "label": c["label"], "size": c["size"],
+                         "hue": c["hue"], "parent": c.get("parent")} for c in communities],
         "connected": len({e["src"] for e in edges} - {persona_id}
                          | {e["dst"] for e in edges} - {persona_id}),
         # 闸门透明化：面板要能说"为什么这么少"，而不是让人以为丢数据了
@@ -4357,6 +4792,14 @@ def assoc_graph(limit: int = 300, generic_ratio: float | None = None,
             "generic_bucket_count": len(generic_buckets),
             "hide_isolated": bool(hide_isolated),
             "isolated_hidden": isolated_hidden,
+            # 自举边 = 孤立记忆靠"稀有词重叠"接进网的边；anchor = 人格接入点
+            "boot_edges": len(boot_edges),
+            "boot_orphans": len(orphan_ids),
+            "anchors": len(anchors),
+            "merged": merged,
+            "communities": len(communities),
+            "orphans": orphan[:8],
+            "orphan_count": len(orphan),
         },
     }
 
@@ -5406,7 +5849,12 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
     # 账单模式（report 非 None）不落缓存：观测命令不该改写下次 startup 的快照。
     if report is None and cfg.get("session_state_cache"):
         _save_cfg = load_config()
-        _save_key = _inject_cache_key(query, budget, _save_cfg)
+        # ⚠ 读侧用 _inject_cache_key(query, budget, cfg, _p_tier) 带压力档位，
+        # 写侧原来只传三个参数 → tier 默认 "full"。于是处于 lazy/minimal 时
+        # 写进去的键与任何一次读的键都不相等，session_state_cache 在压力期
+        # **永远不命中**（用户开了开关也看不出异常，只是白白每次写盘）。
+        # 审计 memory.py:5718。
+        _save_key = _inject_cache_key(query, budget, _save_cfg, _p_tier)
         if _save_key:
             _inject_cache_save(_save_cfg, _save_key, _result)
     return _result

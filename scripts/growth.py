@@ -2870,10 +2870,16 @@ def install_skill(name: str, force: bool = False, from_dir: str | None = None,
             inst_meta = {}
 
         def _vt(v) -> tuple | None:
+            # 必须补零到三段再比（审计 growth.py:2872）：
+            # "5.11" → (5,11)，"5.11.0" → (5,11,0)，而 (5,11) < (5,11,0) 为真
+            # → 一个合法的更新会被误判成"倒退"而拒绝。
             try:
-                return tuple(int(x) for x in str(v).strip().split("."))
+                parts = [int(x) for x in str(v).strip().split(".")]
             except (TypeError, ValueError):
                 return None
+            while len(parts) < 3:
+                parts.append(0)
+            return tuple(parts[:3])
         src_v, inst_v = _vt(meta.get("version")), _vt(inst_meta.get("version"))
         if src_v is not None and inst_v is not None and src_v < inst_v:
             raise KeyError(
@@ -3417,9 +3423,21 @@ def _file_lock_probe(path: Path) -> dict:
               "($_.ExecutablePath -and $_.ExecutablePath.ToLower().Contains('" +
               target.replace("'", "''") + "'))} | "
               "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress")
-        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=15)
-        rows = json.loads(r.stdout.decode("utf-8", "replace") or "[]")
+        # ★ 用 Popen 而不是 subprocess.run（审计 growth.py:3430）：
+        #   run() 返回的是 CompletedProcess，**没有 .pid 属性**（只有 args/returncode/
+        #   stdout/stderr）。原来下面写 `if pid in (my_pid, r.pid)` 每进这个分支必抛
+        #   AttributeError，又被外层 `except Exception: pass` 吞掉 → out["pids"] 恒为空，
+        #   于是"占用者探测"只能回落到"查不到具体进程"，这项诊断等于没做。
+        proc = subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            out_bytes, _ = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out_bytes, _ = proc.communicate()
+            raise
+        ps_pid = proc.pid
+        rows = json.loads((out_bytes or b"").decode("utf-8", "replace") or "[]")
         if isinstance(rows, dict):
             rows = [rows]
         my_pid = os.getpid()
@@ -3427,7 +3445,7 @@ def _file_lock_probe(path: Path) -> dict:
             try:
                 pid = int(row.get("ProcessId", 0))
                 # 排除自己（探测进程的命令行里也含目标路径）和跑查询的 powershell 子进程
-                if pid in (my_pid, r.pid):
+                if pid in (my_pid, ps_pid):
                     continue
                 out["pids"].append({"pid": pid,
                                     "name": str(row.get("Name", "")),
@@ -4476,6 +4494,10 @@ def log_evolution(kind: str, title: str, detail: str = "", refs=None) -> dict:
     with brain._locked(EVOLUTION_FILE):
         rows = brain.read_jsonl(EVOLUTION_FILE)
         rows.append(row)
+        # #26 有界增长：原来只追加不裁剪，load_evolution() 每次全量读 →
+        # 长期使用后文件与读取成本无界。与 audit.jsonl（5000→4000）同口径。
+        if len(rows) > 5000:
+            rows = rows[-4000:]
         brain.write_jsonl(EVOLUTION_FILE, rows)
     return row
 

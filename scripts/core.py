@@ -956,6 +956,27 @@ def config_unset(key: str) -> dict:
     return cfg
 
 
+def _num(v, default: float = 0.0) -> float:
+    """安全取数：None / bool / 非数值 / NaN / inf 一律回 default。
+
+    ⚠ 本轮（v5.32）才发现 core.py 里**有 6 处调用 _num() 却从未定义它**：
+    token_context_pressure()（4 处）每次都抛 NameError，又被 except 吞成
+    return None → 灵枢**从来没读到过 APP tokenMeter 的准确水位**，
+    只能退回字符估算，于是报 14% 而实际 66%。
+    DETAIL_CONSOLIDATE 的 lambda 同样会炸（做梦淡化规则静默失效）。
+    这是典型的「except Exception 吞掉真实错误」——异常没有消失，只是没声张。
+    """
+    try:
+        if v is None or isinstance(v, bool):
+            return default
+        f = float(v)
+        if f != f or f in (float("inf"), float("-inf")):
+            return default
+        return f
+    except (TypeError, ValueError):
+        return default
+
+
 def _cfg_num(cfg: dict, key: str, default, cast=float):
     """从配置里安全取一个数字：坏值/手改错时回退默认，绝不让注入崩掉。"""
     try:
@@ -1333,6 +1354,17 @@ def read_pressure(cfg: dict | None = None) -> dict | None:
             except Exception:
                 pass
         tp = token_context_pressure()
+        # ★ 估算值让位给 tokenMeter（v5.32，实测修）：
+        #   lingshu-cron 拿不到完整对话历史，只能按「本轮几条消息的字符数」估，
+        #   实测报 14% 而 APP tokenMeter 实测 65.7%（窗口是 1M 不是 131K）。
+        #   它写进 _pressure.json 的 source 就是 'chars'/'floor'，属于**估算**，
+        #   不该冒充用户显式给的准值去压住宿主真值。
+        #   规则：人工/真值（manual、usage、check-context）优先；
+        #         估算类（chars、floor、chars+calib、cron）在有 tokenMeter 时让位。
+        _EST_SOURCES = ('chars', 'floor', 'chars+calib', 'cron', 'unknown')
+        if (legacy is not None and tp is not None
+                and str(legacy.get('source') or '').lower() in _EST_SOURCES):
+            legacy = None
         if legacy is not None:
             th = pressure_thresholds(cfg if cfg is not None else load_config())
             pct = legacy["pct"]
