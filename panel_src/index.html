@@ -710,7 +710,7 @@
             <div class="sub" style="margin-bottom:8px">自定义图标：选一张图片（建议正方形、≥256×256），会自动生成 16/24/32/48/64/128/256 多尺寸 .ico。也可以直接选现成的 .ico。</div>
             <div class="row" style="flex-wrap:wrap;gap:8px">
               <button class="btn" id="btn-icon-pick">选择图片…</button>
-              <button class="ghost" id="btn-icon-reset">恢复默认图标</button>
+              <button class="ghost" id="btn-icon-reset" style="color:var(--amber)" title="把快捷方式图标还原成灵枢出厂图标（会先让你确认）">↺ 还原默认图标</button>
             </div>
             <div class="sub" id="icon-msg" style="margin-top:8px"></div>
           </div>
@@ -953,6 +953,19 @@
     <div class="row" style="margin-top:16px">
       <button class="ghost" id="edit-cancel">取消</button>
       <button class="btn" id="edit-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认弹窗：破坏性/不可逆操作先问一句，防止点错。
+     Esc = 取消，点遮罩 = 取消，默认焦点在「取消」上（手滑按回车不会执行）。 -->
+<div class="modal hidden" id="confirm-modal">
+  <div class="box" style="width:min(440px,100%)">
+    <h3 id="confirm-title">确认操作</h3>
+    <div class="sub" id="confirm-text" style="line-height:1.75;white-space:pre-wrap"></div>
+    <div class="row" style="margin-top:20px;justify-content:flex-end">
+      <button class="ghost" id="confirm-cancel">取消</button>
+      <button class="btn" id="confirm-ok">确定</button>
     </div>
   </div>
 </div>

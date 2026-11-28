@@ -1020,7 +1020,7 @@
             <div class="sub" style="margin-bottom:8px">自定义图标：选一张图片（建议正方形、≥256×256），会自动生成 16/24/32/48/64/128/256 多尺寸 .ico。也可以直接选现成的 .ico。</div>
             <div class="row" style="flex-wrap:wrap;gap:8px">
               <button class="btn" id="btn-icon-pick">选择图片…</button>
-              <button class="ghost" id="btn-icon-reset">恢复默认图标</button>
+              <button class="ghost" id="btn-icon-reset" style="color:var(--amber)" title="把快捷方式图标还原成灵枢出厂图标（会先让你确认）">↺ 还原默认图标</button>
             </div>
             <div class="sub" id="icon-msg" style="margin-top:8px"></div>
           </div>
@@ -1269,6 +1269,19 @@ const progress = topProgress();
     <div class="row" style="margin-top:16px">
       <button class="ghost" id="edit-cancel">取消</button>
       <button class="btn" id="edit-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认弹窗：破坏性/不可逆操作先问一句，防止点错。
+     Esc = 取消，点遮罩 = 取消，默认焦点在「取消」上（手滑按回车不会执行）。 -->
+<div class="modal hidden" id="confirm-modal">
+  <div class="box" style="width:min(440px,100%)">
+    <h3 id="confirm-title">确认操作</h3>
+    <div class="sub" id="confirm-text" style="line-height:1.75;white-space:pre-wrap"></div>
+    <div class="row" style="margin-top:20px;justify-content:flex-end">
+      <button class="ghost" id="confirm-cancel">取消</button>
+      <button class="btn" id="confirm-ok">确定</button>
     </div>
   </div>
 </div>
@@ -4596,6 +4609,41 @@ $("btn-hotkey-refresh") && $("btn-hotkey-refresh").addEventListener("click", () 
   loadIcon(true);
 });
 
+// ---- 通用确认弹窗（Promise<boolean>）
+// 为什么不用原生 confirm()：原生框在深色面板里是一块突兀的白框，而且标题固定是
+// 浏览器域名，说不清"到底要还原什么"。这里用面板自己的 .modal 样式，
+// 并把焦点默认放在「取消」上——手滑按回车不会执行破坏性操作。
+function confirmDialog(title, text, okLabel){
+  return new Promise(resolve => {
+    const m = $("confirm-modal");
+    if (!m) { resolve(window.confirm(text)); return; }   // 兜底
+    $("confirm-title").textContent = title || "确认操作";
+    $("confirm-text").textContent = text || "";
+    $("confirm-ok").textContent = okLabel || "确定";
+    m.classList.remove("hidden");
+    const done = (v) => {
+      m.classList.add("hidden");
+      $("confirm-ok").removeEventListener("click", onOk);
+      $("confirm-cancel").removeEventListener("click", onNo);
+      m.removeEventListener("click", onMask);
+      document.removeEventListener("keydown", onKey, true);
+      resolve(v);
+    };
+    const onOk = () => done(true);
+    const onNo = () => done(false);
+    const onMask = (e) => { if (e.target === m) done(false); };
+    const onKey = (e) => {
+      if (e.key === "Escape"){ e.stopPropagation(); done(false); }
+      else if (e.key === "Enter"){ e.preventDefault(); done(true); }
+    };
+    $("confirm-ok").addEventListener("click", onOk);
+    $("confirm-cancel").addEventListener("click", onNo);
+    m.addEventListener("click", onMask);
+    document.addEventListener("keydown", onKey, true);
+    setTimeout(() => $("confirm-cancel").focus(), 0);    // 默认落在取消
+  });
+}
+
 // ---- 自定义快捷方式图标
 // 选图由**服务端**弹 Windows 原生文件框（浏览器拿不到真实路径），
 // 用户可能慢慢挑，所以这一次请求要放宽超时（默认 15s 会先断）。
@@ -4645,11 +4693,19 @@ async function pickIcon(){
 }
 async function resetIcon(){
   const msg = $("icon-msg");
-  msg.innerHTML = `<span class="chip">正在恢复默认图标…</span>`;
+  // 还原是不可逆的（随手选的图会被默认图标顶掉），先问一句、默认停在「取消」
+  const ok = await confirmDialog(
+    "还原默认图标",
+    "把桌面快捷方式的图标还原成灵枢出厂图标？\n\n"
+    + "· 当前自定义图标文件不会被删除，随时可以再选回来；\n"
+    + "· 桌面和任务栏上的图标会立刻变回原来的样子。",
+    "还原");
+  if (!ok){ msg.innerHTML = `<span class="chip">已取消，图标未改动</span>`; return; }
+  msg.innerHTML = `<span class="chip">正在还原默认图标…</span>`;
   try {
     const r = await post("/api/panel-icon", {action: "reset"});
     if (!r.ok) throw new Error(r.error || "失败");
-    msg.innerHTML = `<span class="chip good">✔ 已恢复默认图标</span>`;
+    msg.innerHTML = `<span class="chip good">✔ 已还原默认图标</span>`;
     _iconCache = null;
     loadIcon(true);
   } catch (e) {
@@ -6154,10 +6210,24 @@ setTimeout(() => checkUpdate(true), 1200);
 (function(){
   "use strict";
   var KEY = "lingshu.panel.prefs";
-  var prefs = {theme:"auto", density:"cozy", refresh:60, open:true};
+  // 默认**收起**成小胶囊。原因很实际：展开态宽 340px 固定贴右下，在 1440 宽的屏上
+  // 会压住主内容区右半边——实测连「还原默认图标」这类按钮都会被它吃掉点击
+  // （Playwright 报 "ls-dock subtree intercepts pointer events"）。
+  // 想常看的人点一下展开即可，位置还会记住；但默认不该挡路。
+  var prefs = {theme:"auto", density:"cozy", refresh:60, open:false};
   var firstVisit = false;
   try { firstVisit = !localStorage.getItem(KEY); } catch(e){}
   try { Object.assign(prefs, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch(e){}
+  // 一次性迁移：老版本把 open 默认存成了 true，光改默认值对**已有用户无效**
+  // （localStorage 里的旧值会盖掉新默认）。这里补一个版本号，老数据一律先收起一次，
+  // 之后用户自己的选择照常记住。
+  try {
+    if (!prefs.v || prefs.v < 1){
+      prefs.open = false;
+      prefs.v = 1;
+      localStorage.setItem(KEY, JSON.stringify(prefs));
+    }
+  } catch(e){}
   // 窄屏（手机/小窗）默认收起：展开态要占掉大半个视口，把正文全遮住。
   // 只在"用户从没调过"时这么定，之后尊重他自己的选择。
   if (firstVisit && window.innerWidth && window.innerWidth <= 760) prefs.open = false;

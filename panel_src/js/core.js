@@ -3321,6 +3321,41 @@ $("btn-hotkey-refresh") && $("btn-hotkey-refresh").addEventListener("click", () 
   loadIcon(true);
 });
 
+// ---- 通用确认弹窗（Promise<boolean>）
+// 为什么不用原生 confirm()：原生框在深色面板里是一块突兀的白框，而且标题固定是
+// 浏览器域名，说不清"到底要还原什么"。这里用面板自己的 .modal 样式，
+// 并把焦点默认放在「取消」上——手滑按回车不会执行破坏性操作。
+function confirmDialog(title, text, okLabel){
+  return new Promise(resolve => {
+    const m = $("confirm-modal");
+    if (!m) { resolve(window.confirm(text)); return; }   // 兜底
+    $("confirm-title").textContent = title || "确认操作";
+    $("confirm-text").textContent = text || "";
+    $("confirm-ok").textContent = okLabel || "确定";
+    m.classList.remove("hidden");
+    const done = (v) => {
+      m.classList.add("hidden");
+      $("confirm-ok").removeEventListener("click", onOk);
+      $("confirm-cancel").removeEventListener("click", onNo);
+      m.removeEventListener("click", onMask);
+      document.removeEventListener("keydown", onKey, true);
+      resolve(v);
+    };
+    const onOk = () => done(true);
+    const onNo = () => done(false);
+    const onMask = (e) => { if (e.target === m) done(false); };
+    const onKey = (e) => {
+      if (e.key === "Escape"){ e.stopPropagation(); done(false); }
+      else if (e.key === "Enter"){ e.preventDefault(); done(true); }
+    };
+    $("confirm-ok").addEventListener("click", onOk);
+    $("confirm-cancel").addEventListener("click", onNo);
+    m.addEventListener("click", onMask);
+    document.addEventListener("keydown", onKey, true);
+    setTimeout(() => $("confirm-cancel").focus(), 0);    // 默认落在取消
+  });
+}
+
 // ---- 自定义快捷方式图标
 // 选图由**服务端**弹 Windows 原生文件框（浏览器拿不到真实路径），
 // 用户可能慢慢挑，所以这一次请求要放宽超时（默认 15s 会先断）。
@@ -3370,11 +3405,19 @@ async function pickIcon(){
 }
 async function resetIcon(){
   const msg = $("icon-msg");
-  msg.innerHTML = `<span class="chip">正在恢复默认图标…</span>`;
+  // 还原是不可逆的（随手选的图会被默认图标顶掉），先问一句、默认停在「取消」
+  const ok = await confirmDialog(
+    "还原默认图标",
+    "把桌面快捷方式的图标还原成灵枢出厂图标？\n\n"
+    + "· 当前自定义图标文件不会被删除，随时可以再选回来；\n"
+    + "· 桌面和任务栏上的图标会立刻变回原来的样子。",
+    "还原");
+  if (!ok){ msg.innerHTML = `<span class="chip">已取消，图标未改动</span>`; return; }
+  msg.innerHTML = `<span class="chip">正在还原默认图标…</span>`;
   try {
     const r = await post("/api/panel-icon", {action: "reset"});
     if (!r.ok) throw new Error(r.error || "失败");
-    msg.innerHTML = `<span class="chip good">✔ 已恢复默认图标</span>`;
+    msg.innerHTML = `<span class="chip good">✔ 已还原默认图标</span>`;
     _iconCache = null;
     loadIcon(true);
   } catch (e) {

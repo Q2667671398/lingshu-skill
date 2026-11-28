@@ -2,10 +2,24 @@
 (function(){
   "use strict";
   var KEY = "lingshu.panel.prefs";
-  var prefs = {theme:"auto", density:"cozy", refresh:60, open:true};
+  // 默认**收起**成小胶囊。原因很实际：展开态宽 340px 固定贴右下，在 1440 宽的屏上
+  // 会压住主内容区右半边——实测连「还原默认图标」这类按钮都会被它吃掉点击
+  // （Playwright 报 "ls-dock subtree intercepts pointer events"）。
+  // 想常看的人点一下展开即可，位置还会记住；但默认不该挡路。
+  var prefs = {theme:"auto", density:"cozy", refresh:60, open:false};
   var firstVisit = false;
   try { firstVisit = !localStorage.getItem(KEY); } catch(e){}
   try { Object.assign(prefs, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch(e){}
+  // 一次性迁移：老版本把 open 默认存成了 true，光改默认值对**已有用户无效**
+  // （localStorage 里的旧值会盖掉新默认）。这里补一个版本号，老数据一律先收起一次，
+  // 之后用户自己的选择照常记住。
+  try {
+    if (!prefs.v || prefs.v < 1){
+      prefs.open = false;
+      prefs.v = 1;
+      localStorage.setItem(KEY, JSON.stringify(prefs));
+    }
+  } catch(e){}
   // 窄屏（手机/小窗）默认收起：展开态要占掉大半个视口，把正文全遮住。
   // 只在"用户从没调过"时这么定，之后尊重他自己的选择。
   if (firstVisit && window.innerWidth && window.innerWidth <= 760) prefs.open = false;
