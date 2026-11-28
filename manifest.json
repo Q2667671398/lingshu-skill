@@ -246,8 +246,8 @@
       "size": 7912
     },
     "scripts/memory.py": {
-      "sha256": "cd564cb22e5414701d97d61051ddca4686c25a19df13871ab442859e8ba42a77",
-      "size": 301891
+      "sha256": "f3da85ce07ba76a948ec559c1f95caac9247db235e5c56485509af875b8b89a9",
+      "size": 302177
     },
     "scripts/npm_prepack.py": {
       "sha256": "d62c491a6f9edfcab2dd465a995e72df879a61b4da26ae0fe76121c8adc77e02",

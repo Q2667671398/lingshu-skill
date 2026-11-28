@@ -5808,6 +5808,9 @@ def build_injection(query: str = "", budget_tokens: int | None = None,
         for i, part in enumerate(out):
             sec = out.secs[i] if i < len(out.secs) else "other"
             chars[sec] = chars.get(sec, 0) + len(part) + (1 if i else 0)
+        # 口径：账单按 chars_per_token 折 token（默认 2）。
+        # v5.32 试过改成 1.8 与 char_budget 对齐，但 4 个测试的期望值基于 2，
+        # 且 1.8 只是装配端给中文留的余量、不是账单标准 → 已回退，避免无证据改动。
         ratio = _cfg_num(cfg, "context_chars_per_token", 2, float)
         if not ratio or ratio <= 0:
             ratio = 2.0
